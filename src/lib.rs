@@ -1,0 +1,12 @@
+//! casimir — replay, rerun and compare coding-agent sessions (Claude Code, Codex).
+pub mod adapters;
+pub mod cli;
+pub mod compare;
+pub mod llm;
+pub mod model;
+pub mod play;
+pub mod render;
+pub mod rerun;
+pub mod simulate;
+pub mod util;
+pub mod workspace;

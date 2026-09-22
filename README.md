@@ -1,6 +1,8 @@
 # casimir
 
 Replay, rerun, and compare coding-agent sessions recorded by **Claude Code** and **OpenAI Codex**.
+Written in Rust; a single static-ish binary with no runtime dependencies beyond `git` (and `curl`
+for the optional Anthropic API backend).
 
 Both harnesses already write a complete transcript of every session to disk. `casimir` reads those
 logs, normalizes them into one event model, and lets you:
@@ -13,12 +15,15 @@ logs, normalizes them into one event model, and lets you:
 - **compare** two sessions (or a session and its rerun): tool usage, files touched, tokens, cost,
   duration, workspace diff, final answer, and optionally an LLM judge.
 
-No build step, no runtime dependencies for reading and replaying. Node 20+.
+## Install
 
 ```
-npm install          # only needed for --user simulate / --judge via the Anthropic API
-npm link             # or: node bin/casimir.js …
+cargo install --path .        # puts `casimir` on your PATH
+# or
+cargo build --release         # binary at target/release/casimir
 ```
+
+Requires a Rust toolchain (1.80+) and a C linker.
 
 ## Where the logs come from
 
@@ -89,10 +94,10 @@ had done before each one, and what the new agent has done so far, and produces t
 would send now: verbatim when it still applies, adapted when it doesn't, or a stop when the goals are
 already met. Simulated turns are marked in the recorded session (`simulated: {verbatim, reason}`).
 
-The simulator and judge use `claude-opus-5` through the Anthropic SDK when credentials are available
-(`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile), with Anthropic's
-server-side refusal fallback enabled. With `--llm claude-cli` they run through `claude -p` with tools
-disabled, reusing your Claude Code login instead.
+The simulator and judge use `claude-opus-5` through the Anthropic Messages API (via `curl`) when
+credentials are available (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login`
+profile), with Anthropic's server-side refusal fallback enabled. With `--llm claude-cli` they run
+through `claude -p` with tools disabled, reusing your Claude Code login instead.
 
 ## Examples
 
@@ -116,8 +121,8 @@ casimir compare codex:last ~/.casimir/runs/2026-09-22_11-40-03-claude-code-sonne
 ## Development
 
 ```
-npm test        # node --test; uses fixtures and fake harness binaries in test/fixtures
-npm run lint    # syntax check
+cargo test          # parsers, renderers, comparison, and reruns driven by fake harness scripts
+cargo build --release
 ```
 
 Environment knobs: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CASIMIR_HOME` (runs and worktrees),

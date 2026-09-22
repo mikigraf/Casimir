@@ -1,0 +1,30 @@
+[package]
+name = "casimir"
+version = "0.2.0"
+edition = "2021"
+description = "Replay, rerun and compare coding-agent sessions from Claude Code and Codex"
+license = "MIT"
+repository = "https://github.com/mikigraf/Casimir"
+
+[lib]
+name = "casimir"
+path = "src/lib.rs"
+
+[[bin]]
+name = "casimir"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+strip = true
+lto = true
+
+[dev-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
