@@ -38,9 +38,16 @@ Rules:
   (stop_reason \"goals_met\"); the replay has drifted so far that the remaining messages cannot be adapted
   without inventing facts (stop_reason \"cannot_adapt\"); or the recorded session lacks the information
   needed to answer what the new agent is asking (stop_reason \"out_of_scope\").
+- If the intent behind this particular original message is already satisfied in the replay but later
+  original messages may still apply, choose \"no_op\": say nothing at this point and let the session
+  move on to the next original message. Use \"stop\" only when nothing that remains applies.
 - Keep a short private note (memory) of what you have already disclosed or decided, for later turns.
+- Label what kind of message you send: verbatim (the original text), answer (answering the agent's
+  question), question (asking the agent something), redirect (steering it back to the goal), or
+  new_requirement (a requirement the original user raised at this point).
 Reply with a JSON object only:
-{\"action\": \"send\" | \"stop\", \"message\": \"...\", \"verbatim\": true|false, \"grounded_in\": [original turn numbers],
+{\"action\": \"send\" | \"no_op\" | \"stop\", \"kind\": \"verbatim\" | \"answer\" | \"question\" | \"redirect\" | \"new_requirement\" | null,
+ \"message\": \"...\", \"verbatim\": true|false, \"grounded_in\": [original turn numbers],
  \"reason\": \"...\", \"stop_reason\": \"goals_met\" | \"cannot_adapt\" | \"out_of_scope\" | null, \"memory\": \"...\"}";
 
 fn clip(s: &str, n: usize) -> String {
@@ -77,6 +84,8 @@ fn turn_activity(session: &Session, turn: u32, max_tools: usize, final_chars: us
 pub struct SimState {
     /// One note per simulated turn, in order.
     pub memory: Vec<String>,
+    /// One-time session analysis (objective, constraints, intervention conditions) from the brief.
+    pub analysis: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,8 +93,12 @@ pub struct SimResult {
     pub message: Option<String>,
     pub verbatim: bool,
     pub reason: String,
-    /// goals_met | cannot_adapt | out_of_scope when `message` is None.
+    /// goals_met | cannot_adapt | out_of_scope when `message` is None and the session stops.
     pub stop_reason: Option<String>,
+    /// The simulator chose to say nothing at this turn and continue with the next original message.
+    pub no_op: bool,
+    /// verbatim | answer | question | redirect | new_requirement.
+    pub kind: Option<String>,
     pub grounded_in: Vec<u32>,
     /// Number of ungrounded replies discarded before this result.
     pub retries: usize,
@@ -94,7 +107,13 @@ pub struct SimResult {
 fn build_prompt(original: &Session, rerun: &Session, turn_index: u32, state: &SimState, target_text: &str) -> String {
     let turns = user_turns(original);
     let prev = turn_index.saturating_sub(1).max(1);
-    let mut p: Vec<String> = vec!["# All user messages in the ORIGINAL session".into()];
+    let mut p: Vec<String> = Vec::new();
+    if let Some(a) = &state.analysis {
+        p.push("# Session analysis (what this user wanted, their constraints, and when they intervened)".into());
+        p.push(a.clone());
+        p.push(String::new());
+    }
+    p.push("# All user messages in the ORIGINAL session".into());
     for t in &turns {
         p.push(format!("[turn {}]{}\n{}", t.turn, if t.turn == turn_index { " (the one to send now)" } else { "" }, clip(&t.text, 3000)));
     }
@@ -135,7 +154,7 @@ fn parse_turns(v: Option<&Value>) -> Vec<u32> {
 pub fn simulate_user_turn(original: &Session, rerun: &Session, turn_index: u32, llm: &LlmOpts, state: &mut SimState) -> Result<SimResult> {
     let turns = user_turns(original);
     let Some(target) = turns.iter().find(|t| t.turn == turn_index) else {
-        return Ok(SimResult { message: None, verbatim: false, reason: "no such turn in original".into(), stop_reason: Some("out_of_scope".into()), grounded_in: vec![], retries: 0 });
+        return Ok(SimResult { message: None, verbatim: false, reason: "no such turn in original".into(), stop_reason: Some("out_of_scope".into()), no_op: false, kind: None, grounded_in: vec![], retries: 0 });
     };
     let max_turn = turns.iter().map(|t| t.turn).max().unwrap_or(0);
     let base_prompt = build_prompt(original, rerun, turn_index, state, &target.text);
@@ -147,12 +166,20 @@ pub fn simulate_user_turn(original: &Session, rerun: &Session, turn_index: u32, 
         let reason = obj.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
         let memory = obj.get("memory").and_then(Value::as_str).unwrap_or("").trim().to_string();
         let grounded_in = parse_turns(obj.get("grounded_in"));
-        if obj.get("action").and_then(Value::as_str) == Some("stop") || message.trim().is_empty() {
+        let action = obj.get("action").and_then(Value::as_str).unwrap_or("send");
+        let kind = obj.get("kind").and_then(Value::as_str).filter(|k| matches!(*k, "verbatim" | "answer" | "question" | "redirect" | "new_requirement")).map(String::from);
+        if action == "no_op" {
+            if !memory.is_empty() {
+                state.memory.push(memory);
+            }
+            return Ok(SimResult { message: None, verbatim: false, reason: if reason.is_empty() { "nothing to add at this turn".into() } else { reason }, stop_reason: None, no_op: true, kind: None, grounded_in, retries });
+        }
+        if action == "stop" || message.trim().is_empty() {
             let stop_reason = obj.get("stop_reason").and_then(Value::as_str).filter(|s| matches!(*s, "goals_met" | "cannot_adapt" | "out_of_scope")).unwrap_or("goals_met").to_string();
             if !memory.is_empty() {
                 state.memory.push(memory);
             }
-            return Ok(SimResult { message: None, verbatim: false, reason: if reason.is_empty() { "simulator stopped the session".into() } else { reason }, stop_reason: Some(stop_reason), grounded_in, retries });
+            return Ok(SimResult { message: None, verbatim: false, reason: if reason.is_empty() { "simulator stopped the session".into() } else { reason }, stop_reason: Some(stop_reason), no_op: false, kind: None, grounded_in, retries });
         }
         let verbatim = obj.get("verbatim").and_then(Value::as_bool).unwrap_or(false) || message.trim() == target.text.trim();
         let grounded = verbatim || (!grounded_in.is_empty() && grounded_in.iter().all(|t| *t >= 1 && *t <= max_turn));
@@ -168,6 +195,8 @@ pub fn simulate_user_turn(original: &Session, rerun: &Session, turn_index: u32, 
                     verbatim: true,
                     reason: format!("simulator produced ungrounded messages {MAX_RETRIES} times; sent the original verbatim"),
                     stop_reason: None,
+                    no_op: false,
+                    kind: Some("verbatim".into()),
                     grounded_in: vec![turn_index],
                     retries,
                 });
@@ -181,6 +210,7 @@ pub fn simulate_user_turn(original: &Session, rerun: &Session, turn_index: u32, 
             state.memory.push(memory);
         }
         let grounded_in = if verbatim && grounded_in.is_empty() { vec![turn_index] } else { grounded_in };
-        return Ok(SimResult { message: Some(message), verbatim, reason, stop_reason: None, grounded_in, retries });
+        let kind = if verbatim { Some("verbatim".into()) } else { kind.or_else(|| Some("answer".into())) };
+        return Ok(SimResult { message: Some(message), verbatim, reason, stop_reason: None, no_op: false, kind, grounded_in, retries });
     }
 }

@@ -8,7 +8,16 @@ system = os.environ.get("CASIMIR_LLM_SYSTEM", "")
 def out(obj):
     print("Here you go:\n```json\n" + json.dumps(obj) + "\n```")
 
-if "# User requests" in prompt:  # judge
+if "# Agent's final message in the original session" in prompt:  # brief drafting
+    out({"objective": "Add a greet(name) function with a test", "constraints": ["keep changes in lib.py and test_lib.py"],
+         "intervention_conditions": ["after the first implementation the user asked for a default argument (turn 2)"],
+         "criteria": [{"id": "C1", "text": "greet(name) exists in lib.py and returns 'Hello, <name>!'", "must": True},
+                      {"id": "C2", "text": "a test for greet exists", "must": True},
+                      {"id": "C3", "text": "greet defaults to 'World' when called without a name", "must": False}],
+         "intents": [{"id": "I1", "text": "add greet(name) to lib.py", "turn": 1}, {"id": "I2", "text": "add a test for greet", "turn": 1}, {"id": "I3", "text": "default name to World", "turn": 2}]})
+elif "# Original intents" in prompt:  # intent coverage
+    out({"covered": ["I3"], "in_scope": [0]})
+elif "# User requests" in prompt:  # judge
     if mode == "judge-flip":  # always prefers whichever candidate is shown first
         out({"winner": "A", "scoreA": 8, "scoreB": 6, "summary": "first looked better", "differences": ["order"]})
     else:  # consistent: prefers the run whose block mentions the fake harness output
@@ -18,7 +27,11 @@ if "# User requests" in prompt:  # judge
 elif "# Task" in prompt:  # user simulator
     m = re.search(r"Original text of that message:\n(.*?)(?:\n\n# Correction|$)", prompt, re.S)
     original = m.group(1).strip() if m else ""
-    if mode == "sim-stop":
+    if mode == "sim-noop":
+        out({"action": "no_op", "kind": None, "message": "", "verbatim": False, "grounded_in": [], "reason": "already satisfied", "stop_reason": None, "memory": "skipped"})
+    elif mode == "sim-adapt":
+        out({"action": "send", "kind": "redirect", "message": "please use World as the default (see turn 2)", "verbatim": False, "grounded_in": [2], "reason": "adapted", "stop_reason": None, "memory": "asked for default"})
+    elif mode == "sim-stop":
         out({"action": "stop", "message": "", "verbatim": False, "grounded_in": [], "reason": "nothing left to ask", "stop_reason": "out_of_scope", "memory": "stopped"})
     elif mode == "sim-retry":
         # count calls via a file keyed by a stable prompt hash so parallel tests do not collide

@@ -5,7 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::adapters::{list_all_sessions, resolve_session};
-use crate::compare::{compare_sessions, judge_sessions, render_compare_markdown, render_compare_text};
+use crate::brief::{draft_brief, render_brief_markdown, Brief};
+use crate::compare::{compare_sessions, judge_sessions_with, render_compare_markdown, render_compare_text, JudgeOpts};
+use crate::pairs::{export_pairs, score_pairs};
 use crate::llm::LlmOpts;
 use crate::model::{stats, user_turns, Harness};
 use crate::play::{play, PlayOpts};
@@ -126,6 +128,12 @@ pub struct RunArgs {
     /// Judge score (0-10) at or above which a replicate counts as a pass
     #[arg(long, default_value_t = 7.0)]
     pub pass_threshold: f64,
+    /// Same-order judge repeats per ordering (>= 2 reports judge test-retest separately from agent variance)
+    #[arg(long, default_value_t = 1)]
+    pub judge_repeats: usize,
+    /// Per-session brief (rubric, session analysis, intents) to use; default: draft one into the run directory
+    #[arg(long)]
+    pub brief: Option<PathBuf>,
     /// Run directory (or diff.patch) holding the original session's workspace diff; default: reconstruct from git
     #[arg(long)]
     pub original_diff: Option<PathBuf>,
@@ -179,6 +187,8 @@ impl RunArgs {
             control: self.control,
             from_turn: None,
             intervention: None,
+            judge_repeats: self.judge_repeats,
+            brief: self.brief.clone(),
         }
     }
 }
@@ -268,8 +278,39 @@ pub enum Cmd {
         judge: bool,
         #[command(flatten)]
         llm: LlmArgs,
+        /// Same-order judge repeats per ordering
+        #[arg(long, default_value_t = 1)]
+        judge_repeats: usize,
+        /// Per-session brief whose rubric the judge scores against
+        #[arg(long)]
+        brief: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+    },
+    /// Draft a per-session brief (rubric, session analysis, intents) for humans to review and edit
+    Brief {
+        session: String,
+        /// Where to write brief.json (default: ./brief-<id>.json); a .md summary is written next to it
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Run directory holding the session's workspace diff, for context
+        #[arg(long)]
+        original_diff: Option<PathBuf>,
+        #[command(flatten)]
+        llm: LlmArgs,
+    },
+    /// Export blinded original-vs-simulated message pairs from rerun directories for human 2AFC spot checks
+    Pairs {
+        /// Rerun directories (each with session.json and original.json)
+        runs: Vec<PathBuf>,
+        /// Output directory for pairs.jsonl, pairs.key.json and answers.template.json
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Score 2AFC answers ({pair_id: "X"|"Y"} = the message believed to be the real human's) against the key
+    PairsScore {
+        key: PathBuf,
+        answers: PathBuf,
     },
     /// List rerun directories under ~/.casimir/runs
     Runs,
@@ -398,19 +439,50 @@ pub fn run() -> Result<i32> {
                 println!("{}worktrees are kept under {} (remove with: git worktree remove --force <dir>){}", c.dim, casimir_home().join("worktrees").display(), c.reset);
             }
         }
-        Cmd::Compare { a, b, judge, llm, format } => {
+        Cmd::Compare { a, b, judge, llm, judge_repeats, brief, format } => {
             let sa = resolve_session(&a)?;
             let sb = resolve_session(&b)?;
             // run dirs carry a captured diff; for raw logs fall back to reconstructing from git history
             let da = load_diff(&a).or_else(|| reconstruct_original_diff(&sa));
             let db = load_diff(&b).or_else(|| reconstruct_original_diff(&sb));
-            let j = if judge { Some(judge_sessions(&sa, &sb, da.as_ref(), db.as_ref(), &llm.judge_opts())?) } else { None };
+            let j = if judge {
+                let b = match brief {
+                    Some(p) => Some(Brief::load(&p)?),
+                    None => Path::new(&b).join("brief.json").exists().then(|| Brief::load(&Path::new(&b).join("brief.json"))).transpose()?,
+                };
+                let jo = JudgeOpts { llm: llm.judge_opts(), repeats: judge_repeats.max(1), brief: b, model_a: sa.model.clone(), model_b: sb.model.clone() };
+                Some(judge_sessions_with(&sa, &sb, da.as_ref(), db.as_ref(), &jo)?)
+            } else {
+                None
+            };
             let report = compare_sessions(&sa, &sb, da, db, j);
             match format {
                 Format::Json => println!("{}", serde_json::to_string_pretty(&report)?),
                 Format::Md => println!("{}", render_compare_markdown(&report, "A", "B")),
                 Format::Text => println!("{}", render_compare_text(&report, &format!("A: {}", sa.harness()), &format!("B: {}", sb.harness()))),
             }
+        }
+        Cmd::Brief { session, output, original_diff, llm } => {
+            let s = resolve_session(&session)?;
+            let diff = original_diff.as_deref().and_then(|p| load_diff(&p.display().to_string())).or_else(|| reconstruct_original_diff(&s));
+            let b = draft_brief(&s, diff.as_ref(), &llm.judge_opts())?;
+            let out = output.unwrap_or_else(|| PathBuf::from(format!("brief-{}.json", s.id.chars().take(8).collect::<String>())));
+            b.save(&out)?;
+            let md = out.with_extension("md");
+            fs::write(&md, render_brief_markdown(&b))?;
+            println!("{}", render_brief_markdown(&b));
+            eprintln!("wrote {} and {} — review, edit, set humanReviewed to true, then pass --brief {}", out.display(), md.display(), out.display());
+        }
+        Cmd::Pairs { runs, output } => {
+            let exp = export_pairs(&runs, &output)?;
+            println!("{} pair(s) written to {}", exp.n, exp.pairs_path.display());
+            println!("key (keep it away from annotators): {}", exp.key_path.display());
+            println!("fill answers.template.json with X or Y per pair, then: casimir pairs-score {} <answers.json>", exp.key_path.display());
+        }
+        Cmd::PairsScore { key, answers } => {
+            let sc = score_pairs(&key, &answers)?;
+            println!("answered: {}  simulator mistaken for the human: {}  Turing pass rate: {:.2}  95% CI [{:.2}, {:.2}]  sessions: {}", sc.answered, sc.simulator_passed, sc.pass_rate, sc.ci_low, sc.ci_high, sc.sessions);
+            println!("0.5 = indistinguishable from the real user; the interval treats pairs as independent, which understates width when several pairs share a session");
         }
         Cmd::Runs => {
             let root = casimir_home().join("runs");

@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::brief::{Brief, IntentCoverage, INVALID_REASONS};
 use crate::llm::{complete_json, effective_model, LlmOpts};
-use crate::model::{action_sequence, actions, files_touched, final_assistant_text, stats, tool_sequence, user_turns, ActionKind, AntiPatterns, Harness, Session, Usage};
+use crate::model::{action_sequence, actions, files_touched, final_assistant_text, model_family, stats, tool_sequence, user_turns, ActionKind, AntiPatterns, Harness, Session, SimulatorDrift, Usage};
 use crate::util::{colors, fmt_duration, fmt_num, indent, pad};
 use crate::workspace::{parse_patch, Diff};
 
@@ -79,6 +80,55 @@ pub struct Judgement {
     pub close: bool,
     #[serde(default)]
     pub passes: Vec<JudgePass>,
+    /// Same-order repeats per ordering (>= 2 lets test-retest be measured).
+    #[serde(default)]
+    pub repeats: usize,
+    /// Share of calls in which the candidate shown first won (0.5 = no position preference).
+    #[serde(default)]
+    pub first_slot_win_rate: f64,
+    /// |first_slot_win_rate − 0.5| (arXiv 2606.19544 gate: must be < 0.10 for a reliable judge).
+    #[serde(default)]
+    pub position_bias: f64,
+    /// Agreement of repeated identical-order calls with their modal verdict (needs repeats >= 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_retest: Option<f64>,
+    /// test_retest > 0.95 with position_bias > 0.10: repeatable, not right.
+    #[serde(default)]
+    pub reliable_but_biased: bool,
+    #[serde(default)]
+    pub judge_family: String,
+    #[serde(default)]
+    pub family_a: String,
+    #[serde(default)]
+    pub family_b: String,
+    /// Set when the judge shares a model family with exactly one candidate (self-preference risk).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_warning: Option<String>,
+    /// Invalid-reason taxonomy hits per candidate (arXiv 2511.10865).
+    #[serde(default)]
+    pub invalid_a: Vec<String>,
+    #[serde(default)]
+    pub invalid_b: Vec<String>,
+    /// The judge scored against a per-session rubric rather than the generic prompt.
+    #[serde(default)]
+    pub rubric: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct JudgeOpts {
+    pub llm: LlmOpts,
+    /// Same-order repeats per ordering (total calls = 2 × repeats).
+    pub repeats: usize,
+    pub brief: Option<Brief>,
+    /// Candidate model names (for the family warning).
+    pub model_a: Option<String>,
+    pub model_b: Option<String>,
+}
+
+impl JudgeOpts {
+    pub fn new(llm: LlmOpts) -> JudgeOpts {
+        JudgeOpts { llm, repeats: 1, brief: None, model_a: None, model_b: None }
+    }
 }
 
 /// How similar two workspace end states are (0..1). Files: Jaccard over changed paths.
@@ -126,6 +176,11 @@ pub struct Report {
     pub diff_b: Option<Diff>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<Judgement>,
+    /// Lexical drift of simulated user turns versus the recorded human's turns (arXiv 2603.11245).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulator_drift: Option<SimulatorDrift>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_coverage: Option<IntentCoverage>,
 }
 
 /// Harnesses differ in logging absolute vs cwd-relative paths; compare relative to the session cwd.
@@ -287,6 +342,8 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
         diff_a,
         diff_b,
         judge,
+        simulator_drift: crate::model::simulator_drift(a, b),
+        intent_coverage: None,
     }
 }
 
@@ -353,7 +410,7 @@ fn process_rows(r: &Report) -> Vec<(&'static str, String, String)> {
 fn end_state_lines(r: &Report, label_a: &str, label_b: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(es) = &r.end_state {
-        out.push(format!("  end-state similarity: {:.2}  (files {:.2} × content {:.2}; {} vs {} changed files)  recall of {label_a}'s changes: {:.2}", es.score, es.files_jaccard, es.content_similarity, es.files_a, es.files_b, es.recall));
+        out.push(format!("  end-state similarity: {:.2}  (files {:.2} × content {:.2}; {} vs {} changed files)  recall of {label_a}'s changes: {:.2}   [agreement with one trajectory, not validity]", es.score, es.files_jaccard, es.content_similarity, es.files_a, es.files_b, es.recall));
         if let Some(s) = &es.source_a {
             out.push(format!("    {label_a} diff: {s}"));
         }
@@ -420,13 +477,23 @@ pub fn render_compare_text(r: &Report, label_a: &str, label_b: &str) -> String {
     }
     if let Some(j) = &r.judge {
         out.push(String::new());
-        out.push(format!("{}judge ({}){}", c.bold, j.model, c.reset));
-        out.push(format!("  winner: {}   scores: {label_a}={:.1}/10  {label_b}={:.1}/10", j.winner, j.score_a, j.score_b));
+        out.push(format!("{}judge ({}{}){}", c.bold, j.model, if j.rubric { ", per-session rubric" } else { ", generic prompt" }, c.reset));
+        out.push(format!("  winner: {}   scores (averaged over both orders{}): {label_a}={:.1}/10  {label_b}={:.1}/10", j.winner, if j.repeats > 1 { format!(", {} repeats", j.repeats) } else { String::new() }, j.score_a, j.score_b));
         if j.order_sensitive {
-            out.push(format!("  {}⚠ order-sensitive: the two candidate orders disagreed, so the verdict is a tie{}", c.yellow, c.reset));
+            out.push(format!("  {}⚠ order-sensitive: the two candidate orders disagreed, so the verdict is a tie (the averaged scores remain the primary signal){}", c.yellow, c.reset));
         }
         if j.close {
             out.push(format!("  {}⚠ close call: scores within one point; position bias is strongest here{}", c.yellow, c.reset));
+        }
+        out.push(format!("  first-slot win rate {:.2} → position bias {:.2}{}{}", j.first_slot_win_rate, j.position_bias, if j.position_bias >= 0.10 { " (≥ 0.10: above the reliability gate)" } else { "" }, j.test_retest.map(|t| format!("  test-retest {t:.2}")).unwrap_or_default()));
+        if j.reliable_but_biased {
+            out.push(format!("  {}⚠ reliable-but-biased judge: repeats agree with each other but the verdict follows position{}", c.yellow, c.reset));
+        }
+        if let Some(w) = &j.family_warning {
+            out.push(format!("  {}⚠ {w}{}", c.yellow, c.reset));
+        }
+        if !j.invalid_a.is_empty() || !j.invalid_b.is_empty() {
+            out.push(format!("  invalid reasons: {label_a}: {}   {label_b}: {}", if j.invalid_a.is_empty() { "none".into() } else { j.invalid_a.join(", ") }, if j.invalid_b.is_empty() { "none".into() } else { j.invalid_b.join(", ") }));
         }
         for p in &j.passes {
             out.push(format!("  {}order {}: winner {}, {label_a}={:.1} {label_b}={:.1}{}", c.dim, p.order, p.winner, p.score_a, p.score_b, c.reset));
@@ -436,7 +503,35 @@ pub fn render_compare_text(r: &Report, label_a: &str, label_b: &str) -> String {
             out.push(format!("  - {d}"));
         }
     }
+    if let Some(d) = &r.simulator_drift {
+        out.push(String::new());
+        out.push(format!("{}simulator drift (adapted turns vs the recorded human's turns; arXiv 2603.11245 lexicon){}", c.bold, c.reset));
+        out.push(format!("  {}{}{}", pad("measure", 28), pad("human", 12), "simulated"));
+        for (k, h, sm) in drift_rows(d) {
+            out.push(format!("  {}{}{}", pad(k, 28), pad(&h, 12), sm));
+        }
+    }
+    if let Some(ic) = &r.intent_coverage {
+        out.push(String::new());
+        out.push(format!("{}intent coverage ({}){}", c.bold, ic.model, c.reset));
+        out.push(format!("  score {:.2} = 0.7 × recall {:.2} + 0.3 × precision {:.2}   ({}/{} intents re-expressed; {}/{} simulated messages in scope)", ic.score, ic.recall, ic.precision, ic.covered.len(), ic.intents, ic.in_scope, ic.simulated_messages));
+    }
     out.join("\n")
+}
+
+fn drift_rows(d: &SimulatorDrift) -> Vec<(&'static str, String, String)> {
+    let pct = |v: f64| format!("{:.0}%", v * 100.0);
+    vec![
+        ("turns", d.human.turns.to_string(), d.simulated.turns.to_string()),
+        ("short turns (≤3 words)", pct(d.human.short_turn_rate), pct(d.simulated.short_turn_rate)),
+        ("polite (please/thanks/sorry)", pct(d.human.polite_rate), pct(d.simulated.polite_rate)),
+        ("hedged (maybe/not sure/…)", pct(d.human.hedge_rate), pct(d.simulated.hedge_rate)),
+        ("pivots (instead/actually/…)", pct(d.human.pivot_rate), pct(d.simulated.pivot_rate)),
+        ("questions", pct(d.human.question_rate), pct(d.simulated.question_rate)),
+        ("em dashes", pct(d.human.em_dash_rate), pct(d.simulated.em_dash_rate)),
+        ("identifier tokens / turn", format!("{:.1}", d.human.identifier_tokens_per_turn), format!("{:.1}", d.simulated.identifier_tokens_per_turn)),
+        ("mean words / turn", format!("{:.0}", d.human.mean_words), format!("{:.0}", d.simulated.mean_words)),
+    ]
 }
 
 pub fn render_compare_markdown(r: &Report, label_a: &str, label_b: &str) -> String {
@@ -474,9 +569,29 @@ pub fn render_compare_markdown(r: &Report, label_a: &str, label_b: &str) -> Stri
             md.extend([format!("### {label_b}"), String::new(), "```".into(), d.stat.clone(), "```".into(), String::new()]);
         }
     }
+    if let Some(d) = &r.simulator_drift {
+        md.extend([String::new(), "## Simulator drift".into(), String::new(), "| measure | human | simulated |".into(), "|---|---|---|".into()]);
+        for (k, h, sm) in drift_rows(d) {
+            md.push(format!("| {k} | {h} | {sm} |"));
+        }
+    }
+    if let Some(ic) = &r.intent_coverage {
+        md.extend([String::new(), format!("## Intent coverage ({})", ic.model), String::new(), format!("score {:.2} = 0.7 × recall {:.2} + 0.3 × precision {:.2}; {}/{} intents re-expressed, {}/{} simulated messages in scope", ic.score, ic.recall, ic.precision, ic.covered.len(), ic.intents, ic.in_scope, ic.simulated_messages)]);
+    }
     if let Some(j) = &r.judge {
-        md.extend([String::new(), format!("## Judge ({})", j.model), String::new()]);
-        md.push(format!("**Winner:** {} — {label_a} {:.1}/10, {label_b} {:.1}/10", j.winner, j.score_a, j.score_b));
+        md.extend([String::new(), format!("## Judge ({}{})", j.model, if j.rubric { ", per-session rubric" } else { "" }), String::new()]);
+        md.push(format!("**Winner:** {} — {label_a} {:.1}/10, {label_b} {:.1}/10 (averaged over both orders{})", j.winner, j.score_a, j.score_b, if j.repeats > 1 { format!(", {} repeats", j.repeats) } else { String::new() }));
+        md.push(String::new());
+        md.push(format!("- first-slot win rate {:.2}, position bias {:.2}{}", j.first_slot_win_rate, j.position_bias, j.test_retest.map(|t| format!(", test-retest {t:.2}")).unwrap_or_default()));
+        if j.reliable_but_biased {
+            md.push("- ⚠ reliable-but-biased judge: repeats agree, but the verdict follows position".into());
+        }
+        if let Some(w) = &j.family_warning {
+            md.push(format!("- ⚠ {w}"));
+        }
+        if !j.invalid_a.is_empty() || !j.invalid_b.is_empty() {
+            md.push(format!("- invalid reasons: {label_a}: {}; {label_b}: {}", if j.invalid_a.is_empty() { "none".into() } else { j.invalid_a.join(", ") }, if j.invalid_b.is_empty() { "none".into() } else { j.invalid_b.join(", ") }));
+        }
         if j.order_sensitive {
             md.push(String::new());
             md.push("> ⚠ Order-sensitive: the two candidate orders disagreed on the winner, so the combined verdict is a tie.".into());
@@ -504,9 +619,20 @@ pub fn render_compare_markdown(r: &Report, label_a: &str, label_b: &str) -> Stri
 const JUDGE_SYSTEM: &str = "You are an impartial reviewer comparing two runs of a coding agent on the same task.
 You see the user's requests, each run's final message, the tools each run used, and the resulting workspace diff.
 Judge which run better accomplished what the user asked, weighing correctness and completeness first, then
-scope discipline (not doing unrequested work), then efficiency. Be concrete and cite evidence from the diffs.
+scope discipline (not doing unrequested work), then efficiency. Check that each run addresses the root cause of
+what the user asked for, not just its symptoms, and that it does not introduce new problems. Be concrete and
+cite evidence from the diffs. Passing tests alone do not make a result valid.
 Give each run an absolute score from 0 to 10 first, independently, then decide the winner; a tie is acceptable.
-Reply with a JSON object: {\"winner\": \"A\"|\"B\"|\"tie\", \"scoreA\": 0-10, \"scoreB\": 0-10, \"summary\": \"...\", \"differences\": [\"...\", ...]}";
+For each run list any invalid reasons from this taxonomy (empty list when none): requirement_violation,
+root_cause_not_addressed, incomplete_implementation, new_issues_introduced.
+Reply with a JSON object: {\"winner\": \"A\"|\"B\"|\"tie\", \"scoreA\": 0-10, \"scoreB\": 0-10, \"invalidA\": [...], \"invalidB\": [...], \"summary\": \"...\", \"differences\": [\"...\", ...]}";
+
+fn judge_system(brief: Option<&Brief>) -> String {
+    match brief {
+        Some(b) if !b.criteria.is_empty() || !b.objective.is_empty() => format!("{JUDGE_SYSTEM}\n\nScore against this task-specific rubric (drafted from the original session{}):\n{}", if b.human_reviewed { ", human-reviewed" } else { ", NOT yet human-reviewed" }, b.rubric_text()),
+        _ => JUDGE_SYSTEM.to_string(),
+    }
+}
 
 fn clip_text(s: &str, n: usize) -> String {
     let count = s.chars().count();
@@ -531,18 +657,46 @@ fn run_block(label: &str, s: &Session, diff: Option<&Diff>) -> String {
     .join("\n")
 }
 
-/// One judge call with `first` shown as Run A and `second` as Run B. Returns (winner, score_first, score_second, summary, differences).
-fn judge_once(turns_block: &str, first: (&Session, Option<&Diff>), second: (&Session, Option<&Diff>), llm: &LlmOpts) -> Result<(String, f64, f64, String, Vec<String>)> {
+struct JudgeCall {
+    winner: String,
+    score_first: f64,
+    score_second: f64,
+    summary: String,
+    differences: Vec<String>,
+    invalid_first: Vec<String>,
+    invalid_second: Vec<String>,
+}
+
+fn invalid_list(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).filter(|r| INVALID_REASONS.contains(r)).map(String::from).collect()).unwrap_or_default()
+}
+
+/// One judge call with `first` shown as Run A and `second` as Run B.
+fn judge_once(system: &str, turns_block: &str, first: (&Session, Option<&Diff>), second: (&Session, Option<&Diff>), llm: &LlmOpts) -> Result<JudgeCall> {
     let prompt = [turns_block.to_string(), String::new(), run_block("A", first.0, first.1), String::new(), run_block("B", second.0, second.1)].join("\n");
-    let obj = complete_json(JUDGE_SYSTEM, &prompt, llm)?;
+    let obj = complete_json(system, &prompt, llm)?;
     let num = |k: &str| obj.get(k).and_then(Value::as_f64).unwrap_or(0.0);
-    Ok((
-        obj.get("winner").and_then(Value::as_str).unwrap_or("tie").to_string(),
-        num("scoreA"),
-        num("scoreB"),
-        obj.get("summary").and_then(Value::as_str).unwrap_or("").to_string(),
-        obj.get("differences").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
-    ))
+    Ok(JudgeCall {
+        winner: obj.get("winner").and_then(Value::as_str).unwrap_or("tie").to_string(),
+        score_first: num("scoreA"),
+        score_second: num("scoreB"),
+        summary: obj.get("summary").and_then(Value::as_str).unwrap_or("").to_string(),
+        differences: obj.get("differences").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
+        invalid_first: invalid_list(obj.get("invalidA")),
+        invalid_second: invalid_list(obj.get("invalidB")),
+    })
+}
+
+fn modal_agreement(winners: &[String]) -> Option<f64> {
+    if winners.len() < 2 {
+        return None;
+    }
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for w in winners {
+        *counts.entry(w.as_str()).or_insert(0) += 1;
+    }
+    let max = counts.values().copied().max().unwrap_or(0);
+    Some(max as f64 / winners.len() as f64)
 }
 
 fn swap_label(w: &str) -> String {
@@ -553,31 +707,158 @@ fn swap_label(w: &str) -> String {
     }
 }
 
-/// Ask an LLM to judge A vs B in both candidate orders. Verdicts that flip on order swap become a tie
-/// flagged `order_sensitive`; scores are averaged across the two passes.
+/// Ask an LLM to judge A vs B in both candidate orders (default: once each).
 pub fn judge_sessions(a: &Session, b: &Session, diff_a: Option<&Diff>, diff_b: Option<&Diff>, llm: &LlmOpts) -> Result<Judgement> {
+    judge_sessions_with(a, b, diff_a, diff_b, &JudgeOpts::new(llm.clone()))
+}
+
+fn family_warning(judge_model: &str, model_a: Option<&str>, model_b: Option<&str>) -> (String, String, String, Option<String>) {
+    let jf = model_family(judge_model).to_string();
+    let fa = model_a.map(model_family).unwrap_or("unknown").to_string();
+    let fb = model_b.map(model_family).unwrap_or("unknown").to_string();
+    let shares_a = jf != "unknown" && fa == jf;
+    let shares_b = jf != "unknown" && fb == jf;
+    let warning = if shares_a != shares_b {
+        Some(format!(
+            "judge family ({jf}) matches candidate {} only; judges favour their own family by roughly 3–8 points of win share (arXiv 2609.17857) — use --judge-model from another family or read the averaged scores with that in mind",
+            if shares_a { "A" } else { "B" }
+        ))
+    } else {
+        None
+    };
+    (jf, fa, fb, warning)
+}
+
+/// Judge A vs B in both candidate orders, `repeats` times each. Verdicts that flip on order swap become
+/// a tie flagged `order_sensitive`; scores are averaged across every call. Position bias is the
+/// deviation of the first-slot win rate from 0.5; with repeats >= 2 the test-retest agreement of
+/// identical-order calls is reported separately, since a judge can be repeatable and still biased.
+pub fn judge_sessions_with(a: &Session, b: &Session, diff_a: Option<&Diff>, diff_b: Option<&Diff>, jo: &JudgeOpts) -> Result<Judgement> {
+    let llm = &jo.llm;
+    let repeats = jo.repeats.max(1);
+    let system = judge_system(jo.brief.as_ref());
     let mut turns_block: Vec<String> = vec!["# User requests (in order)".into()];
     for t in user_turns(a) {
         turns_block.push(format!("{}. {}", t.turn, clip_text(&t.text, 4000)));
     }
     let tb = turns_block.join("\n");
-    let (w1, sa1, sb1, sum1, diffs1) = judge_once(&tb, (a, diff_a), (b, diff_b), llm)?;
-    let (w2_raw, sb2, sa2, sum2, diffs2) = judge_once(&tb, (b, diff_b), (a, diff_a), llm)?;
-    let w2 = swap_label(&w2_raw);
-    let passes = vec![
-        JudgePass { order: "AB".into(), winner: w1.clone(), score_a: sa1, score_b: sb1, summary: sum1.clone() },
-        JudgePass { order: "BA".into(), winner: w2.clone(), score_a: sa2, score_b: sb2, summary: sum2.clone() },
-    ];
-    let score_a = (sa1 + sa2) / 2.0;
-    let score_b = (sb1 + sb2) / 2.0;
-    let order_sensitive = w1 != w2;
-    let winner = if order_sensitive { "tie".to_string() } else { w1.clone() };
-    let mut differences = diffs1;
-    for d in diffs2 {
-        if !differences.contains(&d) {
-            differences.push(d);
+    let mut passes: Vec<JudgePass> = Vec::new();
+    let mut ab_winners: Vec<String> = Vec::new();
+    let mut ba_winners: Vec<String> = Vec::new();
+    let mut first_slot_wins = 0usize;
+    let mut decided = 0usize;
+    let mut sum_a = 0.0;
+    let mut sum_b = 0.0;
+    let mut differences: Vec<String> = Vec::new();
+    let mut invalid_a: Vec<String> = Vec::new();
+    let mut invalid_b: Vec<String> = Vec::new();
+    let mut summaries: Vec<(String, String)> = Vec::new();
+    for _ in 0..repeats {
+        let c1 = judge_once(&system, &tb, (a, diff_a), (b, diff_b), llm)?;
+        passes.push(JudgePass { order: "AB".into(), winner: c1.winner.clone(), score_a: c1.score_first, score_b: c1.score_second, summary: c1.summary.clone() });
+        if c1.winner != "tie" {
+            decided += 1;
+            if c1.winner == "A" {
+                first_slot_wins += 1;
+            }
+        }
+        sum_a += c1.score_first;
+        sum_b += c1.score_second;
+        ab_winners.push(c1.winner.clone());
+        summaries.push(("AB".into(), c1.summary));
+        for d in c1.differences {
+            if !differences.contains(&d) {
+                differences.push(d);
+            }
+        }
+        for r in c1.invalid_first {
+            if !invalid_a.contains(&r) {
+                invalid_a.push(r);
+            }
+        }
+        for r in c1.invalid_second {
+            if !invalid_b.contains(&r) {
+                invalid_b.push(r);
+            }
+        }
+        let c2 = judge_once(&system, &tb, (b, diff_b), (a, diff_a), llm)?;
+        let w2 = swap_label(&c2.winner);
+        passes.push(JudgePass { order: "BA".into(), winner: w2.clone(), score_a: c2.score_second, score_b: c2.score_first, summary: c2.summary.clone() });
+        if c2.winner != "tie" {
+            decided += 1;
+            if c2.winner == "A" {
+                first_slot_wins += 1; // B was shown first
+            }
+        }
+        sum_a += c2.score_second;
+        sum_b += c2.score_first;
+        ba_winners.push(w2);
+        summaries.push(("BA".into(), c2.summary));
+        for d in c2.differences {
+            if !differences.contains(&d) {
+                differences.push(d);
+            }
+        }
+        for r in c2.invalid_second {
+            if !invalid_a.contains(&r) {
+                invalid_a.push(r);
+            }
+        }
+        for r in c2.invalid_first {
+            if !invalid_b.contains(&r) {
+                invalid_b.push(r);
+            }
         }
     }
-    let summary = if order_sensitive { format!("[order AB] {sum1}\n[order BA] {sum2}") } else { sum1 };
-    Ok(Judgement { winner, score_a, score_b, summary, differences, model: effective_model(llm), order_sensitive, close: (score_a - score_b).abs() <= 1.0, passes })
+    let calls = (2 * repeats) as f64;
+    let score_a = sum_a / calls;
+    let score_b = sum_b / calls;
+    let modal = |ws: &[String]| -> String {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for w in ws {
+            *counts.entry(w.as_str()).or_insert(0) += 1;
+        }
+        counts.into_iter().max_by_key(|(_, n)| *n).map(|(w, _)| w.to_string()).unwrap_or_else(|| "tie".into())
+    };
+    let w_ab = modal(&ab_winners);
+    let w_ba = modal(&ba_winners);
+    let order_sensitive = w_ab != w_ba;
+    let winner = if order_sensitive { "tie".to_string() } else { w_ab.clone() };
+    let first_slot_win_rate = if decided == 0 { 0.5 } else { first_slot_wins as f64 / decided as f64 };
+    let position_bias = (first_slot_win_rate - 0.5).abs();
+    let test_retest = match (modal_agreement(&ab_winners), modal_agreement(&ba_winners)) {
+        (Some(x), Some(y)) => Some((x + y) / 2.0),
+        _ => None,
+    };
+    let reliable_but_biased = test_retest.is_some_and(|t| t > 0.95) && position_bias > 0.10;
+    let summary = if order_sensitive || repeats > 1 {
+        summaries.iter().take(2).map(|(o, s)| format!("[order {o}] {s}")).collect::<Vec<_>>().join("\n")
+    } else {
+        summaries.first().map(|(_, s)| s.clone()).unwrap_or_default()
+    };
+    let judge_model = effective_model(llm);
+    let (judge_family, family_a, family_b, fw) = family_warning(&judge_model, jo.model_a.as_deref().or(a.model.as_deref()), jo.model_b.as_deref().or(b.model.as_deref()));
+    Ok(Judgement {
+        winner,
+        score_a,
+        score_b,
+        summary,
+        differences,
+        model: judge_model,
+        order_sensitive,
+        close: (score_a - score_b).abs() <= 1.0,
+        passes,
+        repeats,
+        first_slot_win_rate,
+        position_bias,
+        test_retest,
+        reliable_but_biased,
+        judge_family,
+        family_a,
+        family_b,
+        family_warning: fw,
+        invalid_a,
+        invalid_b,
+        rubric: jo.brief.as_ref().is_some_and(|b| !b.criteria.is_empty() || !b.objective.is_empty()),
+    })
 }

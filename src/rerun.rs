@@ -9,7 +9,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::adapters::{self, RunOpts};
-use crate::compare::{compare_sessions, judge_sessions, render_compare_markdown, sequence_similarity, Report};
+use crate::brief::{draft_brief, intent_coverage, Brief};
+use crate::compare::{compare_sessions, judge_sessions_with, render_compare_markdown, sequence_similarity, JudgeOpts, Report};
 use crate::llm::{effective_model, LlmOpts};
 use crate::model::{action_sequence, files_touched, renumber_turns, stats, user_turns, Event, EventKind, Harness, RerunOf, Session, Simulated, SimulatorInfo};
 use crate::render::{format_event, RenderOpts};
@@ -53,6 +54,10 @@ pub struct RerunOpts {
     pub from_turn: Option<u32>,
     /// Replacement for the forked turn's user message (an intervention); None = resample verbatim.
     pub intervention: Option<String>,
+    /// Same-order judge repeats per ordering (>= 2 measures judge test-retest separately from agent variance).
+    pub judge_repeats: usize,
+    /// Per-session brief (rubric, session analysis, intents). None = draft one when needed.
+    pub brief: Option<PathBuf>,
 }
 
 impl Default for RerunOpts {
@@ -82,6 +87,40 @@ impl Default for RerunOpts {
             control: false,
             from_turn: None,
             intervention: None,
+            judge_repeats: 1,
+            brief: None,
+        }
+    }
+}
+
+/// Load the brief from `opts.brief`, or draft one (LLM) and store it in the run directory.
+/// Needed by the judge (rubric), the simulator (session analysis) and intent coverage.
+fn resolve_brief(original: &Session, o: &RerunOpts, diff_a: Option<&Diff>, run_dir: &Path, log: &mut dyn FnMut(&str)) -> Result<Option<Brief>> {
+    let c = colors();
+    if let Some(p) = &o.brief {
+        let b = Brief::load(p)?;
+        b.save(&run_dir.join("brief.json"))?;
+        return Ok(Some(b));
+    }
+    let existing = run_dir.join("brief.json");
+    if existing.exists() {
+        return Ok(Some(Brief::load(&existing)?));
+    }
+    let needed = o.judge || o.user_mode == "simulate" || o.user_mode == "auto";
+    if !needed {
+        return Ok(None);
+    }
+    log(&format!("{}drafting a per-session brief (rubric, session analysis, intents) with {}…{}", c.magenta, effective_model(&o.judge_llm), c.reset));
+    match draft_brief(original, diff_a, &o.judge_llm) {
+        Ok(b) => {
+            b.save(&existing)?;
+            fs::write(run_dir.join("brief.md"), crate::brief::render_brief_markdown(&b))?;
+            log(&format!("  brief saved to {} (edit it and pass --brief to reuse a human-reviewed version)", existing.display()));
+            Ok(Some(b))
+        }
+        Err(err) => {
+            log(&format!("{}could not draft a brief: {err}; the judge falls back to the generic prompt{}", c.yellow, c.reset));
+            Ok(None)
         }
     }
 }
@@ -308,6 +347,13 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     let mut saw_cost = false;
     let mut sim_state = SimState::default();
     let mut completed_turns = 0usize;
+    let diff_a = original_diff_for(original, o);
+    let brief = resolve_brief(original, o, diff_a.as_ref(), &run_dir, log)?;
+    if let Some(b) = &brief {
+        sim_state.analysis = Some(b.analysis_text());
+        meta["brief"] = json!({ "path": run_dir.join("brief.json"), "humanReviewed": b.human_reviewed, "draftedBy": b.drafted_by });
+        write_json(&run_dir.join("meta.json"), &meta)?;
+    }
 
     if from_turn > 1 {
         // Harness-native fork: the transcript before the forked turn is preserved verbatim and the
@@ -335,12 +381,17 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         if t.turn == from_turn && from_turn > 1 {
             if let Some(m) = &o.intervention {
                 message = m.clone();
-                simulated = Some(Simulated { verbatim: false, reason: "intervention: user message replaced at the fork".into(), grounded_in: vec![from_turn] });
+                simulated = Some(Simulated { verbatim: false, reason: "intervention: user message replaced at the fork".into(), grounded_in: vec![from_turn], action: Some("intervention".into()) });
             }
         } else if i > 0 && simulate {
             log(&format!("{}simulating user for turn {}…{}", c.magenta, t.turn, c.reset));
             let sim = simulate_user_turn(original, &session, t.turn, &o.sim_llm, &mut sim_state)?;
             match sim.message {
+                None if sim.no_op => {
+                    log(&format!("{}simulator: no-op at turn {} ({}){}", c.magenta, t.turn, sim.reason, c.reset));
+                    session.events.push(Event::system(t.turn, now_iso(), "simulator-noop", sim.reason));
+                    continue;
+                }
                 None => {
                     let reason = sim.stop_reason.clone().unwrap_or_else(|| "goals_met".into());
                     log(&format!("{}simulator stopped the session ({reason}): {}{}", c.magenta, sim.reason, c.reset));
@@ -349,12 +400,12 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
                 }
                 Some(m) => {
                     if !sim.verbatim {
-                        log(&format!("{}adapted message (grounded in turns {:?}): {}{}", c.magenta, sim.grounded_in, first_line(&m).chars().take(120).collect::<String>(), c.reset));
+                        log(&format!("{}adapted message [{}] (grounded in turns {:?}): {}{}", c.magenta, sim.kind.as_deref().unwrap_or("answer"), sim.grounded_in, first_line(&m).chars().take(120).collect::<String>(), c.reset));
                     }
                     if sim.retries > 0 {
                         log(&format!("{}simulator needed {} retr{} to ground its message{}", c.yellow, sim.retries, if sim.retries == 1 { "y" } else { "ies" }, c.reset));
                     }
-                    simulated = Some(Simulated { verbatim: sim.verbatim, reason: sim.reason, grounded_in: sim.grounded_in });
+                    simulated = Some(Simulated { verbatim: sim.verbatim, reason: sim.reason, grounded_in: sim.grounded_in, action: sim.kind });
                     message = m;
                 }
             }
@@ -443,20 +494,33 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     let diff = capture_diff(&ws.dir);
     fs::write(run_dir.join("diff.patch"), &diff.patch)?;
     write_json(&run_dir.join("diff.json"), &json!({ "files": diff.files, "stat": diff.stat, "source": diff.source }))?;
-    let diff_a = original_diff_for(original, o);
     if let Some(d) = &diff_a {
         fs::write(run_dir.join("original.patch"), &d.patch)?;
     }
 
     let mut judge = None;
     if o.judge {
-        log(&format!("{}asking judge ({}) in both candidate orders…{}", c.magenta, effective_model(&o.judge_llm), c.reset));
-        match judge_sessions(original, &session, diff_a.as_ref(), Some(&diff), &o.judge_llm) {
-            Ok(j) => judge = Some(j),
+        let jo = JudgeOpts { llm: o.judge_llm.clone(), repeats: o.judge_repeats.max(1), brief: brief.clone(), model_a: original.model.clone(), model_b: session.model.clone() };
+        log(&format!("{}asking judge ({}) in both candidate orders{}…{}", c.magenta, effective_model(&o.judge_llm), if jo.repeats > 1 { format!(", {} repeats each", jo.repeats) } else { String::new() }, c.reset));
+        match judge_sessions_with(original, &session, diff_a.as_ref(), Some(&diff), &jo) {
+            Ok(j) => {
+                if let Some(w) = &j.family_warning {
+                    log(&format!("{}⚠ {w}{}", c.yellow, c.reset));
+                }
+                judge = Some(j)
+            }
             Err(err) => log(&format!("{}judge failed: {err}{}", c.red, c.reset)),
         }
     }
-    let report = compare_sessions(original, &session, diff_a, Some(diff.clone()), judge);
+    let mut report = compare_sessions(original, &session, diff_a, Some(diff.clone()), judge);
+    if o.judge {
+        if let Some(b) = &brief {
+            match intent_coverage(b, &session, &o.judge_llm) {
+                Ok(ic) => report.intent_coverage = ic,
+                Err(err) => log(&format!("{}intent coverage failed: {err}{}", c.yellow, c.reset)),
+            }
+        }
+    }
     fs::write(run_dir.join("report.md"), render_compare_markdown(&report, "original", "rerun"))?;
     write_json(&run_dir.join("report.json"), &report)?;
     meta["endedAt"] = json!(session.ended_at);
@@ -537,6 +601,10 @@ pub struct ReplicateEntry {
     pub judge_score: Option<f64>,
     pub judge_winner: Option<String>,
     pub order_sensitive: bool,
+    pub judge_position_bias: Option<f64>,
+    pub judge_test_retest: Option<f64>,
+    pub judge_family_warning: Option<String>,
+    pub intent_coverage: Option<f64>,
     pub end_state_score: Option<f64>,
     pub end_state_recall: Option<f64>,
     /// 1 − LCS similarity of canonical action sequences against the original.
@@ -585,6 +653,29 @@ pub struct GroupSummary {
     pub exceeds_control: Option<bool>,
     /// validated | partial | refuted | inconclusive (majority thresholds, after arXiv 2512.06749).
     pub verdict: String,
+    /// Wilson 95% interval for pass@1.
+    pub pass_at_1_ci: (f64, f64),
+    /// Share of replicates whose judge verdict flipped under order swap.
+    pub order_sensitive_rate: Option<f64>,
+    pub mean_judge_position_bias: Option<f64>,
+    pub mean_judge_test_retest: Option<f64>,
+    pub mean_intent_coverage: Option<f64>,
+    /// Judge-quality warning (high tie rate, position bias above the gate, family asymmetry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_warning: Option<String>,
+}
+
+/// Spread of a metric across simulator models for the same target (simulator effect size).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatorSpread {
+    pub harness: Option<Harness>,
+    pub model: Option<String>,
+    pub simulators: usize,
+    pub pass_at_1_min: f64,
+    pub pass_at_1_max: f64,
+    pub judge_min: Option<f64>,
+    pub judge_max: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -596,6 +687,11 @@ pub struct MatrixSummary {
     pub judged: bool,
     pub entries: Vec<ReplicateEntry>,
     pub groups: Vec<GroupSummary>,
+    /// Between-simulator spread per target, when several simulator models were run.
+    #[serde(default)]
+    pub simulator_spread: Vec<SimulatorSpread>,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 fn entry_from(label: &str, original: &Session, control: bool, sim_model: Option<String>, requested: usize, outcome: &RerunOutcome, threshold: f64, judged: bool) -> ReplicateEntry {
@@ -625,6 +721,10 @@ fn entry_from(label: &str, original: &Session, control: bool, sim_model: Option<
         judge_score,
         judge_winner: report.judge.as_ref().map(|j| j.winner.clone()),
         order_sensitive: report.judge.as_ref().is_some_and(|j| j.order_sensitive),
+        judge_position_bias: report.judge.as_ref().map(|j| j.position_bias),
+        judge_test_retest: report.judge.as_ref().and_then(|j| j.test_retest),
+        judge_family_warning: report.judge.as_ref().and_then(|j| j.family_warning.clone()),
+        intent_coverage: report.intent_coverage.as_ref().map(|ic| ic.score),
         end_state_score: end_state,
         end_state_recall: report.end_state.as_ref().map(|e| e.recall),
         tool_sequence_distance: distance,
@@ -697,6 +797,25 @@ pub fn summarize(entries: Vec<ReplicateEntry>, run_dir: PathBuf, replicates: usi
             let ends: Vec<f64> = es.iter().filter_map(|e| e.end_state_score).collect();
             let costs: Vec<f64> = es.iter().filter_map(|e| e.cost_usd).collect();
             let dists: Vec<f64> = es.iter().map(|e| e.tool_sequence_distance).collect();
+            let judged_entries: Vec<&&ReplicateEntry> = es.iter().filter(|e| e.judge_score.is_some()).collect();
+            let order_sensitive_rate = if judged_entries.is_empty() { None } else { Some(judged_entries.iter().filter(|e| e.order_sensitive).count() as f64 / judged_entries.len() as f64) };
+            let biases: Vec<f64> = es.iter().filter_map(|e| e.judge_position_bias).collect();
+            let retests: Vec<f64> = es.iter().filter_map(|e| e.judge_test_retest).collect();
+            let intents: Vec<f64> = es.iter().filter_map(|e| e.intent_coverage).collect();
+            let mut warnings: Vec<String> = Vec::new();
+            if let Some(r) = order_sensitive_rate {
+                if r >= 0.5 && judged_entries.len() >= 2 {
+                    warnings.push(format!("{:.0}% of verdicts flipped on order swap: treat this as a judge-quality problem, not as 'no difference'", r * 100.0));
+                }
+            }
+            if let Some(b) = mean(&biases) {
+                if b >= 0.10 {
+                    warnings.push(format!("mean position bias {b:.2} is above the 0.10 reliability gate"));
+                }
+            }
+            if let Some(w) = es.iter().find_map(|e| e.judge_family_warning.clone()) {
+                warnings.push(w);
+            }
             GroupSummary {
                 harness: h,
                 model: m,
@@ -724,22 +843,61 @@ pub fn summarize(entries: Vec<ReplicateEntry>, run_dir: PathBuf, replicates: usi
                 earliest_divergent_turn: es.iter().filter_map(|e| e.first_divergent_turn).min(),
                 exceeds_control: None,
                 verdict: verdict(passes, clean, es.len()).into(),
+                pass_at_1_ci: wilson(passes, es.len()),
+                order_sensitive_rate,
+                mean_judge_position_bias: mean(&biases),
+                mean_judge_test_retest: mean(&retests),
+                mean_intent_coverage: mean(&intents),
+                judge_warning: if warnings.is_empty() { None } else { Some(warnings.join("; ")) },
             }
         })
         .collect();
-    let control_max = groups.iter().find(|g| g.control).map(|g| g.max_distance);
-    if let Some(cm) = control_max {
-        for g in groups.iter_mut().filter(|g| !g.control) {
-            g.exceeds_control = Some(g.mean_distance > cm);
+    // the simulator model is a blocking factor: compare targets only against the control run with the same simulator
+    let controls: Vec<(Option<String>, f64)> = groups.iter().filter(|g| g.control).map(|g| (g.simulator_model.clone(), g.max_distance)).collect();
+    let mut notes: Vec<String> = Vec::new();
+    for g in groups.iter_mut().filter(|g| !g.control) {
+        if let Some((_, cm)) = controls.iter().find(|(sim, _)| *sim == g.simulator_model) {
+            g.exceeds_control = Some(g.mean_distance > *cm);
+        } else if !controls.is_empty() {
+            notes.push(format!("no control group shares simulator {:?}; the comparison against the noise floor is skipped for that group", g.simulator_model));
         }
     }
-    MatrixSummary { run_dir, replicates, pass_threshold: threshold, judged, entries, groups }
+    let mut simulator_spread: Vec<SimulatorSpread> = Vec::new();
+    let mut targets: Vec<(Option<Harness>, Option<String>, bool)> = Vec::new();
+    for g in &groups {
+        let k = (g.harness, g.model.clone(), g.control);
+        if !targets.contains(&k) {
+            targets.push(k);
+        }
+    }
+    for (h, m, control) in targets {
+        let gs: Vec<&GroupSummary> = groups.iter().filter(|g| g.harness == h && g.model == m && g.control == control && g.simulator_model.is_some()).collect();
+        if gs.len() >= 2 {
+            let judges: Vec<f64> = gs.iter().filter_map(|g| g.mean_judge).collect();
+            simulator_spread.push(SimulatorSpread {
+                harness: h,
+                model: m,
+                simulators: gs.len(),
+                pass_at_1_min: gs.iter().map(|g| g.pass_at_1).fold(1.0, f64::min),
+                pass_at_1_max: gs.iter().map(|g| g.pass_at_1).fold(0.0, f64::max),
+                judge_min: judges.iter().cloned().reduce(f64::min),
+                judge_max: judges.iter().cloned().reduce(f64::max),
+            });
+        }
+    }
+    if groups.iter().any(|g| g.simulator_model.is_some()) {
+        notes.push("simulated-user pass rates are relative comparisons between groups sharing a simulator, not absolute task success: simulators inflate agent success by roughly 14–20 points against real users (arXiv 2603.11245, 2601.17087)".into());
+    }
+    if replicates <= 3 {
+        notes.push(format!("{replicates} replicate(s) per group cannot resolve differences below roughly 10 percentage points; the pass@1 intervals show the resolution"));
+    }
+    MatrixSummary { run_dir, replicates, pass_threshold: threshold, judged, entries, groups, simulator_spread, notes }
 }
 
 pub fn render_matrix_text(m: &MatrixSummary) -> String {
     let c = colors();
     let f = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "-".into());
-    let mut out = vec![format!("{}replicates: {} per simulator model; pass = no errors, all turns, judge ≥ {:.1}{}{}", c.bold, m.replicates, m.pass_threshold, if m.judged { "" } else { " (no judge: pass = completed cleanly)" }, c.reset)];
+    let mut out = vec![format!("{}replicates: {} per group; pass = no errors, all turns, judge ≥ {:.1}{}{}", c.bold, m.replicates, m.pass_threshold, if m.judged { "" } else { " (no judge: pass = completed cleanly)" }, c.reset)];
     out.push(format!("{}{}{}{}{}{}{}{}{}{}", pad("replicate", 22), pad("model", 20), pad("turns", 7), pad("errs", 5), pad("tools", 6), pad("out tok", 9), pad("judge", 7), pad("end/recall", 11), pad("dist@turn", 10), "pass"));
     for e in &m.entries {
         out.push(format!(
@@ -787,9 +945,30 @@ pub fn render_matrix_text(m: &MatrixSummary) -> String {
                 None => String::new(),
             }
         ));
+        out.push(format!("    pass@1 95% CI [{:.2}, {:.2}]{}{}{}{}",
+            g.pass_at_1_ci.0, g.pass_at_1_ci.1,
+            g.order_sensitive_rate.map(|r| format!("  judge order-sensitive rate {:.2}", r)).unwrap_or_default(),
+            g.mean_judge_position_bias.map(|b| format!("  position bias {b:.2}")).unwrap_or_default(),
+            g.mean_judge_test_retest.map(|t| format!("  test-retest {t:.2}")).unwrap_or_default(),
+            g.mean_intent_coverage.map(|i| format!("  intent coverage {i:.2}")).unwrap_or_default(),
+        ));
+        if let Some(w) = &g.judge_warning {
+            out.push(format!("    {}⚠ judge: {w}{}", c.yellow, c.reset));
+        }
+    }
+    for sp in &m.simulator_spread {
+        out.push(format!("{}between-simulator spread{} for {}{}: pass@1 {:.2}..{:.2}{} across {} simulators — compare this with the between-target spread; when it dominates, the simulator is the finding",
+            c.bold, c.reset,
+            sp.harness.map(|h| h.to_string()).unwrap_or_default(), sp.model.as_ref().map(|m| format!("/{m}")).unwrap_or_default(),
+            sp.pass_at_1_min, sp.pass_at_1_max,
+            match (sp.judge_min, sp.judge_max) { (Some(a), Some(b)) => format!(", judge {a:.1}..{b:.1}"), _ => String::new() },
+            sp.simulators));
     }
     if !m.groups.iter().any(|g| g.control) && m.groups.len() > 1 {
         out.push(format!("{}no control group: add --control to measure the same-model noise floor before calling a difference real{}", c.dim, c.reset));
+    }
+    for n in &m.notes {
+        out.push(format!("{}note: {n}{}", c.dim, c.reset));
     }
     out.join("\n")
 }
@@ -807,7 +986,23 @@ pub fn render_matrix_markdown(m: &MatrixSummary) -> String {
     md.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|".into());
     for g in &m.groups {
         let name = format!("{}{}{}{}", if g.control { "control " } else { "" }, g.harness.map(|h| h.to_string()).unwrap_or_default(), g.model.as_ref().map(|m| format!("/{m}")).unwrap_or_default(), g.simulator_model.as_ref().map(|s| format!(" sim={s}")).unwrap_or_default());
-        md.push(format!("| {} | {} | {} | {:.2} | {:.2} | {} | {} | {}..{} | {} | {:.2} | {:.2}..{:.2} | {} | {} |", name, g.n, g.verdict, g.pass_at_1, g.principled_pass_at_1, if g.pass_pow_k { "yes" } else { "no" }, f(g.mean_judge), f(g.min_judge), f(g.max_judge), f(g.mean_end_state), g.mean_distance, g.min_distance, g.max_distance, match g.exceeds_control { Some(true) => "beyond noise floor", Some(false) => "within noise floor", None => "-" }, if g.disagree { "replicates disagree" } else { "" }));
+        let mut note = vec![];
+        if g.disagree {
+            note.push("replicates disagree".to_string());
+        }
+        if let Some(w) = &g.judge_warning {
+            note.push(format!("judge: {w}"));
+        }
+        md.push(format!("| {} | {} | {} | {:.2} [{:.2}, {:.2}] | {:.2} | {} | {} | {}..{} | {} | {:.2} | {:.2}..{:.2} | {} | {} |", name, g.n, g.verdict, g.pass_at_1, g.pass_at_1_ci.0, g.pass_at_1_ci.1, g.principled_pass_at_1, if g.pass_pow_k { "yes" } else { "no" }, f(g.mean_judge), f(g.min_judge), f(g.max_judge), f(g.mean_end_state), g.mean_distance, g.min_distance, g.max_distance, match g.exceeds_control { Some(true) => "beyond noise floor", Some(false) => "within noise floor", None => "-" }, note.join("; ")));
+    }
+    if !m.simulator_spread.is_empty() {
+        md.extend([String::new(), "| target | simulators | pass@1 spread | judge spread |".into(), "|---|---|---|---|".into()]);
+        for sp in &m.simulator_spread {
+            md.push(format!("| {}{} | {} | {:.2}..{:.2} | {} |", sp.harness.map(|h| h.to_string()).unwrap_or_default(), sp.model.as_ref().map(|m| format!("/{m}")).unwrap_or_default(), sp.simulators, sp.pass_at_1_min, sp.pass_at_1_max, match (sp.judge_min, sp.judge_max) { (Some(a), Some(b)) => format!("{a:.1}..{b:.1}"), _ => "-".into() }));
+        }
+    }
+    for n in &m.notes {
+        md.push(format!("\n> {n}"));
     }
     md.join("\n")
 }

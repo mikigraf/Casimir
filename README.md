@@ -54,13 +54,17 @@ casimir export <session> -o out.md|out.json
 casimir rerun <session> [--harness H] [--model M] [--user verbatim|simulate]
                         [--workspace auto|worktree|same|DIR] [--turns N]
                         [--replicates N] [--control] [--sim-model M ...] [--sim-llm B]
-                        [--judge] [--judge-model M] [--judge-llm B] [--pass-threshold 7]
+                        [--judge] [--judge-model M] [--judge-llm B] [--judge-repeats N]
+                        [--brief FILE] [--pass-threshold 7]
                         [--llm auto|api|claude-cli|cmd] [--llm-model M]
                         [--original-diff RUN_DIR] [-o DIR] [--dry-run]
                         [-- extra args for the harness CLI]
 casimir fork <session> --at-turn N [--message "..."] [rerun options]
 casimir attribute <session> [--turns-at 2,3,4] [rerun options]
-casimir compare <a> <b> [--judge] [--judge-model M] [--format text|md|json]
+casimir compare <a> <b> [--judge] [--judge-model M] [--judge-repeats N] [--brief FILE] [--format text|md|json]
+casimir brief <session> [-o brief.json]          draft a per-session rubric / analysis / intents for review
+casimir pairs <run-dir>... -o DIR                blinded original-vs-simulated pairs for human spot checks
+casimir pairs-score <pairs.key.json> <answers.json>
 casimir runs
 ```
 
@@ -113,13 +117,40 @@ and canonical action-sequence similarity are shown too, but only as descriptive 
 commit before the session ended, or, failing that, the working tree against the base commit
 (labelled as a heuristic in the report).
 
-### Judging without position bias
+### Judging: position, repeatability, family, and rubric
 
-LLM judges flip their verdict when the two candidates are swapped, most often when the candidates
-are close in quality. `--judge` therefore always asks twice, with A and B in both orders, averages
-the scores, and reports a **tie flagged as order-sensitive** when the two verdicts disagree. A
-close-call warning appears when the averaged scores are within one point. Both passes are recorded
-in `report.json`.
+LLM judges flip their verdict when the two candidates are swapped, and the flip rate is large:
+42 to 79 percent of pairs for open-weight judges in one study, with production judges showing a
+first-slot preference of 0.125 to 0.192 (arXiv 2609.17857, 2606.19544). `--judge` therefore always
+asks in both orders, averages the scores, and reports a **tie flagged as order-sensitive** when
+the two verdicts disagree. The tie is the headline; the averaged scores remain the primary
+continuous outcome, and a high tie rate across replicates is reported as a judge-quality problem,
+not as "no difference".
+
+Every judgement reports the **first-slot win rate** and the resulting **position bias** (its
+distance from 0.5; the reliability gate in arXiv 2606.19544 is below 0.10). Position bias is
+independent of repeatability, so `--judge-repeats N` runs each ordering N times at the same
+settings and reports **test-retest** agreement separately from agent-run variance; a judge with
+test-retest above 0.95 and position bias above 0.10 is flagged **reliable-but-biased**.
+
+Judges also favour their own model family by roughly 3 to 8 points of win share with quality held
+fixed (arXiv 2609.17857). Casimir infers the family of the judge and of both candidates and warns
+when the judge shares a family with exactly one of them, which is the common case of a Claude judge
+comparing Claude Code against another harness. Pick `--judge-model` from another family for the
+headline verdict when that warning appears.
+
+A **per-session brief** grounds the judge in the task. `casimir brief <session>` drafts an
+objective, constraints, intervention conditions, a rubric of 5 to 10 checkable criteria with
+must-have flags, and atomic intents; edit the JSON, set `humanReviewed` to true, and pass
+`--brief`. A human-refined rubric was what lifted judge-human agreement on patch validity from a
+kappa of 0.38 to 0.57 to 0.75 in arXiv 2511.10865; the same paper found 43.5 percent of
+test-passing agent patches judged invalid, so the judge is also asked to check root cause and to
+list **invalid reasons** from a fixed taxonomy: requirement violation, root cause not addressed,
+incomplete implementation, new issues introduced. Reruns that judge or simulate draft a brief
+automatically into the run directory when none is passed.
+
+End-state similarity measures agreement with one human trajectory, not correctness; the report
+labels it as such and never uses it as a validity signal.
 
 ### Live re-execution, not log stitching
 
@@ -211,6 +242,25 @@ transcript and recorded with `simulated: {verbatim, reason, grounded_in}`; the s
 backend are stored on the session and shown in every comparison, because the choice of simulator
 alone measurably shifts agent outcomes.
 
+**Simulator calibration.** LLM user simulators make tasks easier: against 451 real users, agent
+success was 63.6 percent, while most simulators put it 14 to 20 points higher, and swapping only
+the simulator model moved agent success by about 9 points (arXiv 2603.11245, 2601.17087). Casimir
+therefore treats the simulator as a blocking factor: groups are keyed by simulator model, the
+control-group comparison is only made between groups sharing a simulator, the matrix reports the
+**between-simulator spread** next to the between-target spread, and simulated pass rates are
+labelled as relative comparisons rather than absolute task success. Persona prompting does not
+close the gap and can widen it, so casimir measures the residual **simulator drift** instead:
+lexicon counters over the adapted turns versus the recorded human's own turns in the same session
+(short turns, politeness, hedging, pivots, questions, em dashes, identifier tokens, words per turn).
+When a brief is available and a judge runs, **intent coverage** is computed as in SWE-Together
+(arXiv 2606.29957): recall of the original intents re-expressed by the simulated user and
+precision of simulated messages that stay in scope, combined as 0.7 recall plus 0.3 precision.
+The simulator is conditioned on the brief's session analysis, may answer **no-op** at a turn whose
+intent is already satisfied, and labels every message it sends as verbatim, answer, question,
+redirect, or new requirement. For occasional human checks, `casimir pairs` exports blinded
+original-versus-simulated message pairs with a separate key, and `casimir pairs-score` reports the
+Turing pass rate with a Wilson interval (0.5 means indistinguishable).
+
 The simulator (`--sim-model`, `--sim-llm`) and the judge (`--judge-model`, `--judge-llm`) are
 configured independently and default to `--llm-model` / `--llm`. They use `claude-opus-5` through
 the Anthropic Messages API (via `curl`) when credentials are available (`ANTHROPIC_API_KEY`,
@@ -280,4 +330,13 @@ Environment knobs: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `GEMINI_CL
 - Copilot CLI and Gemini CLI store formats are undocumented or internal and may change; their
   adapters were validated against real files written by the current CLI versions and against
   fixtures, not against long-running sessions.
-- Replicates and order-swapped judging multiply API cost: N replicates × 2 judge calls each.
+- Replicates and order-swapped judging multiply API cost: N replicates × 2 × `--judge-repeats`
+  judge calls, plus one brief draft and one intent-coverage call per run.
+- Replicate statistics are thin: the per-group pass@1 interval is a Wilson interval treating
+  replicates as independent, and three replicates cannot resolve differences below roughly ten
+  percentage points; the report says so. No verified guidance on temperature or seed effects,
+  serving-stack variance, or adaptive stopping was found.
+- No trace export format is offered. Two research passes produced no verified evidence on which
+  schema (OpenTelemetry GenAI conventions, OpenInference, SWE-agent or OpenHands trajectories) a
+  tool like this should target, so the normalized `session.json` and `record.jsonl` stay the
+  interchange formats rather than an unverified mapping.

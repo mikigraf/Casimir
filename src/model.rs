@@ -106,6 +106,9 @@ pub struct Simulated {
     /// Original turn numbers the simulator says it drew the message from.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grounded_in: Vec<u32>,
+    /// verbatim | answer | question | redirect | new_requirement | intervention (SWE-Together action labels).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 /// Which model played the user in a rerun (recorded so simulator-induced variance is visible).
@@ -882,4 +885,142 @@ pub fn action_counts(session: &Session) -> BTreeMap<String, usize> {
 /// Canonical action-kind sequence (tool actions only), for cross-harness trajectory comparison.
 pub fn action_sequence(session: &Session) -> Vec<String> {
     actions(session).into_iter().filter(|a| a.kind != ActionKind::Reason).map(|a| if a.validation { "validate".to_string() } else { a.kind.as_str().to_string() }).collect()
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Model families (for judge self-preference warnings) and lexicon counters (simulator drift)
+
+/// Vendor family of a model name ("anthropic", "openai", "google", …), or "unknown".
+pub fn model_family(model: &str) -> &'static str {
+    let m = model.to_ascii_lowercase();
+    let m = m.rsplit('/').next().unwrap_or(&m);
+    if m.starts_with("claude") || m == "sonnet" || m == "opus" || m == "haiku" || m == "fable" || m.starts_with("mythos") {
+        "anthropic"
+    } else if m.starts_with("gpt") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") || m.contains("codex") || m.starts_with("chatgpt") || m.starts_with("davinci") {
+        "openai"
+    } else if m.starts_with("gemini") || m.starts_with("gemma") || m.starts_with("palm") {
+        "google"
+    } else if m.starts_with("llama") || m.contains("llama") {
+        "meta"
+    } else if m.starts_with("qwen") || m.starts_with("qwq") {
+        "alibaba"
+    } else if m.starts_with("deepseek") {
+        "deepseek"
+    } else if m.starts_with("mistral") || m.starts_with("mixtral") || m.starts_with("codestral") || m.starts_with("devstral") {
+        "mistral"
+    } else if m.starts_with("kimi") || m.starts_with("moonshot") {
+        "moonshot"
+    } else if m.starts_with("grok") {
+        "xai"
+    } else if m.starts_with("minimax") {
+        "minimax"
+    } else if m.starts_with("glm") || m.starts_with("chatglm") {
+        "zhipu"
+    } else if m.starts_with("phi") {
+        "microsoft"
+    } else if m.starts_with("command") || m.starts_with("cohere") {
+        "cohere"
+    } else if m.starts_with("yi") {
+        "01ai"
+    } else {
+        "unknown"
+    }
+}
+
+/// Lexicon counters over a set of user turns (after arXiv 2603.11245's D1–D4 drift taxonomy).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Lexicon {
+    pub turns: usize,
+    /// Share of turns with <= 3 words.
+    pub short_turn_rate: f64,
+    /// Share of turns containing please / thanks / thank you / sorry.
+    pub polite_rate: f64,
+    /// Share of turns containing maybe / not sure / I think / perhaps / I guess.
+    pub hedge_rate: f64,
+    /// Share of turns containing instead / on second thought / let's try / actually.
+    pub pivot_rate: f64,
+    /// Share of turns containing a question mark.
+    pub question_rate: f64,
+    /// Share of turns containing an em dash.
+    pub em_dash_rate: f64,
+    /// Identifier-like tokens (snake_case, camelCase, dotted paths, backticked) per turn.
+    pub identifier_tokens_per_turn: f64,
+    pub mean_words: f64,
+}
+
+fn looks_like_identifier(tok: &str) -> bool {
+    let t = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '.' && c != '/' && c != '`');
+    if t.is_empty() {
+        return false;
+    }
+    if t.starts_with('`') && t.ends_with('`') && t.len() > 2 {
+        return true;
+    }
+    let has_sep = t.contains('_') || (t.contains('.') && !t.ends_with('.')) || t.contains('/');
+    let camel = t.chars().any(|c| c.is_ascii_lowercase()) && t.chars().skip(1).any(|c| c.is_ascii_uppercase());
+    let ext = t.rsplit('.').next().is_some_and(|e| matches!(e, "py" | "rs" | "js" | "ts" | "tsx" | "go" | "java" | "md" | "json" | "toml" | "yaml" | "yml" | "sh" | "c" | "h" | "cpp" | "rb"));
+    (has_sep && t.chars().any(|c| c.is_alphabetic())) || camel || ext
+}
+
+pub fn lexicon_of<'a, I: IntoIterator<Item = &'a str>>(turns: I) -> Lexicon {
+    let mut lx = Lexicon::default();
+    let mut words_total = 0usize;
+    let mut idents = 0usize;
+    let (mut short, mut polite, mut hedge, mut pivot, mut question, mut em) = (0, 0, 0, 0, 0, 0);
+    for t in turns {
+        lx.turns += 1;
+        let lower = t.to_ascii_lowercase();
+        let words: Vec<&str> = t.split_whitespace().collect();
+        words_total += words.len();
+        if words.len() <= 3 {
+            short += 1;
+        }
+        if ["please", "thanks", "thank you", "sorry"].iter().any(|w| lower.contains(w)) {
+            polite += 1;
+        }
+        if ["maybe", "not sure", "i think", "perhaps", "i guess"].iter().any(|w| lower.contains(w)) {
+            hedge += 1;
+        }
+        if ["instead", "on second thought", "let's try", "actually"].iter().any(|w| lower.contains(w)) {
+            pivot += 1;
+        }
+        if t.contains('?') {
+            question += 1;
+        }
+        if t.contains('\u{2014}') {
+            em += 1;
+        }
+        idents += words.iter().filter(|w| looks_like_identifier(w)).count();
+    }
+    if lx.turns > 0 {
+        let n = lx.turns as f64;
+        lx.short_turn_rate = short as f64 / n;
+        lx.polite_rate = polite as f64 / n;
+        lx.hedge_rate = hedge as f64 / n;
+        lx.pivot_rate = pivot as f64 / n;
+        lx.question_rate = question as f64 / n;
+        lx.em_dash_rate = em as f64 / n;
+        lx.identifier_tokens_per_turn = idents as f64 / n;
+        lx.mean_words = words_total as f64 / n;
+    }
+    lx
+}
+
+/// Simulator drift: the simulated (adapted) user turns of a rerun versus the recorded human's turns.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatorDrift {
+    pub human: Lexicon,
+    pub simulated: Lexicon,
+}
+
+pub fn simulator_drift(original: &Session, rerun: &Session) -> Option<SimulatorDrift> {
+    let simulated: Vec<&str> = rerun.events.iter().filter(|e| e.kind == EventKind::User && !e.sidechain && e.simulated.as_ref().is_some_and(|s| !s.verbatim)).map(|e| e.text_str()).collect();
+    if simulated.is_empty() {
+        return None;
+    }
+    let human: Vec<&str> = original.events.iter().filter(|e| e.kind == EventKind::User && !e.sidechain && e.simulated.is_none()).map(|e| e.text_str()).collect();
+    Some(SimulatorDrift { human: lexicon_of(human), simulated: lexicon_of(simulated) })
 }

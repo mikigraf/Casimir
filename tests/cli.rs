@@ -1,7 +1,9 @@
 use casimir::adapters::{claude_code, codex, copilot, gemini, load_session_file, resolve_session};
-use casimir::compare::{compare_sessions, end_state_similarity, first_divergent_turn, judge_sessions, relativize, render_compare_markdown, sequence_similarity};
+use casimir::brief::{draft_brief, intent_coverage, Brief};
+use casimir::compare::{compare_sessions, end_state_similarity, first_divergent_turn, judge_sessions, judge_sessions_with, relativize, render_compare_markdown, render_compare_text, sequence_similarity, JudgeOpts};
+use casimir::pairs::{export_pairs, score_pairs};
 use casimir::llm::LlmOpts;
-use casimir::model::{actions, anti_patterns, classify_shell, files_touched, final_assistant_text, is_validation_command, stats, tool_one_liner, user_turns, ActionKind, Event, EventKind, Harness, Session, Usage};
+use casimir::model::{actions, anti_patterns, classify_shell, files_touched, final_assistant_text, is_validation_command, lexicon_of, model_family, simulator_drift, stats, tool_one_liner, user_turns, ActionKind, Event, EventKind, Harness, Session, Usage};
 use casimir::render::{render_markdown, render_transcript, RenderOpts};
 use casimir::rerun::{attribute, rerun, rerun_matrix, verdict, wilson, RerunOpts};
 use casimir::simulate::{simulate_user_turn, SimState};
@@ -678,4 +680,173 @@ fn attribution_finds_the_point_of_commitment() {
     assert_eq!(att.point_of_commitment, Some(2));
     assert!(out_dir.join("attribution.json").exists());
     assert!(out_dir.join("turn2/r1/session.json").exists());
+}
+
+#[test]
+fn judge_repeats_measure_position_bias_and_test_retest() {
+    setup_env();
+    let a = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let b = codex::parse_file(&fx("codex.jsonl")).unwrap();
+    let jo = JudgeOpts { repeats: 2, ..JudgeOpts::new(fake_llm("judge-flip")) };
+    let j = judge_sessions_with(&a, &b, None, None, &jo).unwrap();
+    assert_eq!(j.repeats, 2);
+    assert_eq!(j.passes.len(), 4);
+    assert!((j.first_slot_win_rate - 1.0).abs() < 1e-9, "the biased fake judge always picks the first slot");
+    assert!((j.position_bias - 0.5).abs() < 1e-9);
+    assert_eq!(j.test_retest, Some(1.0), "…and does so repeatably");
+    assert!(j.reliable_but_biased);
+    assert!(j.order_sensitive);
+    assert_eq!(j.winner, "tie");
+    // family inference and the asymmetric-family warning
+    assert_eq!(model_family("claude-opus-5"), "anthropic");
+    assert_eq!(model_family("gpt-5-codex"), "openai");
+    assert_eq!(model_family("gemini-2.5-pro"), "google");
+    assert_eq!(model_family("fake:judge"), "unknown");
+    let jo2 = JudgeOpts { llm: fake_llm("judge-consistent"), repeats: 1, brief: None, model_a: Some("claude-opus-5".into()), model_b: Some("gpt-5-codex".into()) };
+    let mut anthropic_judge = jo2.clone();
+    anthropic_judge.llm.model = Some("claude-sonnet-5".into());
+    // the cmd backend ignores the model name except for the mode suffix, so this exercises the warning only
+    let j2 = judge_sessions_with(&a, &b, None, None, &anthropic_judge).unwrap();
+    assert_eq!(j2.judge_family, "anthropic");
+    assert_eq!(j2.family_a, "anthropic");
+    assert_eq!(j2.family_b, "openai");
+    assert!(j2.family_warning.as_deref().unwrap().contains("candidate A only"));
+    let same_both = JudgeOpts { model_a: Some("claude-opus-5".into()), model_b: Some("claude-sonnet-5".into()), ..anthropic_judge.clone() };
+    assert!(judge_sessions_with(&a, &b, None, None, &same_both).unwrap().family_warning.is_none(), "symmetric families raise no warning");
+    let text = render_compare_text(&compare_sessions(&a, &b, None, None, Some(j.clone())), "A", "B");
+    assert!(text.contains("reliable-but-biased"));
+    assert!(text.contains("position bias 0.50"));
+}
+
+#[test]
+fn brief_rubric_invalid_reasons_and_intent_coverage() {
+    setup_env();
+    let a = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let b = codex::parse_file(&fx("codex.jsonl")).unwrap();
+    let brief = draft_brief(&a, None, &fake_llm("brief")).unwrap();
+    assert_eq!(brief.criteria.len(), 3);
+    assert!(brief.criteria[0].must);
+    assert_eq!(brief.intents.len(), 3);
+    assert!(!brief.human_reviewed);
+    assert!(brief.rubric_text().contains("[C1] MUST"));
+    assert!(brief.analysis_text().contains("intervened"));
+    let dir = tmp("brief");
+    brief.save(&dir.join("brief.json")).unwrap();
+    let loaded = Brief::load(&dir.join("brief.json")).unwrap();
+    assert_eq!(loaded, brief);
+    let jo = JudgeOpts { brief: Some(loaded.clone()), ..JudgeOpts::new(fake_llm("judge-consistent")) };
+    let j = judge_sessions_with(&a, &b, None, None, &jo).unwrap();
+    assert!(j.rubric);
+    // intent coverage: turn 1 verbatim by construction covers I1, I2; the fake matcher covers I3 and scopes message 0
+    let mut rerun_s = a.clone();
+    rerun_s.events.iter_mut().filter(|e| e.kind == EventKind::User && e.turn == 2).for_each(|e| {
+        e.text = Some("please use World as the default".into());
+        e.simulated = Some(casimir::model::Simulated { verbatim: false, reason: "adapted".into(), grounded_in: vec![2], action: Some("redirect".into()) });
+    });
+    let ic = intent_coverage(&loaded, &rerun_s, &fake_llm("intent")).unwrap().unwrap();
+    assert_eq!(ic.intents, 3);
+    assert_eq!(ic.covered.len(), 3);
+    assert!((ic.recall - 1.0).abs() < 1e-9);
+    assert!((ic.precision - 1.0).abs() < 1e-9);
+    assert!((ic.score - 1.0).abs() < 1e-9);
+    assert!(intent_coverage(&loaded, &a, &fake_llm("intent")).unwrap().is_none(), "no simulated turns → nothing to cover");
+}
+
+#[test]
+fn lexicon_counters_and_simulator_drift() {
+    let lx = lexicon_of(["ok", "Please fix lib.py, thanks", "Maybe use greet_name instead?", "Fix — now"]);
+    assert_eq!(lx.turns, 4);
+    assert!((lx.short_turn_rate - 0.5).abs() < 1e-9, "'ok' and 'Fix — now' are <= 3 words");
+    assert!((lx.polite_rate - 0.25).abs() < 1e-9);
+    assert!((lx.hedge_rate - 0.25).abs() < 1e-9);
+    assert!((lx.pivot_rate - 0.25).abs() < 1e-9);
+    assert!((lx.question_rate - 0.25).abs() < 1e-9);
+    assert!((lx.em_dash_rate - 0.25).abs() < 1e-9);
+    assert!((lx.identifier_tokens_per_turn - 0.5).abs() < 1e-9, "lib.py and greet_name");
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    assert!(simulator_drift(&original, &original).is_none());
+    let mut rerun_s = original.clone();
+    rerun_s.events.iter_mut().filter(|e| e.kind == EventKind::User && e.turn == 2).for_each(|e| {
+        e.text = Some("Could you please also default it to World? Thanks!".into());
+        e.simulated = Some(casimir::model::Simulated { verbatim: false, reason: "adapted".into(), grounded_in: vec![2], action: Some("answer".into()) });
+    });
+    let d = simulator_drift(&original, &rerun_s).unwrap();
+    assert_eq!(d.human.turns, 2);
+    assert_eq!(d.simulated.turns, 1);
+    assert!((d.simulated.polite_rate - 1.0).abs() < 1e-9 && d.human.polite_rate == 0.0);
+    let text = render_compare_text(&compare_sessions(&original, &rerun_s, None, None, None), "A", "B");
+    assert!(text.contains("simulator drift"));
+}
+
+#[test]
+fn simulated_rerun_with_brief_noop_and_pairs_export() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let out_dir = tmp("noop");
+    // the simulator says nothing at turn 2 → the run records a no-op and completes without that turn
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, user_mode: "simulate".into(), sim_llm: fake_llm("sim-noop"), judge: true, judge_llm: fake_llm("brief"), run_id: Some("t-noop".into()), ..Default::default() };
+    let res = rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let session = res.session.unwrap();
+    assert!(session.events.iter().any(|e| e.kind == EventKind::System && e.subtype.as_deref() == Some("simulator-noop")));
+    assert_eq!(user_turns(&session).len(), 1);
+    assert!(out_dir.join("brief.json").exists(), "brief drafted into the run directory");
+    let brief = Brief::load(&out_dir.join("brief.json")).unwrap();
+    assert_eq!(brief.intents.len(), 3);
+    let report = res.report.unwrap();
+    assert!(report.judge.as_ref().unwrap().rubric, "judge used the drafted rubric");
+    // an adapted turn: action label recorded, drift + intent coverage in the report, pairs exportable
+    let out2 = tmp("adapt");
+    let opts2 = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out2.clone()), quiet: true, user_mode: "simulate".into(), sim_llm: fake_llm("sim-adapt"), judge: true, judge_llm: fake_llm("brief"), brief: Some(out_dir.join("brief.json")), run_id: Some("t-adapt".into()), ..Default::default() };
+    let res2 = rerun(&original, &opts2, &mut no_log, &mut no_log).unwrap();
+    let s2 = res2.session.unwrap();
+    let t2 = s2.events.iter().find(|e| e.kind == EventKind::User && e.turn == 2).unwrap();
+    assert_eq!(t2.simulated.as_ref().unwrap().action.as_deref(), Some("redirect"));
+    let r2 = res2.report.unwrap();
+    assert!(r2.simulator_drift.is_some());
+    let ic = r2.intent_coverage.expect("intent coverage computed when judged with a brief");
+    assert!((ic.recall - 1.0).abs() < 1e-9);
+    let pairs_dir = tmp("pairs");
+    let exp = export_pairs(&[out2.clone(), out_dir.clone()], &pairs_dir).unwrap();
+    assert_eq!(exp.n, 1, "only the adapted turn yields a pair; the no-op run has none");
+    let key: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&exp.key_path).unwrap()).unwrap();
+    let (pair_id, real) = key.as_object().unwrap().iter().next().map(|(k, v)| (k.clone(), v["real"].as_str().unwrap().to_string())).unwrap();
+    let line = std::fs::read_to_string(&exp.pairs_path).unwrap();
+    assert!(line.contains("please use World as the default") && line.contains("Also make greet default to 'World'"));
+    assert!(!line.contains("\"real\""), "pairs file is blind");
+    // an annotator who always picks the simulated message as human → pass rate 1.0
+    let wrong = if real == "X" { "Y" } else { "X" };
+    std::fs::write(pairs_dir.join("answers.json"), format!("{{\"{pair_id}\": \"{wrong}\"}}")).unwrap();
+    let sc = score_pairs(&exp.key_path, &pairs_dir.join("answers.json")).unwrap();
+    assert_eq!(sc.answered, 1);
+    assert!((sc.pass_rate - 1.0).abs() < 1e-9);
+    std::fs::write(pairs_dir.join("answers2.json"), format!("{{\"{pair_id}\": \"{real}\"}}")).unwrap();
+    assert_eq!(score_pairs(&exp.key_path, &pairs_dir.join("answers2.json")).unwrap().simulator_passed, 0);
+}
+
+#[test]
+fn matrix_reports_judge_quality_spread_and_notes() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let out_dir = tmp("mx");
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir), quiet: true, replicates: 2, judge: true, judge_llm: fake_llm("judge-flip"), user_mode: "simulate".into(), sim_llm: fake_llm("sim-verbatim"), sim_models: vec!["fake:sim-verbatim".into(), "fake:sim-adapt".into()], control: true, run_id: Some("t-mx".into()), ..Default::default() };
+    let (_, m) = rerun_matrix(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let m = m.unwrap();
+    assert_eq!(m.entries.len(), 8, "2 targets (control + target) × 2 simulators × 2 replicates");
+    assert_eq!(m.groups.len(), 4);
+    for g in &m.groups {
+        assert_eq!(g.order_sensitive_rate, Some(1.0));
+        assert!(g.judge_warning.as_deref().unwrap().contains("flipped on order swap"));
+        assert!(g.pass_at_1_ci.0 <= g.pass_at_1 && g.pass_at_1 <= g.pass_at_1_ci.1);
+    }
+    // the control with the same simulator is the noise floor; targets with a different simulator are not compared
+    for g in m.groups.iter().filter(|g| !g.control) {
+        assert!(g.exceeds_control.is_some(), "each target has a control sharing its simulator");
+    }
+    assert_eq!(m.simulator_spread.len(), 2, "one spread per target (control and target)");
+    assert!(m.notes.iter().any(|n| n.contains("relative comparisons")));
+    assert!(m.notes.iter().any(|n| n.contains("cannot resolve")));
+    let text = casimir::rerun::render_matrix_text(&m);
+    assert!(text.contains("between-simulator spread"));
 }
