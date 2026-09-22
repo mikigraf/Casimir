@@ -171,6 +171,19 @@ pub fn render_stats(session: &Session) -> String {
     for (n, k) in sorted_counts(&s.tools_by_name) {
         lines.push(format!("  {} {k}", pad(&n, 24)));
     }
+    lines.push(String::new());
+    lines.push("actions (canonical):".into());
+    for (k, v) in &s.actions {
+        lines.push(format!("  {} {v}", pad(k, 24)));
+    }
+    let ap = &s.anti_patterns;
+    lines.push(String::new());
+    lines.push("process:".into());
+    lines.push(format!("  {} {}", pad("search loops", 24), ap.search_loops));
+    lines.push(format!("  {} {}", pad("re-read churn", 24), if ap.reread_churn_files.is_empty() { "none".to_string() } else { ap.reread_churn_files.join(", ") }));
+    lines.push(format!("  {} {}", pad("verification skipped", 24), if ap.verification_skip { "yes" } else { "no" }));
+    lines.push(format!("  {} {:.0}%", pad("failed-action share", 24), ap.failed_action_share * 100.0));
+    lines.push(format!("  {} {:.0}%", pad("exploration share", 24), ap.exploration_share * 100.0));
     let files = files_touched(session);
     if !files.is_empty() {
         lines.push(String::new());

@@ -1,9 +1,9 @@
 use casimir::adapters::{claude_code, codex, copilot, gemini, load_session_file, resolve_session};
-use casimir::compare::{compare_sessions, end_state_similarity, judge_sessions, relativize, render_compare_markdown, sequence_similarity};
+use casimir::compare::{compare_sessions, end_state_similarity, first_divergent_turn, judge_sessions, relativize, render_compare_markdown, sequence_similarity};
 use casimir::llm::LlmOpts;
-use casimir::model::{files_touched, final_assistant_text, stats, tool_one_liner, user_turns, Event, EventKind, Harness, Session, Usage};
+use casimir::model::{actions, anti_patterns, classify_shell, files_touched, final_assistant_text, is_validation_command, stats, tool_one_liner, user_turns, ActionKind, Event, EventKind, Harness, Session, Usage};
 use casimir::render::{render_markdown, render_transcript, RenderOpts};
-use casimir::rerun::{rerun, rerun_matrix, RerunOpts};
+use casimir::rerun::{attribute, rerun, rerun_matrix, verdict, wilson, RerunOpts};
 use casimir::simulate::{simulate_user_turn, SimState};
 use casimir::util::extract_json;
 use casimir::workspace::{parse_patch, Diff};
@@ -483,4 +483,199 @@ fn replicated_rerun_aggregates_pass_rates() {
     assert!(!stop_group.pass_pow_k, "an out_of_scope stop before the last turn is not a pass");
     let ok_group = m2.groups.iter().find(|g| g.simulator_model.as_deref() == Some("fake:sim-verbatim")).unwrap();
     assert!(ok_group.pass_pow_k);
+}
+
+fn call(turn: u32, id: &str, name: &str, input: serde_json::Value) -> Event {
+    Event::tool_call(turn, "2026-01-01T00:00:00Z", id, name, input)
+}
+
+#[test]
+fn action_taxonomy_maps_tools_and_shell_commands() {
+    assert_eq!(classify_shell("grep -rn foo src").0, ActionKind::Search);
+    assert_eq!(classify_shell("cat src/lib.py"), (ActionKind::FileRead, false, Some("src/lib.py".into())));
+    assert_eq!(classify_shell("cargo test -q"), (ActionKind::Command, true, None));
+    assert_eq!(classify_shell("cd src && ls").0, ActionKind::Navigate);
+    assert_eq!(classify_shell("cat > out.txt <<'EOF'\nhi\nEOF").0, ActionKind::FileWrite);
+    assert!(is_validation_command("python -m pytest tests/"));
+    assert!(!is_validation_command("python setup.py --version"));
+    let s = Session {
+        events: vec![
+            call(1, "a", "Read", json!({ "file_path": "/w/a.py" })),
+            call(1, "b", "Grep", json!({ "pattern": "x" })),
+            call(1, "c", "apply_patch", json!({ "patch": "*** Update File: a.py" })),
+            call(1, "d", "run_shell_command", json!({ "command": "npm test" })),
+            call(1, "e", "shell", json!({ "command": ["bash", "-lc", "rg TODO"] })),
+            call(1, "f", "create", json!({ "path": "/w/b.py" })),
+            call(1, "g", "Task", json!({ "prompt": "explore" })),
+            Event::text(1, "2026-01-01T00:00:00Z", EventKind::Thinking, "hmm"),
+        ],
+        ..Default::default()
+    };
+    let kinds: Vec<ActionKind> = actions(&s).iter().map(|a| a.kind).collect();
+    assert_eq!(kinds, [ActionKind::FileRead, ActionKind::Search, ActionKind::FileWrite, ActionKind::Command, ActionKind::Search, ActionKind::FileWrite, ActionKind::AgentSpawn, ActionKind::Reason]);
+    assert!(actions(&s)[3].validation, "npm test is a validation command even through a generic shell tool");
+    let st = stats(&s);
+    assert_eq!(st.actions.get("file_write"), Some(&2));
+    assert_eq!(st.actions.get("reason"), Some(&1));
+}
+
+#[test]
+fn anti_patterns_follow_the_published_rules() {
+    // search loop: 10 reads/searches with no write and no validation
+    let mut events: Vec<Event> = (0..10).map(|i| call(1, &format!("r{i}"), "Grep", json!({ "pattern": "x" }))).collect();
+    events.push(call(1, "w", "Write", json!({ "file_path": "/w/a.py" })));
+    let ap = anti_patterns(&Session { events: events.clone(), ..Default::default() });
+    assert_eq!(ap.search_loops, 1);
+    assert!(ap.verification_skip, "write with no test afterwards");
+    // nine reads is not a loop; a test after the write clears the skip
+    let mut nine: Vec<Event> = (0..9).map(|i| call(1, &format!("r{i}"), "Grep", json!({ "pattern": "x" }))).collect();
+    nine.push(call(1, "w", "Write", json!({ "file_path": "/w/a.py" })));
+    nine.push(call(1, "t", "Bash", json!({ "command": "pytest -q" })));
+    let ap2 = anti_patterns(&Session { events: nine, ..Default::default() });
+    assert_eq!(ap2.search_loops, 0);
+    assert!(!ap2.verification_skip);
+    assert_eq!(ap2.tool_actions, 11);
+    // re-read churn: same file read three times within ten actions without a write to it
+    let churn = Session {
+        events: vec![
+            call(1, "1", "Read", json!({ "file_path": "/w/a.py" })),
+            call(1, "2", "Read", json!({ "file_path": "/w/b.py" })),
+            call(1, "3", "Read", json!({ "file_path": "/w/a.py" })),
+            call(1, "4", "Read", json!({ "file_path": "/w/a.py" })),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(anti_patterns(&churn).reread_churn_files, ["/w/a.py"]);
+    let no_churn = Session {
+        events: vec![
+            call(1, "1", "Read", json!({ "file_path": "/w/a.py" })),
+            call(1, "2", "Edit", json!({ "file_path": "/w/a.py" })),
+            call(1, "3", "Read", json!({ "file_path": "/w/a.py" })),
+            call(1, "4", "Read", json!({ "file_path": "/w/a.py" })),
+        ],
+        ..Default::default()
+    };
+    assert!(anti_patterns(&no_churn).reread_churn_files.is_empty(), "a write in between resets the window");
+    // failed-action share from tool results
+    let mut failing = Session { events: vec![call(1, "x", "Bash", json!({ "command": "ls" })), call(1, "y", "Bash", json!({ "command": "ls" }))], ..Default::default() };
+    failing.events.push(Event::tool_result(1, "2026-01-01T00:00:01Z", "x", Some("Bash".into()), "boom", true));
+    assert!((anti_patterns(&failing).failed_action_share - 0.5).abs() < 1e-9);
+    // the fixtures: the Claude fixture has a verification attempt (pytest) after its last write
+    let fx_s = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let ap3 = stats(&fx_s).anti_patterns;
+    assert_eq!(ap3.search_loops, 0);
+    assert!(ap3.verification_skip, "the last write (turn 2 Edit) is not followed by a test run");
+}
+
+#[test]
+fn divergence_recall_verdict_and_wilson() {
+    let a = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let mut b = a.clone();
+    assert_eq!(first_divergent_turn(&a, &b), None);
+    // change turn 2's action sequence
+    let idx = b.events.iter().position(|e| e.turn == 2 && e.kind == EventKind::ToolCall).unwrap();
+    b.events[idx] = call(2, "z", "Bash", json!({ "command": "grep x" }));
+    assert_eq!(first_divergent_turn(&a, &b), Some(2));
+    let r = compare_sessions(&a, &b, None, None, None);
+    assert_eq!(r.first_divergent_turn, Some(2));
+    assert!(r.action_sequence_similarity < 1.0 && r.action_sequence_similarity > 0.5);
+    let mut c = a.clone();
+    c.events.retain(|e| e.turn < 2);
+    assert_eq!(first_divergent_turn(&a, &c), Some(2), "missing turn counts as divergence");
+    // recall: B reproduces half of A's lines plus extra lines of its own
+    let pa = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@\n+one\n+two\n";
+    let pb = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@\n+one\n+extra\n+more\n";
+    let es = end_state_similarity(&Diff { patch: pa.into(), ..Default::default() }, &Diff { patch: pb.into(), ..Default::default() });
+    assert!((es.recall - 0.5).abs() < 1e-9);
+    assert!(es.content_similarity < es.recall, "symmetric Jaccard penalizes the extra edits, recall does not");
+    assert_eq!(verdict(2, 3, 3), "validated");
+    assert_eq!(verdict(3, 3, 3), "validated");
+    assert_eq!(verdict(1, 3, 3), "partial");
+    assert_eq!(verdict(0, 3, 3), "refuted");
+    assert_eq!(verdict(0, 1, 3), "inconclusive");
+    let (lo, hi) = wilson(1, 3);
+    assert!(lo > 0.0 && lo < 0.1 && hi > 0.7);
+    assert_eq!(wilson(0, 3).0, 0.0);
+}
+
+#[test]
+fn control_group_measures_the_noise_floor() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let out_dir = tmp("control");
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, replicates: 2, control: true, model: Some("other-model".into()), run_id: Some("t-control".into()), ..Default::default() };
+    let (_, m) = rerun_matrix(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let m = m.unwrap();
+    assert_eq!(m.entries.len(), 4);
+    assert_eq!(m.entries.iter().filter(|e| e.control).count(), 2);
+    assert!(m.entries[0].label.starts_with("control-"));
+    assert_eq!(m.groups.len(), 2);
+    let control = m.groups.iter().find(|g| g.control).unwrap();
+    let target = m.groups.iter().find(|g| !g.control).unwrap();
+    assert_eq!(control.verdict, "validated");
+    assert!(control.exceeds_control.is_none());
+    // both groups run the same fake harness, so the target cannot exceed the control spread
+    assert_eq!(target.exceeds_control, Some(false));
+    assert!(target.mean_distance > 0.0, "fake harness trajectory differs from the original");
+    assert!(m.entries.iter().all(|e| e.first_divergent_turn == Some(1)));
+    assert!(out_dir.join("control-r1/record.jsonl").exists(), "record envelopes written");
+    let rec = std::fs::read_to_string(out_dir.join("control-r1/record.jsonl")).unwrap();
+    assert!(rec.contains("\"address\":\"tool:Write[1]\""));
+    assert!(rec.contains("\"address\":\"model[1]\""));
+}
+
+#[test]
+fn fork_at_turn_prepares_a_truncated_transcript_and_resumes() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let out_dir = tmp("fork");
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, from_turn: Some(2), intervention: Some("Make greet default to 'Earth' instead".into()), run_id: Some("t-fork".into()), ..Default::default() };
+    let res = rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let session = res.session.unwrap();
+    // prefix preserved verbatim from the original
+    let prefix_tools: Vec<&str> = session.events.iter().filter(|e| e.turn == 1 && e.kind == EventKind::ToolCall && !e.sidechain).map(|e| e.tool.as_ref().unwrap().name.as_str()).collect();
+    assert_eq!(prefix_tools, ["Bash", "Edit", "Write", "Bash"]);
+    assert!(session.events.iter().any(|e| e.kind == EventKind::System && e.subtype.as_deref() == Some("fork")));
+    let t2 = session.events.iter().find(|e| e.kind == EventKind::User && e.turn == 2).unwrap();
+    assert_eq!(t2.text_str(), "Make greet default to 'Earth' instead");
+    assert!(t2.simulated.as_ref().unwrap().reason.contains("intervention"));
+    // the harness was resumed with the forked id and ran the intervention
+    let reply = session.events.iter().find(|e| e.kind == EventKind::Assistant && e.turn == 2).unwrap();
+    assert!(reply.text_str().contains("Working on: Make greet default to 'Earth'"));
+    // the truncated transcript exists in the harness's project dir for the worktree/workspace
+    let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("meta.json")).unwrap()).unwrap();
+    assert_eq!(meta["forkedAtTurn"], json!(2));
+    let transcript = PathBuf::from(meta["forkedTranscript"].as_str().unwrap());
+    assert!(transcript.starts_with(std::env::var("CLAUDE_CONFIG_DIR").unwrap()));
+    let forked = claude_code::parse_file(&transcript).unwrap();
+    assert_eq!(user_turns(&forked).len(), 1, "only turn 1 kept");
+    assert_eq!(forked.cwd.as_deref(), Some(repo.display().to_string().as_str()));
+    assert_ne!(forked.id, original.id);
+    // codex fork writes a truncated rollout too
+    let codex_orig = codex::parse_file(&fx("codex.jsonl")).unwrap();
+    let path = codex::prepare_fork(&codex_orig, 2, "eeeeeeee-1111-4222-8333-666666666666", &repo).unwrap();
+    let forked_codex = codex::parse_file(&path).unwrap();
+    assert_eq!(user_turns(&forked_codex).len(), 1);
+    assert_eq!(forked_codex.id, "eeeeeeee-1111-4222-8333-666666666666");
+    assert!(codex::prepare_fork(&codex_orig, 5, "x", &repo).is_err());
+    assert!(casimir::adapters::prepare_fork(Harness::Gemini, &original, 2, "x", &repo).is_err());
+}
+
+#[test]
+fn attribution_finds_the_point_of_commitment() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let out_dir = tmp("attr");
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, replicates: 2, run_id: Some("t-attr".into()), ..Default::default() };
+    let att = attribute(&original, &opts, &[2], &mut no_log, &mut no_log).unwrap();
+    assert_eq!(att.effects.len(), 1);
+    assert_eq!(att.effects[0].n, 2);
+    assert_eq!(att.effects[0].passes, 2, "fake harness always completes cleanly");
+    assert!(att.effects[0].ci_low > 0.0);
+    assert_eq!(att.point_of_commitment, Some(2));
+    assert!(out_dir.join("attribution.json").exists());
+    assert!(out_dir.join("turn2/r1/session.json").exists());
 }

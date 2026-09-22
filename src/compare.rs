@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::llm::{complete_json, effective_model, LlmOpts};
-use crate::model::{files_touched, final_assistant_text, stats, tool_sequence, user_turns, Harness, Session, Usage};
+use crate::model::{action_sequence, actions, files_touched, final_assistant_text, stats, tool_sequence, user_turns, ActionKind, AntiPatterns, Harness, Session, Usage};
 use crate::util::{colors, fmt_duration, fmt_num, indent, pad};
 use crate::workspace::{parse_patch, Diff};
 
@@ -29,6 +29,10 @@ pub struct SideStats {
     pub final_message_chars: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simulator_model: Option<String>,
+    #[serde(default)]
+    pub actions: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub anti_patterns: AntiPatterns,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -85,6 +89,10 @@ pub struct EndState {
     pub score: f64,
     pub files_jaccard: f64,
     pub content_similarity: f64,
+    /// Share of the reference (A) diff's added/removed lines reproduced by B. Recall rather than a
+    /// symmetric measure, so harmless extra edits in B are not penalized (after arXiv 2606.17454).
+    #[serde(default)]
+    pub recall: f64,
     pub files_a: usize,
     pub files_b: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,6 +110,12 @@ pub struct Report {
     pub tools: Vec<ToolRow>,
     /// LCS ratio over tool-name sequences; descriptive only, not a correctness signal.
     pub tool_sequence_similarity: f64,
+    /// LCS ratio over canonical action kinds (comparable across harnesses).
+    #[serde(default)]
+    pub action_sequence_similarity: f64,
+    /// First user turn whose canonical action sequence differs (None = identical trajectories).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_divergent_turn: Option<u32>,
     pub final_a: String,
     pub final_b: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,7 +157,39 @@ fn describe(session: &Session) -> SideStats {
         cost_usd: s.cost_usd,
         final_message_chars: s.final_message_chars,
         simulator_model: session.simulator.as_ref().map(|si| si.model.clone()),
+        actions: s.actions,
+        anti_patterns: s.anti_patterns,
     }
+}
+
+/// Canonical action-kind sequence per user turn.
+pub fn action_sequence_by_turn(session: &Session) -> BTreeMap<u32, Vec<String>> {
+    let mut m: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    for a in actions(session) {
+        if a.kind == ActionKind::Reason {
+            continue;
+        }
+        m.entry(a.turn).or_default().push(if a.validation { "validate".into() } else { a.kind.as_str().into() });
+    }
+    m
+}
+
+/// First user turn whose canonical action sequence differs between two sessions (None = identical).
+pub fn first_divergent_turn(a: &Session, b: &Session) -> Option<u32> {
+    let sa = action_sequence_by_turn(a);
+    let sb = action_sequence_by_turn(b);
+    let ta = user_turns(a).len() as u32;
+    let tb = user_turns(b).len() as u32;
+    let empty: Vec<String> = Vec::new();
+    for t in 1..=ta.max(tb) {
+        if t > ta || t > tb {
+            return Some(t);
+        }
+        if sa.get(&t).unwrap_or(&empty) != sb.get(&t).unwrap_or(&empty) {
+            return Some(t);
+        }
+    }
+    None
 }
 
 fn jaccard<T: Ord>(a: &BTreeSet<T>, b: &BTreeSet<T>) -> f64 {
@@ -174,7 +220,16 @@ pub fn end_state_similarity(a: &Diff, b: &Diff) -> EndState {
         }
         total / union.len() as f64
     };
-    EndState { score: files_jaccard * content_similarity, files_jaccard, content_similarity, files_a: fa.len(), files_b: fb.len(), source_a: a.source.clone(), source_b: b.source.clone() }
+    let mut ref_lines = 0usize;
+    let mut hit = 0usize;
+    for (f, c) in &pa {
+        let la: BTreeSet<String> = c.added.iter().map(|l| format!("+{l}")).chain(c.removed.iter().map(|l| format!("-{l}"))).collect();
+        let lb: BTreeSet<String> = pb.get(f).map(|c| c.added.iter().map(|l| format!("+{l}")).chain(c.removed.iter().map(|l| format!("-{l}"))).collect()).unwrap_or_default();
+        ref_lines += la.len();
+        hit += la.intersection(&lb).count();
+    }
+    let recall = if ref_lines == 0 { 1.0 } else { hit as f64 / ref_lines as f64 };
+    EndState { score: files_jaccard * content_similarity, files_jaccard, content_similarity, recall, files_a: fa.len(), files_b: fb.len(), source_a: a.source.clone(), source_b: b.source.clone() }
 }
 
 /// Longest-common-subsequence ratio between two sequences (2·lcs / (|a|+|b|)).
@@ -224,6 +279,8 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
         },
         tools,
         tool_sequence_similarity: sequence_similarity(&tool_sequence(a), &tool_sequence(b)),
+        action_sequence_similarity: sequence_similarity(&action_sequence(a), &action_sequence(b)),
+        first_divergent_turn: first_divergent_turn(a, b),
         final_a: final_assistant_text(a, None),
         final_b: final_assistant_text(b, None),
         end_state,
@@ -261,10 +318,42 @@ fn rows(r: &Report) -> Vec<(&'static str, String, String)> {
     rows
 }
 
+fn process_rows(r: &Report) -> Vec<(&'static str, String, String)> {
+    let (a, b) = (&r.a.anti_patterns, &r.b.anti_patterns);
+    let yn = |v: bool| if v { "yes".to_string() } else { "no".to_string() };
+    let pct = |v: f64| format!("{:.0}%", v * 100.0);
+    let kinds = ["search", "file_read", "file_write", "command", "fetch", "agent_spawn", "plan", "reason"];
+    let mut rows: Vec<(&'static str, String, String)> = vec![
+        ("search loops (≥10 reads, no write)", a.search_loops.to_string(), b.search_loops.to_string()),
+        ("re-read churn (files)", a.reread_churn_files.len().to_string(), b.reread_churn_files.len().to_string()),
+        ("verification skipped", yn(a.verification_skip), yn(b.verification_skip)),
+        ("failed-action share", pct(a.failed_action_share), pct(b.failed_action_share)),
+        ("exploration share", pct(a.exploration_share), pct(b.exploration_share)),
+    ];
+    for k in kinds {
+        let va = r.a.actions.get(k).copied().unwrap_or(0);
+        let vb = r.b.actions.get(k).copied().unwrap_or(0);
+        if va + vb > 0 {
+            let label: &'static str = match k {
+                "search" => "  actions: search",
+                "file_read" => "  actions: file_read",
+                "file_write" => "  actions: file_write",
+                "command" => "  actions: command",
+                "fetch" => "  actions: fetch",
+                "agent_spawn" => "  actions: agent_spawn",
+                "plan" => "  actions: plan",
+                _ => "  actions: reason",
+            };
+            rows.push((label, va.to_string(), vb.to_string()));
+        }
+    }
+    rows
+}
+
 fn end_state_lines(r: &Report, label_a: &str, label_b: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(es) = &r.end_state {
-        out.push(format!("  end-state similarity: {:.2}  (files {:.2} × content {:.2}; {} vs {} changed files)", es.score, es.files_jaccard, es.content_similarity, es.files_a, es.files_b));
+        out.push(format!("  end-state similarity: {:.2}  (files {:.2} × content {:.2}; {} vs {} changed files)  recall of {label_a}'s changes: {:.2}", es.score, es.files_jaccard, es.content_similarity, es.files_a, es.files_b, es.recall));
         if let Some(s) = &es.source_a {
             out.push(format!("    {label_a} diff: {s}"));
         }
@@ -274,7 +363,11 @@ fn end_state_lines(r: &Report, label_a: &str, label_b: &str) -> Vec<String> {
     } else {
         out.push("  end-state similarity: n/a (need a workspace diff for both sides)".into());
     }
-    out.push(format!("  tool-sequence similarity: {:.2}  (descriptive only)", r.tool_sequence_similarity));
+    out.push(format!("  tool-sequence similarity: {:.2}  action-sequence similarity: {:.2}  (descriptive only)", r.tool_sequence_similarity, r.action_sequence_similarity));
+    out.push(match r.first_divergent_turn {
+        Some(t) => format!("  first divergent turn: {t}"),
+        None => "  first divergent turn: none (identical action sequences)".into(),
+    });
     out
 }
 
@@ -287,6 +380,11 @@ pub fn render_compare_text(r: &Report, label_a: &str, label_b: &str) -> String {
     out.push(String::new());
     out.push(format!("{}outcome{}", c.bold, c.reset));
     out.extend(end_state_lines(r, label_a, label_b));
+    out.push(String::new());
+    out.push(format!("{}process (trajectory anti-patterns, arXiv 2607.06184 rules){}", c.bold, c.reset));
+    for (k, va, vb) in process_rows(r) {
+        out.push(format!("  {}{}{vb}", pad(k, 36), pad(&va, 14)));
+    }
     out.push(String::new());
     out.push(format!("{}tool usage{}", c.bold, c.reset));
     for t in &r.tools {
@@ -351,6 +449,10 @@ pub fn render_compare_markdown(r: &Report, label_a: &str, label_b: &str) -> Stri
     md.extend([String::new(), "## Outcome".into(), String::new()]);
     for l in end_state_lines(r, label_a, label_b) {
         md.push(format!("- {}", l.trim()));
+    }
+    md.extend([String::new(), "## Process".into(), String::new(), format!("| metric | {label_a} | {label_b} |"), "|---|---|---|".into()]);
+    for (k, va, vb) in process_rows(r) {
+        md.push(format!("| {} | {va} | {vb} |", k.trim()));
     }
     md.extend([String::new(), "## Tool usage".into(), String::new(), format!("| tool | {label_a} | {label_b} |"), "|---|---|---|".into()]);
     for t in &r.tools {

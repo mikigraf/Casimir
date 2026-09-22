@@ -53,11 +53,13 @@ casimir export <session> -o out.md|out.json
 
 casimir rerun <session> [--harness H] [--model M] [--user verbatim|simulate]
                         [--workspace auto|worktree|same|DIR] [--turns N]
-                        [--replicates N] [--sim-model M ...] [--sim-llm B]
+                        [--replicates N] [--control] [--sim-model M ...] [--sim-llm B]
                         [--judge] [--judge-model M] [--judge-llm B] [--pass-threshold 7]
                         [--llm auto|api|claude-cli|cmd] [--llm-model M]
                         [--original-diff RUN_DIR] [-o DIR] [--dry-run]
                         [-- extra args for the harness CLI]
+casimir fork <session> --at-turn N [--message "..."] [rerun options]
+casimir attribute <session> [--turns-at 2,3,4] [rerun options]
 casimir compare <a> <b> [--judge] [--judge-model M] [--format text|md|json]
 casimir runs
 ```
@@ -87,6 +89,7 @@ casimir runs
   raw.jsonl       raw harness output
   diff.patch      workspace changes made by the rerun
   original.patch  the original session's changes, when known (see below)
+  record.jsonl    every model reply and tool call as an addressable envelope
   report.md       comparison table (+ judge verdict if requested)
 ```
 
@@ -102,8 +105,10 @@ a non-interactive rerun cannot answer prompts. In-place reruns default to `accep
 
 A rerun that reaches the same end state by a different route is a success, so the comparison
 reports **end-state similarity** between the two workspace diffs: Jaccard over changed files times
-the mean per-file Jaccard over added and removed lines. Tool-sequence similarity is shown too, but
-only as a descriptive number. The original session's diff comes from a run directory
+the mean per-file Jaccard over added and removed lines, plus a **recall** of the reference diff's
+lines reproduced by the other side. Recall does not penalize harmless extra edits, which is why a
+solution-distance study preferred it over a symmetric measure (arXiv 2606.17454). Tool-sequence
+and canonical action-sequence similarity are shown too, but only as descriptive numbers. The original session's diff comes from a run directory
 (`--original-diff`), or is reconstructed from git: the commits between the base commit and the last
 commit before the session ended, or, failing that, the working tree against the base commit
 (labelled as a heuristic in the report).
@@ -116,15 +121,80 @@ the scores, and reports a **tie flagged as order-sensitive** when the two verdic
 close-call warning appears when the averaged scores are within one point. Both passes are recorded
 in `report.json`.
 
+### Live re-execution, not log stitching
+
+A rerun always re-executes the target harness live. Substituting one model's recorded outputs into
+another model's trajectory is not a valid comparison: when live SWE-bench trajectories are forked
+and continued by a different model, most of what follows is rewritten and only a few percent of
+the recorded states remain valid (arXiv 2608.08239). The recorded raw output is kept as an
+addressable record for auditing (see below), never used as a replay source.
+
+### Control groups: the same-model noise floor
+
+The same study found that same-model forks at temperature zero also diverge, by an amount that
+depends on the serving stack. So a swap that "looks different" may be noise. `--control` adds a
+group that reruns the **original** harness and model alongside the target. Every replicate reports
+its divergence from the original: the first user turn whose canonical action sequence differs, and
+a tool-sequence distance (one minus the longest-common-subsequence similarity of canonical
+actions). A target group is only called different when its mean distance exceeds the control
+group's largest distance; otherwise the report says so explicitly.
+
+### Fork at a turn
+
+`casimir fork <session> --at-turn N [--message "..."]` preserves turns 1 to N-1 verbatim, writes a
+truncated transcript under a new session id where the harness will find it, checks out a worktree
+at the last commit before turn N, and resumes the session natively with either the original
+turn-N message (a resample) or an edited one (an intervention). In-situ intervention at the
+suspected failure step flipped 17.6 percent of failed trials in one study, while end-of-trace
+self-refinement flipped none (arXiv 2512.06749). Message-only logs cannot restore the agent's
+state, which is why the fork leans on the harness's own resume: Claude Code and Codex are
+supported; Copilot CLI and Gemini CLI cannot resume a truncated transcript. The plan notes
+whether the workspace before turn N could be restored exactly, from commits, or only heuristically
+(no commit between the session base and turn N although files were edited).
+
+### Attribution: the point of commitment
+
+`casimir attribute <session> --turns-at 2,3,4` resamples the session at each listed turn with
+replicates and reports the pass rate with a Wilson interval per turn. Resampling turn k re-rolls
+everything after it, so early turns show spurious effects; the causal locus is the **latest** turn
+whose interval still excludes zero, the last point at which re-deciding still rescues the run
+(arXiv 2606.08275).
+
+### Process metrics and anti-patterns
+
+Every tool call is mapped onto a canonical action vocabulary (file read, file write, search,
+command, plan, navigate, fetch, agent spawn, reason) so trajectories from different harnesses are
+comparable, and three anti-patterns are labelled with deterministic rules (arXiv 2607.06184): a
+**search loop** is ten or more consecutive search or read actions with no write and no validation
+command; **re-read churn** is the same file read three or more times in a ten-action window with no
+intervening write; a **verification skip** is no recognized test, build, or lint command after the
+last source write. These were more common in failed than in resolved SWE-bench runs (search loops
+56 vs 41 percent, churn 45 vs 34 percent). Stats and comparisons show them together with the
+failed-action share and exploration share. A replicate that passes but shows an anti-pattern is
+flagged as a **lucky pass**, and each group reports a principled pass rate that excludes them
+(after the "lucky pass" analysis in arXiv 2605.12925, where ranking by process quality reordered
+models materially).
+
+### Record envelopes
+
+Each run directory also gets `record.jsonl`: every model reply and every tool call of the rerun as
+an envelope addressed by boundary and occurrence (`model[3]`, `tool:Bash[7]`) with its input,
+output, and drift metadata (harness, version, model, permission mode, sandbox, simulator). This
+follows Chronicle's record design (arXiv 2609.20625) and is bookkeeping for auditing and diffing
+runs; it is not a replay mode.
+
 ### Replicates
 
 Agent runs are noisy, so one rerun is not a result. `--replicates N` runs the same replay N times
 (each in its own worktree and run directory) and reports pass@1 (fraction that passed), pass^k
 (every replicate passed), the judge-score range, end-state similarity, and token and tool-call
 spreads. A replicate passes when it finishes every turn without a harness error and, if judged,
-scores at least `--pass-threshold` (default 7 of 10). Pass one or more `--sim-model` values to run
-the matrix once per simulator model; the summary groups results by simulator so simulator-induced
-variance is visible instead of hidden.
+scores at least `--pass-threshold` (default 7 of 10). Each group also gets a majority verdict
+(arXiv 2512.06749): **validated** when at least two thirds pass, **partial** when fewer pass but
+at least two thirds completed cleanly, **inconclusive** when most did not complete, **refuted**
+otherwise. Replicates default to three whenever a judge, a control group, a fork, or attribution is
+involved. Pass one or more `--sim-model` values to run the matrix once per simulator model; the
+summary groups results by simulator so simulator-induced variance is visible instead of hidden.
 
 ### The user simulator (`--user simulate`)
 
@@ -163,6 +233,15 @@ casimir rerun claude:last --model sonnet
 
 # same task through Codex instead, with a simulated user and an order-swapped LLM judge
 casimir rerun claude:last --harness codex --model gpt-5-codex --user simulate --judge
+
+# is sonnet really different, or is it noise? add a same-model control group
+casimir rerun claude:last --model sonnet --control --replicates 3
+
+# what would have happened if I had said something else at turn 3?
+casimir fork claude:last --at-turn 3 --message "Use the existing helper instead of adding a new one"
+
+# which turn committed the failed session to its outcome?
+casimir attribute claude:last --turns-at 2,3,4 --judge
 
 # three replicates, two simulator models: pass@1, pass^k, score spread per simulator
 casimir rerun claude:last --model sonnet --user simulate --judge --replicates 3 \

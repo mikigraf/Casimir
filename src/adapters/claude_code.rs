@@ -9,6 +9,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+#[allow(unused_imports)]
+use anyhow::Context as _;
 use std::process::{Command, Stdio};
 
 use super::{RunOpts, RunResult, SessionSummary};
@@ -455,4 +457,58 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
 
 pub fn detect(rec: &Value) -> bool {
     rec.is_object() && ((rec.get("sessionId").is_some() && rec.get("type").is_some()) || rec.get("parentUuid").is_some())
+}
+
+/// Claude Code's project directory name for a working directory (every non-alphanumeric byte → '-').
+pub fn project_slug(cwd: &Path) -> String {
+    cwd.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// Fork a recorded session at `up_to_turn`: write a transcript holding every record before the user
+/// message that starts that turn, under a new session id and the given working directory, where
+/// `claude --resume <new_id>` will find it. Returns the new transcript path.
+pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Path) -> Result<PathBuf> {
+    let src = original.path.as_deref().context("original session has no on-disk path to fork from")?;
+    let records = read_jsonl(Path::new(src))?;
+    let mut kept: Vec<Value> = Vec::new();
+    let mut turn = 0u32;
+    let cwd_s = cwd.display().to_string();
+    for rec in records {
+        let t = rec.get("type").and_then(Value::as_str).unwrap_or("");
+        if matches!(t, "queue-operation" | "last-prompt" | "atis-latch") {
+            continue;
+        }
+        if t == "user" || t == "assistant" {
+            let starts_turn = record_to_events(&rec, turn.max(1)).iter().any(|e| e.kind == EventKind::User && !e.sidechain);
+            if starts_turn {
+                turn += 1;
+                if turn >= up_to_turn {
+                    break;
+                }
+            }
+        }
+        let mut rec = rec;
+        if let Some(obj) = rec.as_object_mut() {
+            if obj.contains_key("sessionId") {
+                obj.insert("sessionId".into(), Value::String(new_id.into()));
+            }
+            if obj.contains_key("cwd") {
+                obj.insert("cwd".into(), Value::String(cwd_s.clone()));
+            }
+        }
+        kept.push(rec);
+    }
+    if turn + 1 < up_to_turn {
+        bail!("session has only {turn} turn(s) before turn {up_to_turn}");
+    }
+    let dir = config_dir().join("projects").join(project_slug(cwd));
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(format!("{new_id}.jsonl"));
+    let mut out = String::new();
+    for r in &kept {
+        out.push_str(&r.to_string());
+        out.push('\n');
+    }
+    std::fs::write(&dest, out)?;
+    Ok(dest)
 }

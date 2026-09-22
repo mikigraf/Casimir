@@ -1,7 +1,7 @@
 //! Normalized session model shared by all harness adapters.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use crate::util::{one_line, ts_ms, truncate};
@@ -298,7 +298,7 @@ pub fn shell_command(e: &Event) -> Option<String> {
     let inp = &tool.input;
     match tool.name.as_str() {
         "Bash" => inp.get("command").and_then(Value::as_str).map(String::from),
-        "shell" | "shell_command" | "local_shell" | "exec_command" | "container.exec" | "command_execution" => {
+        "shell" | "shell_command" | "local_shell" | "exec_command" | "container.exec" | "command_execution" | "run_shell_command" | "bash" | "exec" | "execute" | "run_command" | "powershell" | "terminal" | "run_terminal_cmd" | "execute_command" => {
             if let Some(arr) = inp.get("command").and_then(Value::as_array) {
                 Some(arr.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
             } else if let Some(s) = inp.get("command").and_then(Value::as_str) {
@@ -495,6 +495,11 @@ pub struct Stats {
     pub final_message_chars: usize,
     /// User turns produced by the simulator rather than taken verbatim from the original.
     pub simulated_turns: usize,
+    /// Counts per canonical action kind.
+    #[serde(default)]
+    pub actions: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub anti_patterns: AntiPatterns,
 }
 
 /// Per-session aggregate statistics. Subagent (sidechain) traffic is reported separately.
@@ -548,6 +553,8 @@ pub fn stats(session: &Session) -> Stats {
         s.usage = total.clone();
     }
     s.turns = turns.len();
+    s.actions = action_counts(session);
+    s.anti_patterns = anti_patterns(session);
     s
 }
 
@@ -572,4 +579,307 @@ pub fn sorted_counts(m: &BTreeMap<String, usize>) -> Vec<(String, usize)> {
 /// Tool names in call order (main thread only).
 pub fn tool_sequence(session: &Session) -> Vec<String> {
     session.events.iter().filter(|e| e.kind == EventKind::ToolCall && !e.sidechain).filter_map(|e| e.tool.as_ref().map(|t| t.name.clone())).collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Canonical action taxonomy and trajectory anti-patterns
+//
+// After "process metrics for coding agents" (arXiv 2607.06184): every tool call is mapped onto a
+// small, harness-independent action vocabulary so trajectories from different harnesses can be
+// compared, and a few mechanically detectable anti-patterns are labelled with deterministic rules.
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionKind {
+    FileRead,
+    FileWrite,
+    Search,
+    Command,
+    Plan,
+    Navigate,
+    Fetch,
+    AgentSpawn,
+    Reason,
+    Other,
+}
+
+impl ActionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ActionKind::FileRead => "file_read",
+            ActionKind::FileWrite => "file_write",
+            ActionKind::Search => "search",
+            ActionKind::Command => "command",
+            ActionKind::Plan => "plan",
+            ActionKind::Navigate => "navigate",
+            ActionKind::Fetch => "fetch",
+            ActionKind::AgentSpawn => "agent_spawn",
+            ActionKind::Reason => "reason",
+            ActionKind::Other => "other",
+        }
+    }
+}
+
+/// One classified step of a trajectory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Action {
+    pub turn: u32,
+    pub kind: ActionKind,
+    /// A command that validates work (tests, build, lint, type-check).
+    pub validation: bool,
+    /// Canonical file the action reads or writes, when known.
+    pub file: Option<String>,
+    pub is_error: bool,
+    pub tool: String,
+}
+
+const VALIDATION_MARKERS: &[&str] = &[
+    "pytest", "python -m pytest", "python3 -m pytest", "unittest", "tox", "nox",
+    "cargo test", "cargo check", "cargo build", "cargo clippy", "cargo fmt --check",
+    "npm test", "npm run test", "npm run build", "npm run lint", "npm run typecheck", "pnpm test", "pnpm build", "yarn test", "yarn build", "bun test",
+    "jest", "vitest", "mocha", "node --test", "tsc", "eslint", "prettier --check",
+    "go test", "go build", "go vet", "golangci-lint",
+    "mvn test", "mvn verify", "gradle test", "gradlew test", "./gradlew",
+    "make test", "make check", "make build", "ctest", "cmake --build",
+    "rspec", "rake test", "bundle exec rspec", "phpunit", "composer test", "dotnet test", "dotnet build",
+    "mix test", "sbt test", "swift test", "flutter test", "ruff", "flake8", "mypy", "pyright", "black --check",
+];
+
+/// Whether a shell command validates the work (runs tests, builds, lints, type-checks).
+pub fn is_validation_command(cmd: &str) -> bool {
+    let c = cmd.to_ascii_lowercase();
+    VALIDATION_MARKERS.iter().any(|m| c.contains(m))
+}
+
+fn first_path_arg(cmd: &str, after: &[&str]) -> Option<String> {
+    let toks: Vec<&str> = cmd.split_whitespace().collect();
+    for (i, t) in toks.iter().enumerate() {
+        if after.contains(t) {
+            return toks.iter().skip(i + 1).find(|a| !a.starts_with('-') && !a.starts_with('|') && !a.starts_with('>')).map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string());
+        }
+    }
+    None
+}
+
+/// Classify a shell command into a canonical action.
+pub fn classify_shell(cmd: &str) -> (ActionKind, bool, Option<String>) {
+    // unwrap `bash -lc "<cmd>"`, `sh -c <cmd>` and friends
+    let mut trimmed = cmd.trim();
+    loop {
+        let mut toks = trimmed.splitn(3, char::is_whitespace);
+        let (Some(a), Some(b), Some(rest)) = (toks.next(), toks.next(), toks.next()) else { break };
+        let shell = a.rsplit('/').next().unwrap_or(a);
+        if matches!(shell, "bash" | "sh" | "zsh" | "dash" | "fish") && b.starts_with('-') && b.contains('c') {
+            trimmed = rest.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+        } else {
+            break;
+        }
+    }
+    let first = trimmed.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("");
+    let has_write = trimmed.contains('>') || trimmed.contains("tee ") || trimmed.contains("sed -i") || trimmed.starts_with("mv ") || trimmed.starts_with("cp ") || trimmed.starts_with("rm ") || trimmed.starts_with("mkdir ") || trimmed.starts_with("touch ") || trimmed.contains("git apply") || trimmed.contains("patch ");
+    if has_write && !trimmed.contains("2>&1") || (has_write && (trimmed.contains("cat >") || trimmed.contains("tee ") || trimmed.contains("sed -i") || trimmed.starts_with("mv ") || trimmed.starts_with("rm ") || trimmed.starts_with("touch "))) {
+        let file = first_path_arg(trimmed, &[">", ">>", "tee", "touch", "rm", "-i"]).or_else(|| trimmed.split('>').nth(1).and_then(|r| r.split_whitespace().next()).map(String::from));
+        return (ActionKind::FileWrite, false, file);
+    }
+    if is_validation_command(trimmed) {
+        return (ActionKind::Command, true, None);
+    }
+    match first {
+        "grep" | "rg" | "ag" | "ack" | "find" | "fd" | "locate" | "ls" | "tree" | "git" if first != "git" || trimmed.starts_with("git grep") || trimmed.starts_with("git log") || trimmed.starts_with("git ls-files") || trimmed.starts_with("git status") || trimmed.starts_with("git diff") || trimmed.starts_with("git show") || trimmed.starts_with("git blame") => (ActionKind::Search, false, None),
+        "cat" | "head" | "tail" | "less" | "more" | "bat" | "sed" | "awk" | "wc" | "nl" | "od" | "xxd" | "jq" | "yq" => (ActionKind::FileRead, false, first_path_arg(trimmed, &[first]).filter(|p| !p.starts_with('-'))),
+        "cd" | "pushd" | "popd" | "pwd" => (ActionKind::Navigate, false, None),
+        "curl" | "wget" | "http" | "gh" => (ActionKind::Fetch, false, None),
+        _ => (ActionKind::Command, false, None),
+    }
+}
+
+/// Map a tool call onto the canonical taxonomy. Harness-specific tool names are handled by name;
+/// shell-like tools are classified by their command text.
+pub fn classify_action(e: &Event) -> Option<Action> {
+    if e.kind == EventKind::Thinking {
+        return Some(Action { turn: e.turn, kind: ActionKind::Reason, validation: false, file: None, is_error: false, tool: "thinking".into() });
+    }
+    let tool = e.tool.as_ref()?;
+    let inp = &tool.input;
+    let s = |k: &str| inp.get(k).and_then(Value::as_str).map(String::from);
+    let file = || s("file_path").or_else(|| s("filePath")).or_else(|| s("path")).or_else(|| s("notebook_path")).or_else(|| s("target_file")).or_else(|| s("file")).or_else(|| s("absolute_path"));
+    let name = tool.name.as_str();
+    let lower = name.to_ascii_lowercase();
+    let (kind, validation, f) = if let Some(cmd) = shell_command(e) {
+        classify_shell(&cmd)
+    } else {
+        match lower.as_str() {
+            // Claude Code
+            "read" | "notebookread" => (ActionKind::FileRead, false, file()),
+            "edit" | "write" | "multiedit" | "notebookedit" => (ActionKind::FileWrite, false, file()),
+            "glob" | "grep" | "ls" => (ActionKind::Search, false, None),
+            "task" | "agent" | "spawn_agent" | "spawnagent" => (ActionKind::AgentSpawn, false, None),
+            "webfetch" | "websearch" | "web_search" | "web_fetch" | "google_web_search" | "fetch" | "web-fetch" => (ActionKind::Fetch, false, None),
+            "todowrite" | "todoread" | "enterplanmode" | "exitplanmode" | "update_plan" | "plan" | "todo_list" => (ActionKind::Plan, false, None),
+            // Codex
+            "apply_patch" | "file_change" => (ActionKind::FileWrite, false, None),
+            "read_file" | "view_image" | "view" | "read_many_files" | "cat" => (ActionKind::FileRead, false, file()),
+            // Copilot / Gemini / generic
+            "create" | "write_file" | "replace" | "str_replace_editor" | "str_replace_based_edit_tool" | "edit_file" | "create_file" | "write_to_file" | "insert" | "save_memory" => (ActionKind::FileWrite, false, file()),
+            "search" | "search_file_content" | "list_directory" | "list_dir" | "codebase_search" | "grep_search" | "file_search" | "find" => (ActionKind::Search, false, None),
+            "run_shell_command" | "bash" | "shell" | "exec" | "execute" | "run_command" | "powershell" | "terminal" => (ActionKind::Command, false, None),
+            "ask_user" | "askuserquestion" | "ask" => (ActionKind::Other, false, None),
+            _ => {
+                if lower.contains("read") || lower.contains("view") || lower.contains("open") {
+                    (ActionKind::FileRead, false, file())
+                } else if lower.contains("write") || lower.contains("edit") || lower.contains("create") || lower.contains("patch") || lower.contains("replace") {
+                    (ActionKind::FileWrite, false, file())
+                } else if lower.contains("search") || lower.contains("grep") || lower.contains("glob") || lower.contains("list") || lower.contains("find") {
+                    (ActionKind::Search, false, None)
+                } else if lower.contains("fetch") || lower.contains("http") || lower.contains("browse") {
+                    (ActionKind::Fetch, false, None)
+                } else if lower.contains("agent") || lower.contains("subtask") || lower.contains("delegate") {
+                    (ActionKind::AgentSpawn, false, None)
+                } else if lower.contains("plan") || lower.contains("todo") {
+                    (ActionKind::Plan, false, None)
+                } else {
+                    (ActionKind::Other, false, None)
+                }
+            }
+        }
+    };
+    Some(Action { turn: e.turn, kind, validation, file: f, is_error: false, tool: name.to_string() })
+}
+
+/// The main-thread action stream of a session (tool calls with their error status, plus reasoning).
+pub fn actions(session: &Session) -> Vec<Action> {
+    let mut out: Vec<Action> = Vec::new();
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    for e in &session.events {
+        if e.sidechain {
+            continue;
+        }
+        match e.kind {
+            EventKind::ToolCall | EventKind::Thinking => {
+                if let Some(a) = classify_action(e) {
+                    if let Some(t) = &e.tool {
+                        by_id.insert(t.id.clone(), out.len());
+                    }
+                    out.push(a);
+                }
+            }
+            EventKind::ToolResult => {
+                if let Some(r) = &e.result {
+                    if r.is_error {
+                        if let Some(i) = by_id.get(&r.id) {
+                            out[*i].is_error = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Deterministic trajectory anti-patterns (arXiv 2607.06184 rules).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AntiPatterns {
+    /// Maximal runs of >= 10 consecutive search/read actions with no write and no validation command.
+    pub search_loops: usize,
+    /// Files read >= 3 times within a 10-action window without an intervening write to that file.
+    pub reread_churn_files: Vec<String>,
+    /// No validation command in the overlap of the post-last-source-write region and the final 5 actions.
+    pub verification_skip: bool,
+    /// Tool calls that returned an error, as a share of all tool calls.
+    pub failed_action_share: f64,
+    /// Search + read actions as a share of all tool actions.
+    pub exploration_share: f64,
+    /// Number of tool actions (excluding reasoning).
+    pub tool_actions: usize,
+    /// Index (0-based) of the first file write, if any.
+    pub first_write_index: Option<usize>,
+}
+
+impl AntiPatterns {
+    pub fn any(&self) -> bool {
+        self.search_loops > 0 || !self.reread_churn_files.is_empty() || self.verification_skip
+    }
+}
+
+pub fn anti_patterns(session: &Session) -> AntiPatterns {
+    anti_patterns_of(&actions(session))
+}
+
+pub fn anti_patterns_of(acts: &[Action]) -> AntiPatterns {
+    let acts: Vec<&Action> = acts.iter().filter(|a| a.kind != ActionKind::Reason).collect();
+    let n = acts.len();
+    let mut ap = AntiPatterns { tool_actions: n, ..Default::default() };
+    if n == 0 {
+        return ap;
+    }
+    // search loops: maximal runs of search/read without write or validation
+    let mut run = 0usize;
+    for a in &acts {
+        let exploratory = matches!(a.kind, ActionKind::Search | ActionKind::FileRead);
+        let breaks = a.kind == ActionKind::FileWrite || a.validation;
+        if exploratory {
+            run += 1;
+        } else if breaks {
+            if run >= 10 {
+                ap.search_loops += 1;
+            }
+            run = 0;
+        }
+        // other kinds (command without validation, fetch, plan…) neither extend nor break the run
+    }
+    if run >= 10 {
+        ap.search_loops += 1;
+    }
+    // re-read churn: same file read >= 3 times in a 10-action window with no intervening write
+    let mut churn: Vec<String> = Vec::new();
+    for (i, a) in acts.iter().enumerate() {
+        if a.kind != ActionKind::FileRead {
+            continue;
+        }
+        let Some(f) = &a.file else { continue };
+        if churn.contains(f) {
+            continue;
+        }
+        let end = (i + 10).min(n);
+        let mut reads = 0;
+        for b in &acts[i..end] {
+            if b.kind == ActionKind::FileWrite && b.file.as_deref() == Some(f.as_str()) {
+                break;
+            }
+            if b.kind == ActionKind::FileRead && b.file.as_deref() == Some(f.as_str()) {
+                reads += 1;
+            }
+        }
+        if reads >= 3 {
+            churn.push(f.clone());
+        }
+    }
+    ap.reread_churn_files = churn;
+    // verification skip
+    let last_write = acts.iter().rposition(|a| a.kind == ActionKind::FileWrite);
+    ap.first_write_index = acts.iter().position(|a| a.kind == ActionKind::FileWrite);
+    if let Some(lw) = last_write {
+        let start = lw.max(n.saturating_sub(5));
+        ap.verification_skip = !acts[start..].iter().any(|a| a.validation);
+    }
+    ap.failed_action_share = acts.iter().filter(|a| a.is_error).count() as f64 / n as f64;
+    ap.exploration_share = acts.iter().filter(|a| matches!(a.kind, ActionKind::Search | ActionKind::FileRead)).count() as f64 / n as f64;
+    ap
+}
+
+/// Counts per canonical action kind (including reasoning blocks).
+pub fn action_counts(session: &Session) -> BTreeMap<String, usize> {
+    let mut m = BTreeMap::new();
+    for a in actions(session) {
+        *m.entry(a.kind.as_str().to_string()).or_insert(0) += 1;
+    }
+    m
+}
+
+/// Canonical action-kind sequence (tool actions only), for cross-harness trajectory comparison.
+pub fn action_sequence(session: &Session) -> Vec<String> {
+    actions(session).into_iter().filter(|a| a.kind != ActionKind::Reason).map(|a| if a.validation { "validate".to_string() } else { a.kind.as_str().to_string() }).collect()
 }

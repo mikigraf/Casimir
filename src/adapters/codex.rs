@@ -495,3 +495,58 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
 pub fn detect(rec: &Value) -> bool {
     rec.is_object() && rec.get("payload").is_some() && rec.get("type").is_some()
 }
+
+/// Fork a recorded rollout at `up_to_turn`: write every line before the user message that starts
+/// that turn into a new rollout under a new thread id, so `codex exec resume <new_id>` continues
+/// from there. Whether the installed Codex version indexes rollouts it did not write itself is not
+/// guaranteed; a resume failure surfaces as a harness error.
+pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Path) -> Result<PathBuf> {
+    let src = original.path.as_deref().context("original session has no on-disk path to fork from")?;
+    let records = read_jsonl(Path::new(src))?;
+    let mut kept: Vec<Value> = Vec::new();
+    let mut turn = 0u32;
+    let cwd_s = cwd.display().to_string();
+    for mut rec in records {
+        let is_user_turn = s(&rec, "type") == Some("response_item")
+            && rec.get("payload").is_some_and(|p| {
+                s(p, "type") == Some("message") && s(p, "role") == Some("user") && {
+                    let text = text_of(p.get("content").unwrap_or(&Value::Null));
+                    !text.trim().is_empty() && !is_injected(&text) && !text.trim_start().starts_with('<')
+                }
+            });
+        if is_user_turn {
+            turn += 1;
+            if turn >= up_to_turn {
+                break;
+            }
+        }
+        let is_meta = s(&rec, "type") == Some("session_meta");
+        if let Some(p) = rec.get_mut("payload").and_then(Value::as_object_mut) {
+            if p.contains_key("cwd") {
+                p.insert("cwd".into(), Value::String(cwd_s.clone()));
+            }
+        }
+        if is_meta {
+            if let Some(p) = rec.get_mut("payload").and_then(Value::as_object_mut) {
+                p.insert("id".into(), Value::String(new_id.into()));
+                p.insert("session_id".into(), Value::String(new_id.into()));
+                p.insert("cwd".into(), Value::String(cwd_s.clone()));
+            }
+        }
+        kept.push(rec);
+    }
+    if turn + 1 < up_to_turn {
+        bail!("session has only {turn} turn(s) before turn {up_to_turn}");
+    }
+    let now = chrono::Utc::now();
+    let dir = codex_home().join("sessions").join(now.format("%Y/%m/%d").to_string());
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(format!("rollout-{}-{new_id}.jsonl", now.format("%Y-%m-%dT%H-%M-%S")));
+    let mut out = String::new();
+    for r in &kept {
+        out.push_str(&r.to_string());
+        out.push('\n');
+    }
+    std::fs::write(&dest, out)?;
+    Ok(dest)
+}

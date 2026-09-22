@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use crate::adapters::{list_all_sessions, resolve_session};
 use crate::compare::{compare_sessions, judge_sessions, render_compare_markdown, render_compare_text};
 use crate::llm::LlmOpts;
-use crate::model::{stats, Harness};
+use crate::model::{stats, user_turns, Harness};
 use crate::play::{play, PlayOpts};
 use crate::render::{render_markdown, render_session_list, render_stats, render_transcript, RenderOpts};
-use crate::rerun::{render_matrix_text, rerun_matrix, RerunOpts};
+use crate::rerun::{attribute, render_attribution_text, render_matrix_text, rerun_matrix, RerunOpts};
 use crate::util::{casimir_home, colors, read_json};
 use crate::workspace::{reconstruct_original_diff, Diff};
 
@@ -83,6 +83,106 @@ impl LlmArgs {
     }
 }
 
+#[derive(clap::Args, Debug, Clone)]
+pub struct RunArgs {
+    /// Target harness (default: same as original)
+    #[arg(long, value_parser = Harness::parse)]
+    pub harness: Option<Harness>,
+    /// Target model (default: original model when same harness)
+    #[arg(long)]
+    pub model: Option<String>,
+    /// How later user turns are produced
+    #[arg(long = "user", default_value = "verbatim", value_parser = ["verbatim", "simulate"])]
+    pub user_mode: String,
+    /// auto = fresh git worktree at the session's base commit; worktree | same | <dir>
+    #[arg(long, default_value = "auto")]
+    pub workspace: String,
+    /// Replay only the first N user turns
+    #[arg(long)]
+    pub turns: Option<usize>,
+    /// Claude Code permission mode (default: bypass in isolated workspaces, else acceptEdits)
+    #[arg(long)]
+    pub permission_mode: Option<String>,
+    /// Codex sandbox (default: bypass in isolated workspaces, else workspace-write)
+    #[arg(long)]
+    pub sandbox: Option<String>,
+    /// Ask an LLM to score original vs rerun (runs in both candidate orders)
+    #[arg(long)]
+    pub judge: bool,
+    #[command(flatten)]
+    pub llm: LlmArgs,
+    /// Simulator model(s); repeat to bound simulator-induced variance (overrides --llm-model for the simulator)
+    #[arg(long = "sim-model")]
+    pub sim_model: Vec<String>,
+    /// Simulator backend (overrides --llm for the simulator only)
+    #[arg(long, value_parser = ["auto", "api", "claude-cli", "cmd"])]
+    pub sim_llm: Option<String>,
+    /// Replicate reruns per group (default: 3 with --judge, --control, fork or attribute; else 1)
+    #[arg(long)]
+    pub replicates: Option<usize>,
+    /// Also rerun with the original harness and model as a control group (same-model noise floor)
+    #[arg(long)]
+    pub control: bool,
+    /// Judge score (0-10) at or above which a replicate counts as a pass
+    #[arg(long, default_value_t = 7.0)]
+    pub pass_threshold: f64,
+    /// Run directory (or diff.patch) holding the original session's workspace diff; default: reconstruct from git
+    #[arg(long)]
+    pub original_diff: Option<PathBuf>,
+    /// Show reasoning while running
+    #[arg(long)]
+    pub thinking: bool,
+    /// Run directory (default ~/.casimir/runs/<id>)
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+    #[arg(short, long)]
+    pub quiet: bool,
+    /// Keep replaying turns after a harness error
+    #[arg(long)]
+    pub continue_on_error: bool,
+    /// Print the plan only
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Extra arguments passed to the harness CLI (after --)
+    #[arg(last = true)]
+    pub extra: Vec<String>,
+}
+
+impl RunArgs {
+    fn opts(&self, forcing_replicates: bool) -> RerunOpts {
+        let mut sim = self.llm.opts();
+        if let Some(b) = &self.sim_llm {
+            sim.backend = b.clone();
+        }
+        RerunOpts {
+            harness: self.harness,
+            model: self.model.clone(),
+            user_mode: self.user_mode.clone(),
+            workspace: self.workspace.clone(),
+            turns: self.turns,
+            permission_mode: self.permission_mode.clone(),
+            sandbox: self.sandbox.clone(),
+            judge: self.judge,
+            sim_llm: sim,
+            judge_llm: self.llm.judge_opts(),
+            out_dir: self.output.clone(),
+            quiet: self.quiet,
+            thinking: self.thinking,
+            dry_run: self.dry_run,
+            continue_on_error: self.continue_on_error,
+            extra_args: self.extra.clone(),
+            run_id: None,
+            replicates: self.replicates.unwrap_or(if self.judge || self.control || forcing_replicates { 3 } else { 1 }),
+            sim_models: self.sim_model.clone(),
+            pass_threshold: self.pass_threshold,
+            original_diff: self.original_diff.as_deref().and_then(|p| load_diff(&p.display().to_string())),
+            control: self.control,
+            from_turn: None,
+            intervention: None,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
     /// List recorded sessions from all harnesses
@@ -136,64 +236,29 @@ pub enum Cmd {
     /// Replay the user's turns against a harness/model
     Rerun {
         session: String,
-        /// Target harness (default: same as original)
-        #[arg(long, value_parser = Harness::parse)]
-        harness: Option<Harness>,
-        /// Target model (default: original model when same harness)
-        #[arg(long)]
-        model: Option<String>,
-        /// How later user turns are produced
-        #[arg(long = "user", default_value = "verbatim", value_parser = ["verbatim", "simulate"])]
-        user_mode: String,
-        /// auto = fresh git worktree at the session's base commit; worktree | same | <dir>
-        #[arg(long, default_value = "auto")]
-        workspace: String,
-        /// Replay only the first N user turns
-        #[arg(long)]
-        turns: Option<usize>,
-        /// Claude Code permission mode (default: bypass in isolated workspaces, else acceptEdits)
-        #[arg(long)]
-        permission_mode: Option<String>,
-        /// Codex sandbox (default: bypass in isolated workspaces, else workspace-write)
-        #[arg(long)]
-        sandbox: Option<String>,
-        /// Ask an LLM to score original vs rerun (runs in both candidate orders)
-        #[arg(long)]
-        judge: bool,
         #[command(flatten)]
-        llm: LlmArgs,
-        /// Simulator model(s); repeat to bound simulator-induced variance (overrides --llm-model for the simulator)
-        #[arg(long = "sim-model")]
-        sim_model: Vec<String>,
-        /// Simulator backend (overrides --llm for the simulator only)
-        #[arg(long, value_parser = ["auto", "api", "claude-cli", "cmd"])]
-        sim_llm: Option<String>,
-        /// Number of replicate reruns per simulator model
-        #[arg(long, default_value_t = 1)]
-        replicates: usize,
-        /// Judge score (0-10) at or above which a replicate counts as a pass
-        #[arg(long, default_value_t = 7.0)]
-        pass_threshold: f64,
-        /// Run directory (or diff.patch) holding the original session's workspace diff; default: reconstruct from git
+        run: RunArgs,
+    },
+    /// Fork the original session at a turn and resume it (optionally with an edited message)
+    Fork {
+        session: String,
+        /// User turn (1-based, >= 2) to fork at; turns before it are preserved verbatim
         #[arg(long)]
-        original_diff: Option<PathBuf>,
-        /// Show reasoning while running
+        at_turn: u32,
+        /// Replacement user message for the forked turn (default: resample the original message)
         #[arg(long)]
-        thinking: bool,
-        /// Run directory (default ~/.casimir/runs/<id>)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-        #[arg(short, long)]
-        quiet: bool,
-        /// Keep replaying turns after a harness error
-        #[arg(long)]
-        continue_on_error: bool,
-        /// Print the plan only
-        #[arg(long)]
-        dry_run: bool,
-        /// Extra arguments passed to the harness CLI (after --)
-        #[arg(last = true)]
-        extra: Vec<String>,
+        message: Option<String>,
+        #[command(flatten)]
+        run: RunArgs,
+    },
+    /// Resample the session at several turns to find the point of commitment of a failure
+    Attribute {
+        session: String,
+        /// Turns to resample, e.g. 2,3,4 (default: every turn from 2)
+        #[arg(long, value_delimiter = ',')]
+        turns_at: Vec<u32>,
+        #[command(flatten)]
+        run: RunArgs,
     },
     /// Compare two sessions / run directories
     Compare {
@@ -233,6 +298,10 @@ fn load_diff(reference: &str) -> Option<Diff> {
 pub fn run() -> Result<i32> {
     let cli = Cli::parse();
     let c = colors();
+    let cli_fork_args: Option<(u32, Option<String>)> = match &cli.command {
+        Cmd::Fork { at_turn, message, .. } => Some((*at_turn, message.clone())),
+        _ => None,
+    };
     match cli.command {
         Cmd::List { harness, cwd, limit, json } => {
             let mut items = list_all_sessions(harness);
@@ -283,35 +352,29 @@ pub fn run() -> Result<i32> {
                 None => println!("{body}"),
             }
         }
-        Cmd::Rerun { session, harness, model, user_mode, workspace, turns, permission_mode, sandbox, judge, llm, sim_model, sim_llm, replicates, pass_threshold, original_diff, thinking, output, quiet, continue_on_error, dry_run, extra } => {
+        Cmd::Attribute { session, turns_at, run } => {
             let original = resolve_session(&session)?;
-            let mut sim = llm.opts();
-            if let Some(b) = sim_llm {
-                sim.backend = b;
+            let mut opts = run.opts(true);
+            opts.judge = run.judge;
+            let n = user_turns(&original).len() as u32;
+            let turns: Vec<u32> = if turns_at.is_empty() { (2..=n).collect() } else { turns_at };
+            if turns.is_empty() {
+                anyhow::bail!("nothing to attribute: the session has a single turn (attribution resamples turns >= 2)");
             }
-            let opts = RerunOpts {
-                harness,
-                model,
-                user_mode,
-                workspace,
-                turns,
-                permission_mode,
-                sandbox,
-                judge,
-                sim_llm: sim,
-                judge_llm: llm.judge_opts(),
-                out_dir: output,
-                quiet,
-                thinking,
-                dry_run,
-                continue_on_error,
-                extra_args: extra,
-                run_id: None,
-                replicates,
-                sim_models: sim_model,
-                pass_threshold,
-                original_diff: original_diff.as_deref().and_then(|p| load_diff(&p.display().to_string())),
+            let att = attribute(&original, &opts, &turns, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
+            println!();
+            println!("{}", render_attribution_text(&att));
+            println!("{}saved under:{} {}", c.bold, c.reset, att.run_dir.display());
+        }
+        Cmd::Rerun { session, run } | Cmd::Fork { session, run, .. } => {
+            let original = resolve_session(&session)?;
+            let (from_turn, intervention) = match &cli_fork_args {
+                Some((t, m)) => (Some(*t), m.clone()),
+                None => (None, None),
             };
+            let mut opts = run.opts(from_turn.is_some());
+            opts.from_turn = from_turn;
+            opts.intervention = intervention;
             let (single, matrix) = rerun_matrix(&original, &opts, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
             if let Some(res) = single {
                 if res.dry_run {

@@ -72,6 +72,16 @@ pub fn find_log_by_id(h: Harness, id: &str) -> Option<PathBuf> {
     }
 }
 
+/// Prepare a harness-native fork of `original` at `up_to_turn` (the forked session then resumes
+/// with the turn-`up_to_turn` message). Returns the path of the transcript written for the harness.
+pub fn prepare_fork(h: Harness, original: &Session, up_to_turn: u32, new_id: &str, cwd: &Path) -> Result<PathBuf> {
+    match h {
+        Harness::ClaudeCode => claude_code::prepare_fork(original, up_to_turn, new_id, cwd),
+        Harness::Codex => codex::prepare_fork(original, up_to_turn, new_id, cwd),
+        Harness::Copilot | Harness::Gemini => bail!("fork-at-turn is not supported for {h}: its CLI cannot resume a truncated transcript"),
+    }
+}
+
 pub fn run_turn(h: Harness, opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunResult> {
     match h {
         Harness::ClaudeCode => claude_code::run_turn(opts, on_event),
