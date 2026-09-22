@@ -10,14 +10,14 @@ use crate::llm::LlmOpts;
 use crate::model::{stats, Harness};
 use crate::play::{play, PlayOpts};
 use crate::render::{render_markdown, render_session_list, render_stats, render_transcript, RenderOpts};
-use crate::rerun::{rerun, RerunOpts};
+use crate::rerun::{render_matrix_text, rerun_matrix, RerunOpts};
 use crate::util::{casimir_home, colors, read_json};
-use crate::workspace::Diff;
+use crate::workspace::{reconstruct_original_diff, Diff};
 
-const ABOUT: &str = "Replay, rerun and compare coding-agent sessions (Claude Code, Codex).
+const ABOUT: &str = "Replay, rerun and compare coding-agent sessions (Claude Code, Codex, Copilot CLI, Gemini CLI).
 
-<SESSION> is a log path, a casimir run dir, \"last\", \"claude:last\", \"codex:last\",
-a session id, or a unique id prefix (optionally \"codex:<prefix>\").";
+<SESSION> is a log path, a casimir run dir, \"last\", \"claude:last\", \"codex:last\", \"copilot:last\",
+\"gemini:last\", a session id, or a unique id prefix (optionally \"codex:<prefix>\").";
 
 #[derive(Parser, Debug)]
 #[command(name = "casimir", version, about = ABOUT)]
@@ -60,17 +60,26 @@ impl ShowArgs {
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct LlmArgs {
-    /// Backend for the user simulator and judge
-    #[arg(long, default_value = "auto", value_parser = ["auto", "api", "claude-cli"])]
+    /// Default backend for the user simulator and judge
+    #[arg(long, default_value = "auto", value_parser = ["auto", "api", "claude-cli", "cmd"])]
     pub llm: String,
-    /// Model for the user simulator and judge (default claude-opus-5)
+    /// Default model for the user simulator and judge (default claude-opus-5)
     #[arg(long)]
     pub llm_model: Option<String>,
+    /// Judge model (overrides --llm-model for the judge only)
+    #[arg(long)]
+    pub judge_model: Option<String>,
+    /// Judge backend (overrides --llm for the judge only)
+    #[arg(long, value_parser = ["auto", "api", "claude-cli", "cmd"])]
+    pub judge_llm: Option<String>,
 }
 
 impl LlmArgs {
     fn opts(&self) -> LlmOpts {
         LlmOpts { model: self.llm_model.clone(), backend: self.llm.clone(), ..Default::default() }
+    }
+    fn judge_opts(&self) -> LlmOpts {
+        LlmOpts { model: self.judge_model.clone().or_else(|| self.llm_model.clone()), backend: self.judge_llm.clone().unwrap_or_else(|| self.llm.clone()), ..Default::default() }
     }
 }
 
@@ -148,11 +157,26 @@ pub enum Cmd {
         /// Codex sandbox (default: bypass in isolated workspaces, else workspace-write)
         #[arg(long)]
         sandbox: Option<String>,
-        /// Ask an LLM to score original vs rerun
+        /// Ask an LLM to score original vs rerun (runs in both candidate orders)
         #[arg(long)]
         judge: bool,
         #[command(flatten)]
         llm: LlmArgs,
+        /// Simulator model(s); repeat to bound simulator-induced variance (overrides --llm-model for the simulator)
+        #[arg(long = "sim-model")]
+        sim_model: Vec<String>,
+        /// Simulator backend (overrides --llm for the simulator only)
+        #[arg(long, value_parser = ["auto", "api", "claude-cli", "cmd"])]
+        sim_llm: Option<String>,
+        /// Number of replicate reruns per simulator model
+        #[arg(long, default_value_t = 1)]
+        replicates: usize,
+        /// Judge score (0-10) at or above which a replicate counts as a pass
+        #[arg(long, default_value_t = 7.0)]
+        pass_threshold: f64,
+        /// Run directory (or diff.patch) holding the original session's workspace diff; default: reconstruct from git
+        #[arg(long)]
+        original_diff: Option<PathBuf>,
         /// Show reasoning while running
         #[arg(long)]
         thinking: bool,
@@ -199,6 +223,9 @@ fn load_diff(reference: &str) -> Option<Diff> {
     let mut d: Diff = read_json(&dj).ok()?;
     if let Ok(patch) = fs::read_to_string(dir.join("diff.patch")) {
         d.patch = patch;
+    }
+    if d.source.is_none() {
+        d.source = Some(format!("captured in run {}", dir.display()));
     }
     Some(d)
 }
@@ -256,8 +283,12 @@ pub fn run() -> Result<i32> {
                 None => println!("{body}"),
             }
         }
-        Cmd::Rerun { session, harness, model, user_mode, workspace, turns, permission_mode, sandbox, judge, llm, thinking, output, quiet, continue_on_error, dry_run, extra } => {
+        Cmd::Rerun { session, harness, model, user_mode, workspace, turns, permission_mode, sandbox, judge, llm, sim_model, sim_llm, replicates, pass_threshold, original_diff, thinking, output, quiet, continue_on_error, dry_run, extra } => {
             let original = resolve_session(&session)?;
+            let mut sim = llm.opts();
+            if let Some(b) = sim_llm {
+                sim.backend = b;
+            }
             let opts = RerunOpts {
                 harness,
                 model,
@@ -267,7 +298,8 @@ pub fn run() -> Result<i32> {
                 permission_mode,
                 sandbox,
                 judge,
-                llm: llm.opts(),
+                sim_llm: sim,
+                judge_llm: llm.judge_opts(),
                 out_dir: output,
                 quiet,
                 thinking,
@@ -275,27 +307,41 @@ pub fn run() -> Result<i32> {
                 continue_on_error,
                 extra_args: extra,
                 run_id: None,
+                replicates,
+                sim_models: sim_model,
+                pass_threshold,
+                original_diff: original_diff.as_deref().and_then(|p| load_diff(&p.display().to_string())),
             };
-            let res = rerun(&original, &opts, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
-            if res.dry_run {
-                return Ok(0);
+            let (single, matrix) = rerun_matrix(&original, &opts, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
+            if let Some(res) = single {
+                if res.dry_run {
+                    return Ok(0);
+                }
+                println!();
+                println!("{}", render_compare_text(res.report.as_ref().unwrap(), "original", "rerun"));
+                println!();
+                println!("{}run saved:{} {}", c.bold, c.reset, res.run_dir.display());
+                if res.workspace.mode == "worktree" {
+                    let root = res.workspace.root.as_ref().unwrap().display();
+                    println!("{}worktree kept at {root} (remove with: git worktree remove --force {root}){}", c.dim, c.reset);
+                }
+                println!("{}casimir show {}   |   casimir compare {} {}{}", c.dim, res.run_dir.display(), original.path.clone().unwrap_or(original.id.clone()), res.run_dir.display(), c.reset);
             }
-            println!();
-            println!("{}", render_compare_text(res.report.as_ref().unwrap(), "original", "rerun"));
-            println!();
-            println!("{}run saved:{} {}", c.bold, c.reset, res.run_dir.display());
-            if res.workspace.mode == "worktree" {
-                let root = res.workspace.root.as_ref().unwrap().display();
-                println!("{}worktree kept at {root} (remove with: git worktree remove --force {root}){}", c.dim, c.reset);
+            if let Some(m) = matrix {
+                println!();
+                println!("{}", render_matrix_text(&m));
+                println!();
+                println!("{}runs saved under:{} {}", c.bold, c.reset, m.run_dir.display());
+                println!("{}worktrees are kept under {} (remove with: git worktree remove --force <dir>){}", c.dim, casimir_home().join("worktrees").display(), c.reset);
             }
-            println!("{}casimir show {}   |   casimir compare {} {}{}", c.dim, res.run_dir.display(), original.path.clone().unwrap_or(original.id.clone()), res.run_dir.display(), c.reset);
         }
         Cmd::Compare { a, b, judge, llm, format } => {
             let sa = resolve_session(&a)?;
             let sb = resolve_session(&b)?;
-            let da = load_diff(&a);
-            let db = load_diff(&b);
-            let j = if judge { Some(judge_sessions(&sa, &sb, da.as_ref(), db.as_ref(), &llm.opts())?) } else { None };
+            // run dirs carry a captured diff; for raw logs fall back to reconstructing from git history
+            let da = load_diff(&a).or_else(|| reconstruct_original_diff(&sa));
+            let db = load_diff(&b).or_else(|| reconstruct_original_diff(&sb));
+            let j = if judge { Some(judge_sessions(&sa, &sb, da.as_ref(), db.as_ref(), &llm.judge_opts())?) } else { None };
             let report = compare_sessions(&sa, &sb, da, db, j);
             match format {
                 Format::Json => println!("{}", serde_json::to_string_pretty(&report)?),

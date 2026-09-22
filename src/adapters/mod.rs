@@ -1,6 +1,8 @@
 //! Harness adapters: each knows where its logs live, how to normalize them, and how to run a turn.
 pub mod claude_code;
 pub mod codex;
+pub mod copilot;
+pub mod gemini;
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -56,6 +58,8 @@ pub fn parse_file(h: Harness, path: &Path) -> Result<Session> {
     match h {
         Harness::ClaudeCode => claude_code::parse_file(path),
         Harness::Codex => codex::parse_file(path),
+        Harness::Copilot => copilot::parse_file(path),
+        Harness::Gemini => gemini::parse_file(path),
     }
 }
 
@@ -63,6 +67,8 @@ pub fn find_log_by_id(h: Harness, id: &str) -> Option<PathBuf> {
     match h {
         Harness::ClaudeCode => claude_code::find_log_by_id(id),
         Harness::Codex => codex::find_log_by_id(id),
+        Harness::Copilot => copilot::find_log_by_id(id),
+        Harness::Gemini => gemini::find_log_by_id(id),
     }
 }
 
@@ -70,6 +76,8 @@ pub fn run_turn(h: Harness, opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) ->
     match h {
         Harness::ClaudeCode => claude_code::run_turn(opts, on_event),
         Harness::Codex => codex::run_turn(opts, on_event),
+        Harness::Copilot => copilot::run_turn(opts, on_event),
+        Harness::Gemini => gemini::run_turn(opts, on_event),
     }
 }
 
@@ -83,6 +91,8 @@ pub fn list_all_sessions(harness: Option<Harness>) -> Vec<SessionSummary> {
         let items = match h {
             Harness::ClaudeCode => claude_code::list_sessions(),
             Harness::Codex => codex::list_sessions(),
+            Harness::Copilot => copilot::list_sessions(),
+            Harness::Gemini => gemini::list_sessions(),
         };
         out.extend(items);
     }
@@ -95,20 +105,32 @@ pub fn load_session_file(file: &Path) -> Result<Session> {
     let meta = std::fs::metadata(file).with_context(|| format!("{}", file.display()))?;
     if meta.is_dir() {
         let sj = file.join("session.json");
-        if !sj.exists() {
-            bail!("{} is not a casimir run directory (no session.json)", file.display());
+        if sj.exists() {
+            return load_session_file(&sj);
         }
-        return load_session_file(&sj);
+        if file.join("events.jsonl").exists() || file.join("workspace.yaml").exists() {
+            return copilot::parse_dir(file);
+        }
+        bail!("{} is not a casimir run directory (no session.json) or a Copilot session directory", file.display());
     }
     if file.extension().is_some_and(|e| e == "json") {
-        let s: Session = read_json(file).with_context(|| format!("{} is not a casimir session export", file.display()))?;
-        if s.harness.is_none() {
-            bail!("{} is not a casimir session export", file.display());
+        let v: Value = read_json(file).with_context(|| format!("parsing {}", file.display()))?;
+        if v.get("harness").is_some() && v.get("events").is_some() {
+            return serde_json::from_value(v).with_context(|| format!("{} is not a casimir session export", file.display()));
         }
-        return Ok(s);
+        if gemini::detect(&v) {
+            return gemini::parse_file(file);
+        }
+        bail!("{} is not a casimir session export", file.display());
     }
     // Codex session_meta lines can exceed 100KB (they embed the base instructions), so read generously.
     let head = read_jsonl_head(file, 1024 * 1024)?;
+    if head.iter().any(gemini::detect) {
+        return gemini::parse_file(file);
+    }
+    if head.iter().any(copilot::detect) {
+        return copilot::parse_file(file);
+    }
     if head.iter().any(codex::detect) {
         return codex::parse_file(file);
     }

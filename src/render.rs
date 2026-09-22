@@ -58,7 +58,14 @@ pub fn format_event(ev: &Event, o: &RenderOpts, start: Option<i64>) -> Option<St
     let side = if ev.sidechain { format!("{}[subagent] {}", c.magenta, c.reset) } else { String::new() };
     let text = ev.text_str();
     Some(match ev.kind {
-        EventKind::User => format!("\n{tag}{}{}▶ user (turn {}){}\n{}\n", c.bold, c.cyan, ev.turn, c.reset, indent(text, "  ")),
+        EventKind::User => {
+            let sim = match &ev.simulated {
+                Some(s) if s.verbatim => format!(" {}[simulated user: verbatim]{}", c.magenta, c.reset),
+                Some(_) => format!(" {}[simulated user: adapted]{}", c.magenta, c.reset),
+                None => String::new(),
+            };
+            format!("\n{tag}{}{}▶ user (turn {}){}{sim}\n{}\n", c.bold, c.cyan, ev.turn, c.reset, indent(text, "  "))
+        }
         EventKind::Assistant => {
             let model = ev.model.as_ref().map(|m| format!(" {}{}{}", c.dim, m, c.reset)).unwrap_or_default();
             format!("{tag}{side}{}●{}{model}\n{}", c.green, c.reset, indent(&clip(text, o, o.max_lines), "  "))
@@ -206,7 +213,12 @@ pub fn render_markdown(session: &Session, o: &RenderOpts) -> String {
         let text = ev.text_str();
         match ev.kind {
             EventKind::User => {
-                md.push(format!("## Turn {} — user", ev.turn));
+                let sim = match &ev.simulated {
+                    Some(s) if s.verbatim => " (simulated user, verbatim)",
+                    Some(_) => " (simulated user, adapted)",
+                    None => "",
+                };
+                md.push(format!("## Turn {} — user{sim}", ev.turn));
                 md.push(String::new());
                 md.push(quote(text));
                 md.push(String::new());

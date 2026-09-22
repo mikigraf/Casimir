@@ -5,6 +5,8 @@
 //!                credentials from ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile
 //!   claude-cli — `claude -p` with tools disabled; reuses the local Claude Code login
 //!   auto       — api when Anthropic credentials are visible, otherwise claude-cli
+//!   cmd        — run $CASIMIR_LLM_CMD with the prompt on stdin and the system prompt in
+//!                $CASIMIR_LLM_SYSTEM; the reply is its stdout (for tests and custom gateways)
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -137,12 +139,36 @@ fn complete_cli(system: &str, prompt: &str, model: &str) -> Result<String> {
     Ok(parsed.get("result").and_then(Value::as_str).unwrap_or("").to_string())
 }
 
+fn complete_cmd(system: &str, prompt: &str, model: &str) -> Result<String> {
+    let bin = std::env::var("CASIMIR_LLM_CMD").context("--llm cmd needs CASIMIR_LLM_CMD")?;
+    let mut child = Command::new(&bin)
+        .env("CASIMIR_LLM_SYSTEM", system)
+        .env("CASIMIR_LLM_MODEL", model)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawning {bin}"))?;
+    child.stdin.take().context("stdin")?.write_all(prompt.as_bytes())?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!("{bin} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Effective model name for the selected backend (what will be recorded in reports).
+pub fn effective_model(o: &LlmOpts) -> String {
+    o.model.clone().unwrap_or_else(|| DEFAULT_MODEL.into())
+}
+
 /// Text completion through the selected backend.
 pub fn complete(system: &str, prompt: &str, o: &LlmOpts) -> Result<String> {
-    let model = o.model.clone().unwrap_or_else(|| DEFAULT_MODEL.into());
+    let model = effective_model(o);
     match pick_backend(&o.backend).as_str() {
         "api" => complete_api(system, prompt, &model, o.max_tokens),
         "claude-cli" => complete_cli(system, prompt, &model),
+        "cmd" => complete_cmd(system, prompt, &model),
         other => bail!("unknown llm backend {other}"),
     }
 }

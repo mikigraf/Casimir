@@ -1,0 +1,9 @@
+id: cccccccc-1111-4222-8333-444444444444
+cwd: /work/demo
+git_root: /work/demo
+branch: main
+client_name: github/cli
+created_at: 2026-09-21T09:00:00.000Z
+updated_at: 2026-09-21T09:01:00.000Z
+summary: |
+  Add greet function to lib.py

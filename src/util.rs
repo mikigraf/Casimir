@@ -301,3 +301,11 @@ pub fn jstr<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
 pub fn ju64(v: &Value, path: &[&str]) -> u64 {
     jget(v, path).and_then(Value::as_u64).unwrap_or(0)
 }
+
+/// Pick the most informative line of a failed process's stderr: the first line mentioning an error,
+/// else the last non-empty line.
+pub fn stderr_error_line(stderr: &str, fallback: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let pick = lines.iter().find(|l| l.to_ascii_lowercase().contains("error")).or_else(|| lines.last()).copied().unwrap_or(fallback);
+    truncate(pick, 500)
+}

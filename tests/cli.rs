@@ -1,9 +1,12 @@
-use casimir::adapters::{claude_code, codex, load_session_file, resolve_session};
-use casimir::compare::{compare_sessions, relativize, render_compare_markdown};
+use casimir::adapters::{claude_code, codex, copilot, gemini, load_session_file, resolve_session};
+use casimir::compare::{compare_sessions, end_state_similarity, judge_sessions, relativize, render_compare_markdown, sequence_similarity};
+use casimir::llm::LlmOpts;
 use casimir::model::{files_touched, final_assistant_text, stats, tool_one_liner, user_turns, Event, EventKind, Harness, Session, Usage};
 use casimir::render::{render_markdown, render_transcript, RenderOpts};
-use casimir::rerun::{rerun, RerunOpts};
+use casimir::rerun::{rerun, rerun_matrix, RerunOpts};
+use casimir::simulate::{simulate_user_turn, SimState};
 use casimir::util::extract_json;
+use casimir::workspace::{parse_patch, Diff};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,6 +33,9 @@ fn setup_env() {
         std::env::set_var("CASIMIR_CLAUDE_BIN", fx("fake-claude.sh"));
         std::env::set_var("CASIMIR_CODEX_BIN", fx("fake-codex.sh"));
         std::env::set_var("CASIMIR_HOME", tmp("home"));
+        std::env::set_var("CASIMIR_LLM_CMD", fx("fake-llm.py"));
+        std::env::set_var("COPILOT_HOME", fx("copilot"));
+        std::env::set_var("GEMINI_CLI_HOME", fx("gemini"));
         std::env::set_var("CODEX_HOME", tmp("codexhome"));
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp("claudehome"));
     });
@@ -274,4 +280,207 @@ fn rerun_creates_worktree_at_base_commit() {
     assert!(root.starts_with(std::env::var("CASIMIR_HOME").unwrap()));
     assert!(res.workspace.dir.join("out.txt").exists(), "fake harness wrote into the worktree");
     assert!(!repo.join("out.txt").exists(), "original checkout untouched");
+}
+
+fn fake_llm(mode: &str) -> LlmOpts {
+    LlmOpts { model: Some(format!("fake:{mode}")), backend: "cmd".into(), ..Default::default() }
+}
+
+#[test]
+fn copilot_parses_session_dir_and_lists() {
+    setup_env();
+    let dir = fx("copilot/session-state/cccccccc-1111-4222-8333-444444444444");
+    let s = copilot::parse_dir(&dir).unwrap();
+    assert_eq!(s.harness, Some(Harness::Copilot));
+    assert_eq!(s.id, "cccccccc-1111-4222-8333-444444444444");
+    assert_eq!(s.cwd.as_deref(), Some("/work/demo"));
+    assert_eq!(s.git_branch.as_deref(), Some("main"));
+    assert_eq!(s.title.as_deref(), Some("Add greet function to lib.py"), "block-scalar summary parsed");
+    assert_eq!(s.model.as_deref(), Some("gpt-5"));
+    assert_eq!(user_turns(&s).len(), 1);
+    let names: Vec<&str> = s.events.iter().filter(|e| e.kind == EventKind::ToolCall).map(|e| e.tool.as_ref().unwrap().name.as_str()).collect();
+    assert_eq!(names, ["bash", "edit", "create"], "toolRequest and execution_start for the same call are not duplicated");
+    let st = stats(&s);
+    assert_eq!(st.assistant_messages, 2);
+    assert_eq!(st.tool_errors, 1);
+    assert_eq!(st.usage, Usage { input: 600, output: 200, cache_read: 300, cache_write: 100, reasoning: 50 }, "shutdown modelMetrics, uncached input derived");
+    let files: Vec<String> = files_touched(&s).into_iter().map(|f| f.path).collect();
+    assert_eq!(files, ["/work/demo/lib.py", "/work/demo/test_lib.py"]);
+    assert_eq!(load_session_file(&dir).unwrap().harness, Some(Harness::Copilot));
+    assert_eq!(load_session_file(&dir.join("events.jsonl")).unwrap().events.len(), s.events.len());
+    let listed = copilot::list_sessions();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].cwd.as_deref(), Some("/work/demo"));
+    assert_eq!(resolve_session("copilot:last").unwrap().id, s.id);
+}
+
+#[test]
+fn gemini_parses_jsonl_with_upserts_injected_context_and_project_root() {
+    setup_env();
+    let file = fx("gemini/tmp/demo/chats/session-2026-09-21T10-00-dddddddd.jsonl");
+    let s = gemini::parse_file(&file).unwrap();
+    assert_eq!(s.harness, Some(Harness::Gemini));
+    assert_eq!(s.id, "dddddddd-1111-4222-8333-555555555555");
+    assert_eq!(s.cwd.as_deref(), Some("/work/demo"), "cwd from .project_root");
+    assert_eq!(s.model.as_deref(), Some("gemini-2.5-pro"));
+    let turns = user_turns(&s);
+    assert_eq!(turns.len(), 1, "<session_context> message filtered");
+    assert_eq!(turns[0].text, "Add a greet(name) function to lib.py and a test for it");
+    let st = stats(&s);
+    assert_eq!(st.thinking_blocks, 1);
+    assert_eq!(st.assistant_messages, 2);
+    assert_eq!(st.tool_calls, 2, "$set re-sending g2 does not duplicate it");
+    assert_eq!(st.tool_errors, 0);
+    assert_eq!(st.usage, Usage { input: 1800, output: 170, cache_read: 600, cache_write: 0, reasoning: 20 });
+    let results: Vec<&Event> = s.events.iter().filter(|e| e.kind == EventKind::ToolResult).collect();
+    assert_eq!(results[0].result.as_ref().unwrap().output, "def add(a, b):\n    return a + b\n");
+    assert!(results[1].result.as_ref().unwrap().output.contains("Successfully wrote"), "upserted record wins");
+    assert_eq!(files_touched(&s).into_iter().map(|f| f.path).collect::<Vec<_>>(), ["/work/demo/test_lib.py"]);
+    assert_eq!(s.events.iter().find(|e| e.kind == EventKind::Thinking).unwrap().text_str(), "**Inspecting lib.py** I should read the file first.");
+    assert_eq!(load_session_file(&file).unwrap().harness, Some(Harness::Gemini));
+    assert_eq!(gemini::list_sessions().len(), 1);
+    assert_eq!(resolve_session("gemini:last").unwrap().id, s.id);
+    // $rewindTo drops later messages
+    let recs = vec![
+        json!({"sessionId": "x", "projectHash": "h", "startTime": "2026-01-01T00:00:00Z"}),
+        json!({"id": "u1", "timestamp": "2026-01-01T00:00:01Z", "type": "user", "content": "first"}),
+        json!({"id": "g1", "timestamp": "2026-01-01T00:00:02Z", "type": "gemini", "content": "reply one"}),
+        json!({"id": "u2", "timestamp": "2026-01-01T00:00:03Z", "type": "user", "content": "second"}),
+        json!({"$rewindTo": "g1"}),
+        json!({"id": "u3", "timestamp": "2026-01-01T00:00:04Z", "type": "user", "content": "second, again"}),
+    ];
+    let r = gemini::parse_records(&recs, None);
+    assert_eq!(user_turns(&r).iter().map(|t| t.text.clone()).collect::<Vec<_>>(), ["first", "second, again"]);
+}
+
+#[test]
+fn judge_runs_both_orders_and_flags_order_sensitivity() {
+    setup_env();
+    let a = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let b = codex::parse_file(&fx("codex.jsonl")).unwrap();
+    let j = judge_sessions(&a, &b, None, None, &fake_llm("judge-flip")).unwrap();
+    assert!(j.order_sensitive, "a judge that always prefers the first candidate must be caught");
+    assert_eq!(j.winner, "tie");
+    assert_eq!(j.passes.len(), 2);
+    assert_eq!(j.passes[0].order, "AB");
+    assert_eq!(j.passes[1].order, "BA");
+    assert_eq!(j.passes[1].winner, "B", "second pass winner mapped back to real labels");
+    assert!((j.score_a - 7.0).abs() < 1e-9 && (j.score_b - 7.0).abs() < 1e-9, "scores averaged across orders");
+    assert!(j.close);
+    assert_eq!(j.model, "fake:judge-flip");
+    // a consistent judge keeps its verdict
+    let mut b2 = b.clone();
+    b2.events.push(Event::text(2, "2026-09-20T12:02:00.000Z", EventKind::Assistant, "Working on it: done"));
+    let j2 = judge_sessions(&a, &b2, None, None, &fake_llm("judge-consistent")).unwrap();
+    assert!(!j2.order_sensitive);
+    assert_eq!(j2.winner, "B");
+    assert!(!j2.close);
+}
+
+#[test]
+fn simulator_retries_ungrounded_replies_and_reports_stop_reasons() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let mut rerun_s = Session::new(Harness::ClaudeCode);
+    rerun_s.events.push(Event::text(1, "2026-09-22T00:00:00Z", EventKind::User, "Add a greet(name) function to lib.py and a test for it"));
+    rerun_s.events.push(Event::text(1, "2026-09-22T00:00:05Z", EventKind::Assistant, "Working on it"));
+    let mut state = SimState::default();
+    let r = simulate_user_turn(&original, &rerun_s, 2, &fake_llm("sim-retry"), &mut state).unwrap();
+    assert_eq!(r.retries, 2, "two ungrounded replies discarded");
+    assert!(!r.verbatim);
+    assert_eq!(r.grounded_in, [2]);
+    assert!(r.message.unwrap().starts_with("adapted: Also make greet"));
+    assert_eq!(state.memory.len(), 1, "only the accepted reply's note is kept");
+    let stop = simulate_user_turn(&original, &rerun_s, 2, &fake_llm("sim-stop"), &mut state).unwrap();
+    assert!(stop.message.is_none());
+    assert_eq!(stop.stop_reason.as_deref(), Some("out_of_scope"));
+    let vb = simulate_user_turn(&original, &rerun_s, 2, &fake_llm("sim-verbatim"), &mut state).unwrap();
+    assert!(vb.verbatim);
+    assert_eq!(vb.message.as_deref(), Some("Also make greet default to 'World' when no name is given"));
+}
+
+#[test]
+fn end_state_and_tool_sequence_similarity() {
+    let pa = "diff --git a/lib.py b/lib.py\n--- a/lib.py\n+++ b/lib.py\n@@ -1,2 +1,4 @@\n def add(a, b):\n     return a + b\n+def greet(name):\n+    return f\"Hello, {name}!\"\ndiff --git a/test_lib.py b/test_lib.py\nnew file mode 100644\n--- /dev/null\n+++ b/test_lib.py\n@@ -0,0 +1 @@\n+from lib import greet\n";
+    let pb = "diff --git a/lib.py b/lib.py\n--- a/lib.py\n+++ b/lib.py\n@@ -1,2 +1,4 @@\n def add(a, b):\n     return a + b\n+def greet(name):\n+    return f\"Hello, {name}!\"\n";
+    let parsed = parse_patch(pa);
+    assert_eq!(parsed["lib.py"].added.len(), 2);
+    assert_eq!(parsed["test_lib.py"].added, ["from lib import greet"]);
+    let da = Diff { patch: pa.into(), source: Some("A".into()), ..Default::default() };
+    let db = Diff { patch: pb.into(), ..Default::default() };
+    let es = end_state_similarity(&da, &db);
+    assert!((es.files_jaccard - 0.5).abs() < 1e-9);
+    assert!((es.content_similarity - 0.5).abs() < 1e-9, "lib.py identical (1.0), test_lib.py missing (0.0)");
+    assert!((es.score - 0.25).abs() < 1e-9);
+    assert_eq!(es.source_a.as_deref(), Some("A"));
+    let same = end_state_similarity(&da, &da);
+    assert!((same.score - 1.0).abs() < 1e-9);
+    let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert!((sequence_similarity(&v(&["Bash", "Edit", "Write"]), &v(&["Bash", "Write"])) - 0.8).abs() < 1e-9);
+    assert_eq!(sequence_similarity(&[], &[]), 1.0);
+    let a = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let r = compare_sessions(&a, &a, Some(da.clone()), Some(da), None);
+    assert!((r.tool_sequence_similarity - 1.0).abs() < 1e-9);
+    assert!((r.end_state.unwrap().score - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn simulated_rerun_records_simulator_and_marks_turns() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let out_dir = tmp("run");
+    let original_diff = Diff { patch: "diff --git a/out.txt b/out.txt\nnew file mode 100644\n--- /dev/null\n+++ b/out.txt\n@@ -0,0 +1 @@\n+hi\n".into(), source: Some("test".into()), ..Default::default() };
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, user_mode: "simulate".into(), sim_llm: fake_llm("sim-verbatim"), judge: true, judge_llm: fake_llm("judge-consistent"), run_id: Some("t-sim".into()), original_diff: Some(original_diff), ..Default::default() };
+    let res = rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let session = res.session.unwrap();
+    assert_eq!(session.simulator.as_ref().map(|s| s.model.as_str()), Some("fake:sim-verbatim"));
+    assert_eq!(session.simulator.as_ref().map(|s| s.backend.as_str()), Some("cmd"));
+    let second = session.events.iter().find(|e| e.kind == EventKind::User && e.turn == 2).unwrap();
+    let sim = second.simulated.as_ref().expect("second turn marked as simulated");
+    assert!(sim.verbatim);
+    assert_eq!(sim.grounded_in, [2]);
+    let text = render_transcript(&session, &RenderOpts::default());
+    assert!(text.contains("[simulated user: verbatim]"));
+    let report = res.report.unwrap();
+    assert_eq!(report.b.simulator_model.as_deref(), Some("fake:sim-verbatim"));
+    let j = report.judge.unwrap();
+    assert_eq!(j.passes.len(), 2);
+    assert_eq!(j.winner, "B", "fake harness output mentions 'Working on', which the consistent fake judge prefers");
+    let es = report.end_state.expect("end state computed from the supplied original diff and the captured rerun diff");
+    assert!((es.score - 1.0).abs() < 1e-9, "fake harness wrote the same out.txt as the supplied original diff");
+    assert_eq!(es.source_a.as_deref(), Some("test"));
+    assert!(out_dir.join("original.patch").exists());
+}
+
+#[test]
+fn replicated_rerun_aggregates_pass_rates() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let out_dir = tmp("matrix");
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, replicates: 2, run_id: Some("t-matrix".into()), ..Default::default() };
+    let (single, matrix) = rerun_matrix(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    assert!(single.is_none());
+    let m = matrix.unwrap();
+    assert_eq!(m.entries.len(), 2);
+    assert_eq!(m.entries[0].label, "r1");
+    assert!(m.entries.iter().all(|e| e.pass), "clean fake runs pass without a judge");
+    assert_eq!(m.groups.len(), 1);
+    assert!((m.groups[0].pass_at_1 - 1.0).abs() < 1e-9);
+    assert!(m.groups[0].pass_pow_k);
+    assert!(!m.groups[0].disagree);
+    assert!(out_dir.join("replicates.json").exists());
+    assert!(out_dir.join("report.md").exists());
+    assert!(out_dir.join("r1/session.json").exists() && out_dir.join("r2/session.json").exists());
+    // two simulator models × 1 replicate → two groups
+    let out2 = tmp("matrix");
+    let opts2 = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out2), quiet: true, user_mode: "simulate".into(), sim_llm: fake_llm("sim-verbatim"), sim_models: vec!["fake:sim-verbatim".into(), "fake:sim-stop".into()], run_id: Some("t-matrix2".into()), ..Default::default() };
+    let (_, m2) = rerun_matrix(&original, &opts2, &mut no_log, &mut no_log).unwrap();
+    let m2 = m2.unwrap();
+    assert_eq!(m2.groups.len(), 2);
+    let stop_group = m2.groups.iter().find(|g| g.simulator_model.as_deref() == Some("fake:sim-stop")).unwrap();
+    assert!(!stop_group.pass_pow_k, "an out_of_scope stop before the last turn is not a pass");
+    let ok_group = m2.groups.iter().find(|g| g.simulator_model.as_deref() == Some("fake:sim-verbatim")).unwrap();
+    assert!(ok_group.pass_pow_k);
 }

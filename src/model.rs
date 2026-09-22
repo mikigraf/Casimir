@@ -12,6 +12,10 @@ pub enum Harness {
     ClaudeCode,
     #[serde(rename = "codex")]
     Codex,
+    #[serde(rename = "copilot")]
+    Copilot,
+    #[serde(rename = "gemini")]
+    Gemini,
 }
 
 impl Harness {
@@ -19,17 +23,21 @@ impl Harness {
         match name.to_ascii_lowercase().as_str() {
             "claude" | "claude-code" | "claudecode" | "cc" => Ok(Harness::ClaudeCode),
             "codex" | "openai" | "codex-cli" => Ok(Harness::Codex),
-            _ => anyhow::bail!("unknown harness \"{name}\" (expected claude-code or codex)"),
+            "copilot" | "copilot-cli" | "gh-copilot" | "github-copilot" => Ok(Harness::Copilot),
+            "gemini" | "gemini-cli" => Ok(Harness::Gemini),
+            _ => anyhow::bail!("unknown harness \"{name}\" (expected claude-code, codex, copilot or gemini)"),
         }
     }
     pub fn as_str(&self) -> &'static str {
         match self {
             Harness::ClaudeCode => "claude-code",
             Harness::Codex => "codex",
+            Harness::Copilot => "copilot",
+            Harness::Gemini => "gemini",
         }
     }
-    pub fn all() -> [Harness; 2] {
-        [Harness::ClaudeCode, Harness::Codex]
+    pub fn all() -> [Harness; 4] {
+        [Harness::ClaudeCode, Harness::Codex, Harness::Copilot, Harness::Gemini]
     }
 }
 
@@ -95,6 +103,17 @@ pub struct ToolResult {
 pub struct Simulated {
     pub verbatim: bool,
     pub reason: String,
+    /// Original turn numbers the simulator says it drew the message from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grounded_in: Vec<u32>,
+}
+
+/// Which model played the user in a rerun (recorded so simulator-induced variance is visible).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatorInfo {
+    pub model: String,
+    pub backend: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -220,6 +239,8 @@ pub struct Session {
     pub harness_log_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulator: Option<SimulatorInfo>,
     #[serde(default)]
     pub events: Vec<Event>,
 }
@@ -384,11 +405,20 @@ pub fn files_touched(session: &Session) -> Vec<TouchedFile> {
                     }
                 }
             }
-            _ => {
+            other => {
                 if let Some(cmd) = shell_command(e) {
                     for f in shell_written_files(&cmd) {
                         add(&f, "shell-write");
                     }
+                    continue;
+                }
+                // Generic file tools (Copilot `edit`/`create`, Gemini `write_file`/`replace`, MCP editors…)
+                let lower = other.to_ascii_lowercase();
+                let writes = ["edit", "write", "create", "replace", "patch", "insert", "delete", "remove"].iter().any(|w| lower.contains(w));
+                if writes {
+                    let p = ["file_path", "filePath", "path", "file", "target_file", "filename"].iter().find_map(|k| inp.get(*k).and_then(Value::as_str)).unwrap_or("");
+                    let op = if lower.contains("create") || lower.contains("write") { "write" } else if lower.contains("delete") || lower.contains("remove") { "delete" } else { "edit" };
+                    add(p, op);
                 }
             }
         }
@@ -463,6 +493,8 @@ pub struct Stats {
     pub errors: usize,
     pub sidechain_events: usize,
     pub final_message_chars: usize,
+    /// User turns produced by the simulator rather than taken verbatim from the original.
+    pub simulated_turns: usize,
 }
 
 /// Per-session aggregate statistics. Subagent (sidechain) traffic is reported separately.
@@ -486,6 +518,9 @@ pub fn stats(session: &Session) -> Stats {
         match e.kind {
             EventKind::User => {
                 turns.insert(e.turn);
+                if e.simulated.as_ref().is_some_and(|sim| !sim.verbatim) {
+                    s.simulated_turns += 1;
+                }
             }
             EventKind::Assistant => s.assistant_messages += 1,
             EventKind::Thinking => s.thinking_blocks += 1,
@@ -532,4 +567,9 @@ pub fn sorted_counts(m: &BTreeMap<String, usize>) -> Vec<(String, usize)> {
     let mut v: Vec<(String, usize)> = m.iter().map(|(k, c)| (k.clone(), *c)).collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     v
+}
+
+/// Tool names in call order (main thread only).
+pub fn tool_sequence(session: &Session) -> Vec<String> {
+    session.events.iter().filter(|e| e.kind == EventKind::ToolCall && !e.sidechain).filter_map(|e| e.tool.as_ref().map(|t| t.name.clone())).collect()
 }

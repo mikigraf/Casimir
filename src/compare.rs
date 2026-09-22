@@ -1,13 +1,13 @@
-//! Side-by-side comparison of two sessions, plus an optional LLM judge.
+//! Side-by-side comparison of two sessions, end-state similarity, and an order-swapped LLM judge.
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::llm::{complete_json, LlmOpts};
-use crate::model::{files_touched, final_assistant_text, stats, user_turns, Harness, Session, Usage};
+use crate::llm::{complete_json, effective_model, LlmOpts};
+use crate::model::{files_touched, final_assistant_text, stats, tool_sequence, user_turns, Harness, Session, Usage};
 use crate::util::{colors, fmt_duration, fmt_num, indent, pad};
-use crate::workspace::Diff;
+use crate::workspace::{parse_patch, Diff};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +17,7 @@ pub struct SideStats {
     pub model: Option<String>,
     pub title: Option<String>,
     pub turns: usize,
+    pub simulated_turns: usize,
     pub assistant_messages: usize,
     pub tool_calls: usize,
     pub tool_errors: usize,
@@ -26,6 +27,8 @@ pub struct SideStats {
     pub usage: Usage,
     pub cost_usd: Option<f64>,
     pub final_message_chars: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulator_model: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -43,6 +46,18 @@ pub struct ToolRow {
     pub b: usize,
 }
 
+/// One judge call in one candidate order. Scores are already mapped back to the real A and B.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct JudgePass {
+    /// "AB" (A shown first) or "BA" (B shown first)
+    pub order: String,
+    pub winner: String,
+    pub score_a: f64,
+    pub score_b: f64,
+    pub summary: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Judgement {
@@ -52,6 +67,30 @@ pub struct Judgement {
     pub summary: String,
     pub differences: Vec<String>,
     pub model: String,
+    /// The two orderings disagreed on the winner; the combined verdict is a tie.
+    #[serde(default)]
+    pub order_sensitive: bool,
+    /// Scores within one point: position bias is worst on close comparisons.
+    #[serde(default)]
+    pub close: bool,
+    #[serde(default)]
+    pub passes: Vec<JudgePass>,
+}
+
+/// How similar two workspace end states are (0..1). Files: Jaccard over changed paths.
+/// Content: mean per-file Jaccard over added/removed lines. Score multiplies the two.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EndState {
+    pub score: f64,
+    pub files_jaccard: f64,
+    pub content_similarity: f64,
+    pub files_a: usize,
+    pub files_b: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_a: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_b: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -61,8 +100,12 @@ pub struct Report {
     pub b: SideStats,
     pub files: FileSets,
     pub tools: Vec<ToolRow>,
+    /// LCS ratio over tool-name sequences; descriptive only, not a correctness signal.
+    pub tool_sequence_similarity: f64,
     pub final_a: String,
     pub final_b: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_state: Option<EndState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_a: Option<Diff>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,6 +132,7 @@ fn describe(session: &Session) -> SideStats {
         model: s.model,
         title: session.title.clone(),
         turns: s.turns,
+        simulated_turns: s.simulated_turns,
         assistant_messages: s.assistant_messages,
         tool_calls: s.tool_calls,
         tool_errors: s.tool_errors,
@@ -98,7 +142,58 @@ fn describe(session: &Session) -> SideStats {
         usage: s.usage,
         cost_usd: s.cost_usd,
         final_message_chars: s.final_message_chars,
+        simulator_model: session.simulator.as_ref().map(|si| si.model.clone()),
     }
+}
+
+fn jaccard<T: Ord>(a: &BTreeSet<T>, b: &BTreeSet<T>) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let inter = a.intersection(b).count() as f64;
+    let union = a.union(b).count() as f64;
+    inter / union
+}
+
+/// Compare two workspace diffs by end state rather than by trajectory.
+pub fn end_state_similarity(a: &Diff, b: &Diff) -> EndState {
+    let pa = parse_patch(&a.patch);
+    let pb = parse_patch(&b.patch);
+    let fa: BTreeSet<String> = pa.keys().cloned().collect();
+    let fb: BTreeSet<String> = pb.keys().cloned().collect();
+    let files_jaccard = jaccard(&fa, &fb);
+    let union: BTreeSet<&String> = fa.union(&fb).collect();
+    let content_similarity = if union.is_empty() {
+        1.0
+    } else {
+        let mut total = 0.0;
+        for f in &union {
+            let la: BTreeSet<String> = pa.get(*f).map(|c| c.added.iter().map(|l| format!("+{l}")).chain(c.removed.iter().map(|l| format!("-{l}"))).collect()).unwrap_or_default();
+            let lb: BTreeSet<String> = pb.get(*f).map(|c| c.added.iter().map(|l| format!("+{l}")).chain(c.removed.iter().map(|l| format!("-{l}"))).collect()).unwrap_or_default();
+            total += jaccard(&la, &lb);
+        }
+        total / union.len() as f64
+    };
+    EndState { score: files_jaccard * content_similarity, files_jaccard, content_similarity, files_a: fa.len(), files_b: fb.len(), source_a: a.source.clone(), source_b: b.source.clone() }
+}
+
+/// Longest-common-subsequence ratio between two sequences (2·lcs / (|a|+|b|)).
+pub fn sequence_similarity(a: &[String], b: &[String]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut prev = vec![0usize; b.len() + 1];
+    for x in a {
+        let mut cur = vec![0usize; b.len() + 1];
+        for (j, y) in b.iter().enumerate() {
+            cur[j + 1] = if x == y { prev[j] + 1 } else { prev[j + 1].max(cur[j]) };
+        }
+        prev = cur;
+    }
+    2.0 * prev[b.len()] as f64 / (a.len() + b.len()) as f64
 }
 
 pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: Option<Diff>, judge: Option<Judgement>) -> Report {
@@ -115,6 +210,10 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
     }
     let mut tools: Vec<ToolRow> = names.into_iter().map(|(name, (a, b))| ToolRow { name, a, b }).collect();
     tools.sort_by(|x, y| (y.a + y.b).cmp(&(x.a + x.b)).then(x.name.cmp(&y.name)));
+    let end_state = match (&diff_a, &diff_b) {
+        (Some(da), Some(db)) => Some(end_state_similarity(da, db)),
+        _ => None,
+    };
     Report {
         a: describe(a),
         b: describe(b),
@@ -124,8 +223,10 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
             both: fa.iter().filter(|f| fb.contains(f)).cloned().collect(),
         },
         tools,
+        tool_sequence_similarity: sequence_similarity(&tool_sequence(a), &tool_sequence(b)),
         final_a: final_assistant_text(a, None),
         final_b: final_assistant_text(b, None),
+        end_state,
         diff_a,
         diff_b,
         judge,
@@ -135,10 +236,16 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
 fn rows(r: &Report) -> Vec<(&'static str, String, String)> {
     let (a, b) = (&r.a, &r.b);
     let cost = |c: Option<f64>| c.map(|c| format!("{c:.4}")).unwrap_or_else(|| "-".into());
-    vec![
+    let mut rows = vec![
         ("harness", a.harness.map(|h| h.to_string()).unwrap_or_default(), b.harness.map(|h| h.to_string()).unwrap_or_default()),
         ("model", a.model.clone().unwrap_or_else(|| "-".into()), b.model.clone().unwrap_or_else(|| "-".into())),
         ("turns", a.turns.to_string(), b.turns.to_string()),
+    ];
+    if a.simulated_turns > 0 || b.simulated_turns > 0 || a.simulator_model.is_some() || b.simulator_model.is_some() {
+        rows.push(("simulated turns", a.simulated_turns.to_string(), b.simulated_turns.to_string()));
+        rows.push(("simulator model", a.simulator_model.clone().unwrap_or_else(|| "-".into()), b.simulator_model.clone().unwrap_or_else(|| "-".into())));
+    }
+    rows.extend([
         ("assistant messages", a.assistant_messages.to_string(), b.assistant_messages.to_string()),
         ("tool calls", a.tool_calls.to_string(), b.tool_calls.to_string()),
         ("tool errors", a.tool_errors.to_string(), b.tool_errors.to_string()),
@@ -150,7 +257,25 @@ fn rows(r: &Report) -> Vec<(&'static str, String, String)> {
         ("cache read tokens", fmt_num(a.usage.cache_read), fmt_num(b.usage.cache_read)),
         ("cost (USD)", cost(a.cost_usd), cost(b.cost_usd)),
         ("final message chars", a.final_message_chars.to_string(), b.final_message_chars.to_string()),
-    ]
+    ]);
+    rows
+}
+
+fn end_state_lines(r: &Report, label_a: &str, label_b: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(es) = &r.end_state {
+        out.push(format!("  end-state similarity: {:.2}  (files {:.2} × content {:.2}; {} vs {} changed files)", es.score, es.files_jaccard, es.content_similarity, es.files_a, es.files_b));
+        if let Some(s) = &es.source_a {
+            out.push(format!("    {label_a} diff: {s}"));
+        }
+        if let Some(s) = &es.source_b {
+            out.push(format!("    {label_b} diff: {s}"));
+        }
+    } else {
+        out.push("  end-state similarity: n/a (need a workspace diff for both sides)".into());
+    }
+    out.push(format!("  tool-sequence similarity: {:.2}  (descriptive only)", r.tool_sequence_similarity));
+    out
 }
 
 pub fn render_compare_text(r: &Report, label_a: &str, label_b: &str) -> String {
@@ -159,6 +284,9 @@ pub fn render_compare_text(r: &Report, label_a: &str, label_b: &str) -> String {
     for (k, va, vb) in rows(r) {
         out.push(format!("{}{}{vb}", pad(k, 22), pad(&va, 28)));
     }
+    out.push(String::new());
+    out.push(format!("{}outcome{}", c.bold, c.reset));
+    out.extend(end_state_lines(r, label_a, label_b));
     out.push(String::new());
     out.push(format!("{}tool usage{}", c.bold, c.reset));
     for t in &r.tools {
@@ -195,7 +323,16 @@ pub fn render_compare_text(r: &Report, label_a: &str, label_b: &str) -> String {
     if let Some(j) = &r.judge {
         out.push(String::new());
         out.push(format!("{}judge ({}){}", c.bold, j.model, c.reset));
-        out.push(format!("  winner: {}   scores: {label_a}={}/10  {label_b}={}/10", j.winner, j.score_a, j.score_b));
+        out.push(format!("  winner: {}   scores: {label_a}={:.1}/10  {label_b}={:.1}/10", j.winner, j.score_a, j.score_b));
+        if j.order_sensitive {
+            out.push(format!("  {}⚠ order-sensitive: the two candidate orders disagreed, so the verdict is a tie{}", c.yellow, c.reset));
+        }
+        if j.close {
+            out.push(format!("  {}⚠ close call: scores within one point; position bias is strongest here{}", c.yellow, c.reset));
+        }
+        for p in &j.passes {
+            out.push(format!("  {}order {}: winner {}, {label_a}={:.1} {label_b}={:.1}{}", c.dim, p.order, p.winner, p.score_a, p.score_b, c.reset));
+        }
         out.push(indent(&j.summary, "  "));
         for d in &j.differences {
             out.push(format!("  - {d}"));
@@ -210,6 +347,10 @@ pub fn render_compare_markdown(r: &Report, label_a: &str, label_b: &str) -> Stri
     md.push("|---|---|---|".into());
     for (k, va, vb) in rows(r) {
         md.push(format!("| {k} | {va} | {vb} |"));
+    }
+    md.extend([String::new(), "## Outcome".into(), String::new()]);
+    for l in end_state_lines(r, label_a, label_b) {
+        md.push(format!("- {}", l.trim()));
     }
     md.extend([String::new(), "## Tool usage".into(), String::new(), format!("| tool | {label_a} | {label_b} |"), "|---|---|---|".into()]);
     for t in &r.tools {
@@ -233,7 +374,21 @@ pub fn render_compare_markdown(r: &Report, label_a: &str, label_b: &str) -> Stri
     }
     if let Some(j) = &r.judge {
         md.extend([String::new(), format!("## Judge ({})", j.model), String::new()]);
-        md.push(format!("**Winner:** {} — {label_a} {}/10, {label_b} {}/10", j.winner, j.score_a, j.score_b));
+        md.push(format!("**Winner:** {} — {label_a} {:.1}/10, {label_b} {:.1}/10", j.winner, j.score_a, j.score_b));
+        if j.order_sensitive {
+            md.push(String::new());
+            md.push("> ⚠ Order-sensitive: the two candidate orders disagreed on the winner, so the combined verdict is a tie.".into());
+        }
+        if j.close {
+            md.push(String::new());
+            md.push("> ⚠ Close call: scores within one point. Position bias is strongest on close comparisons.".into());
+        }
+        if !j.passes.is_empty() {
+            md.extend([String::new(), "| order | winner | score A | score B |".into(), "|---|---|---|---|".into()]);
+            for p in &j.passes {
+                md.push(format!("| {} | {} | {:.1} | {:.1} |", p.order, p.winner, p.score_a, p.score_b));
+            }
+        }
         md.extend([String::new(), j.summary.clone(), String::new()]);
         for d in &j.differences {
             md.push(format!("- {d}"));
@@ -248,6 +403,7 @@ const JUDGE_SYSTEM: &str = "You are an impartial reviewer comparing two runs of 
 You see the user's requests, each run's final message, the tools each run used, and the resulting workspace diff.
 Judge which run better accomplished what the user asked, weighing correctness and completeness first, then
 scope discipline (not doing unrequested work), then efficiency. Be concrete and cite evidence from the diffs.
+Give each run an absolute score from 0 to 10 first, independently, then decide the winner; a tie is acceptable.
 Reply with a JSON object: {\"winner\": \"A\"|\"B\"|\"tie\", \"scoreA\": 0-10, \"scoreB\": 0-10, \"summary\": \"...\", \"differences\": [\"...\", ...]}";
 
 fn clip_text(s: &str, n: usize) -> String {
@@ -273,24 +429,53 @@ fn run_block(label: &str, s: &Session, diff: Option<&Diff>) -> String {
     .join("\n")
 }
 
-/// Ask an LLM to judge A vs B.
-pub fn judge_sessions(a: &Session, b: &Session, diff_a: Option<&Diff>, diff_b: Option<&Diff>, llm: &LlmOpts) -> Result<Judgement> {
-    let mut prompt: Vec<String> = vec!["# User requests (in order)".into()];
-    for t in user_turns(a) {
-        prompt.push(format!("{}. {}", t.turn, clip_text(&t.text, 4000)));
-    }
-    prompt.push(String::new());
-    prompt.push(run_block("A", a, diff_a));
-    prompt.push(String::new());
-    prompt.push(run_block("B", b, diff_b));
-    let obj = complete_json(JUDGE_SYSTEM, &prompt.join("\n"), llm)?;
+/// One judge call with `first` shown as Run A and `second` as Run B. Returns (winner, score_first, score_second, summary, differences).
+fn judge_once(turns_block: &str, first: (&Session, Option<&Diff>), second: (&Session, Option<&Diff>), llm: &LlmOpts) -> Result<(String, f64, f64, String, Vec<String>)> {
+    let prompt = [turns_block.to_string(), String::new(), run_block("A", first.0, first.1), String::new(), run_block("B", second.0, second.1)].join("\n");
+    let obj = complete_json(JUDGE_SYSTEM, &prompt, llm)?;
     let num = |k: &str| obj.get(k).and_then(Value::as_f64).unwrap_or(0.0);
-    Ok(Judgement {
-        winner: obj.get("winner").and_then(Value::as_str).unwrap_or("tie").to_string(),
-        score_a: num("scoreA"),
-        score_b: num("scoreB"),
-        summary: obj.get("summary").and_then(Value::as_str).unwrap_or("").to_string(),
-        differences: obj.get("differences").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
-        model: llm.model.clone().unwrap_or_else(|| crate::llm::DEFAULT_MODEL.into()),
-    })
+    Ok((
+        obj.get("winner").and_then(Value::as_str).unwrap_or("tie").to_string(),
+        num("scoreA"),
+        num("scoreB"),
+        obj.get("summary").and_then(Value::as_str).unwrap_or("").to_string(),
+        obj.get("differences").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
+    ))
+}
+
+fn swap_label(w: &str) -> String {
+    match w {
+        "A" => "B".into(),
+        "B" => "A".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Ask an LLM to judge A vs B in both candidate orders. Verdicts that flip on order swap become a tie
+/// flagged `order_sensitive`; scores are averaged across the two passes.
+pub fn judge_sessions(a: &Session, b: &Session, diff_a: Option<&Diff>, diff_b: Option<&Diff>, llm: &LlmOpts) -> Result<Judgement> {
+    let mut turns_block: Vec<String> = vec!["# User requests (in order)".into()];
+    for t in user_turns(a) {
+        turns_block.push(format!("{}. {}", t.turn, clip_text(&t.text, 4000)));
+    }
+    let tb = turns_block.join("\n");
+    let (w1, sa1, sb1, sum1, diffs1) = judge_once(&tb, (a, diff_a), (b, diff_b), llm)?;
+    let (w2_raw, sb2, sa2, sum2, diffs2) = judge_once(&tb, (b, diff_b), (a, diff_a), llm)?;
+    let w2 = swap_label(&w2_raw);
+    let passes = vec![
+        JudgePass { order: "AB".into(), winner: w1.clone(), score_a: sa1, score_b: sb1, summary: sum1.clone() },
+        JudgePass { order: "BA".into(), winner: w2.clone(), score_a: sa2, score_b: sb2, summary: sum2.clone() },
+    ];
+    let score_a = (sa1 + sa2) / 2.0;
+    let score_b = (sb1 + sb2) / 2.0;
+    let order_sensitive = w1 != w2;
+    let winner = if order_sensitive { "tie".to_string() } else { w1.clone() };
+    let mut differences = diffs1;
+    for d in diffs2 {
+        if !differences.contains(&d) {
+            differences.push(d);
+        }
+    }
+    let summary = if order_sensitive { format!("[order AB] {sum1}\n[order BA] {sum2}") } else { sum1 };
+    Ok(Judgement { winner, score_a, score_b, summary, differences, model: effective_model(llm), order_sensitive, close: (score_a - score_b).abs() <= 1.0, passes })
 }
