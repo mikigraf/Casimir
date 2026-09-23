@@ -400,12 +400,24 @@ pub fn ju64(v: &Value, path: &[&str]) -> u64 {
     jget(v, path).and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// Pick the most informative line of a failed process's stderr: the first line mentioning an error,
-/// else the last non-empty line.
+/// Classify provider stderr without copying its potentially secret-bearing text into reports.
 pub fn stderr_error_line(stderr: &str, fallback: &str) -> String {
-    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    let pick = lines.iter().find(|l| l.to_ascii_lowercase().contains("error")).or_else(|| lines.last()).copied().unwrap_or(fallback);
-    truncate(pick, 500)
+    if stderr.trim().is_empty() { return fallback.to_string(); }
+    let lower = stderr.to_ascii_lowercase();
+    let category = if lower.contains("rate limit") || lower.contains("rate_limit") || lower.contains("429") {
+        "rate limit"
+    } else if lower.contains("authentication") || lower.contains("unauthorized") || lower.contains("login") || lower.contains("401") {
+        "authentication"
+    } else if lower.contains("sandbox") || lower.contains("bubblewrap") || lower.contains("bwrap") {
+        "sandbox"
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "timeout"
+    } else if lower.contains("permission") || lower.contains("access denied") {
+        "permission"
+    } else {
+        "provider error"
+    };
+    format!("{} ({category}; details retained in private stderr log)", truncate(fallback, 180))
 }
 
 impl Drop for RunLock {
@@ -430,4 +442,18 @@ fn private_windows_acl(path: &Path, directory: bool) -> Result<()> {
         if let Some(error) = error { return Err(error).context("protecting local artifact ACL"); }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::stderr_error_line;
+
+    #[test]
+    fn provider_stderr_never_enters_diagnostics() {
+        for stderr in ["authentication failed: sk-secret", "rate limit; token=sk-secret", "sandbox error sk-secret", "unexpected sk-secret"] {
+            let diagnostic = stderr_error_line(stderr, "provider call failed");
+            assert!(!diagnostic.contains("sk-secret"));
+            assert!(diagnostic.contains("private stderr log"));
+        }
+    }
 }

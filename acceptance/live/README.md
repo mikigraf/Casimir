@@ -17,6 +17,10 @@ authenticated checkpoint, fork and interrupted-resume workflows. A missing compa
 checkpoint blocks those workflows; fixtures cannot certify the native transcript format.
 The live driver reports these workflow requirements separately and does not turn a basic
 replay pass into a complete platform acceptance pass.
+The 2026-09-23 Linux run passed all 40 attempts and both replay directions; its
+[hash-only receipt](evidence/linux-subscription-2026-09-23.json) is integration evidence,
+not a release-commit certification. It records that the local binary was built before its
+repository HEAD was committed. Repeat the full run from a clean release commit before 1.0.
 Use `--harness claude-code` or `--harness codex` to collect real partial provider evidence when
 only one subscription login is available. A subset is labelled `partial` and cannot satisfy
 the full release gate.

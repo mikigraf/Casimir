@@ -103,11 +103,10 @@ fn request_api(auth: Credential, url: &str, body: Value, timeout: u64, spool: &s
     let resp: Value = serde_json::from_slice(&bytes).context("parsing API response")?;
     crate::util::write_json(&spool.join("response.json"), &resp)?;
     if resp.get("type").and_then(Value::as_str) == Some("error") {
-        bail!("API error: {}", resp.get("error").and_then(|e| e.get("message")).and_then(Value::as_str).unwrap_or("unknown"));
+        bail!("API returned an error response; details retained privately");
     }
     if resp.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
-        let d = resp.get("stop_details").cloned().unwrap_or(Value::Null);
-        bail!("model refused ({}): {}", d.get("category").and_then(Value::as_str).unwrap_or("unknown"), d.get("explanation").and_then(Value::as_str).unwrap_or(""));
+        bail!("model refused; details retained privately");
     }
     let text = resp
         .get("content")
@@ -129,12 +128,12 @@ fn complete_cli(system: &str, prompt: &str, model: &str, timeout: u64, spool: &s
     let out = crate::process::capture(&mut cmd, prompt.as_bytes(), Duration::from_secs(timeout), Some(&spool.join("process")))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     if !out.status.success() {
-        bail!("claude -p exited with {}: {}", out.status, out.stderr.trim());
+        bail!("claude -p exited with {}: {}", out.status, crate::util::stderr_error_line(&out.stderr, "provider call failed"));
     }
     let last = stdout.trim().lines().last().unwrap_or("");
-    let parsed: Value = serde_json::from_str(last).with_context(|| format!("claude -p returned no JSON ({}): {}", out.status, out.stderr.trim()))?;
+    let parsed: Value = serde_json::from_str(last).with_context(|| format!("claude -p returned no JSON ({}); raw output retained privately", out.status))?;
     if parsed.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
-        bail!("claude -p error: {}", parsed.get("result").and_then(Value::as_str).unwrap_or(""));
+        bail!("claude -p reported an error; raw result retained privately");
     }
     Ok(Completion { text: parsed.get("result").and_then(Value::as_str).unwrap_or("").to_string(), usage: parsed.get("usage").cloned(), cost_usd: parsed.get("total_cost_usd").and_then(Value::as_f64), model: parsed.get("model").and_then(Value::as_str).map(String::from) })
 }
@@ -175,7 +174,7 @@ fn complete_cmd(system: &str, prompt: &str, model: &str, timeout: u64, spool: &s
     cmd.env("CASIMIR_LLM_SYSTEM", system).env("CASIMIR_LLM_MODEL", model);
     let out = crate::process::capture(&mut cmd, prompt.as_bytes(), Duration::from_secs(timeout), Some(&spool.join("process")))?;
     if !out.status.success() {
-        bail!("{bin} failed: {}", out.stderr.trim());
+        bail!("custom LLM command failed with {}: {}", out.status, crate::util::stderr_error_line(&out.stderr, "command failed"));
     }
     Ok(Completion { text: String::from_utf8_lossy(&out.stdout).into_owned(), usage: None, cost_usd: None, model: None })
 }
@@ -220,7 +219,7 @@ pub fn complete_json(system: &str, prompt: &str, o: &LlmOpts) -> Result<Value> {
     }
     let retry = format!("{prompt}\n\nRespond with a single JSON object and nothing else.");
     let text2 = complete(system, &retry, o)?;
-    extract_json(&text2).with_context(|| format!("LLM did not return JSON: {}", text2.chars().take(300).collect::<String>()))
+    extract_json(&text2).context("LLM did not return JSON; raw response retained privately")
 }
 
 #[cfg(test)]
@@ -254,6 +253,16 @@ mod tests {
             assert!(error.contains(&status.to_string()));assert!(!error.contains("secret-token"));assert!(!error.contains("test-credential"));
             let request = server.join().unwrap();assert!(request.contains("x-api-key: test-credential"));
         }
+    }
+    #[test]
+    fn provider_error_body_is_private_not_a_diagnostic() {
+        let body = json!({"type":"error","error":{"message":"credential sk-secret was rejected"}}).to_string();
+        let (url, server) = server(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes(), Duration::ZERO);
+        let directory = tempfile::tempdir().unwrap();
+        let error = request_api(Credential::ApiKey("sk-secret".into()), &url, json!({}), 2, directory.path()).err().unwrap().to_string();
+        assert!(!error.contains("sk-secret"));
+        assert!(std::fs::read_to_string(directory.path().join("response.json")).unwrap().contains("sk-secret"));
+        server.join().unwrap();
     }
     #[test]
     fn malformed_and_partial_api_responses_are_retained_and_fail() {

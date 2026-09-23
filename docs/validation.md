@@ -5,7 +5,7 @@ or statistical power for research conclusions.
 
 ## Automated checks
 
-- 54 CLI integration tests plus 25 reliability tests and 3 HTTP tests cover four log parsers, subprocess protocols, resume, worktree isolation,
+- 54 CLI integration tests plus 25 reliability tests and 5 library/HTTP tests cover four log parsers, subprocess protocols, resume, worktree isolation,
   recorded commits and untracked edits, saved-reference reuse, forks, simulator decisions,
   AB/BA judging with recorded tool evidence, controls, attribution, record envelopes, and blinded-pair export/scoring.
 - Empty, truncated, and failed harness streams cannot count as completed turns. Gemini's
@@ -53,9 +53,12 @@ replay, checkpoint fork and explicit interrupted-turn recovery passed executable
 source checkout remained unchanged. A separate real judge call with an invalid
 `ANTHROPIC_API_KEY` in the parent shell still selected `claude-cli`, completed both AB/BA calls,
 and recorded provider usage. That one candidate pair is an integration check, not a calibrated
-evaluation result. The 10-task, two-replicate Claude Linux acceptance subset also completed
-without orchestration failures; this is partial release evidence because the Codex half and
-cross-harness directions require a combined run.
+evaluation result. The full Linux subscription run completed 40 attempts across ten maintained
+tasks, both providers and two replicates, with 40 completed executions, 40 passing executable
+checks, unchanged source repositories, and both cross-harness replay directions passing. Its
+hash-only [evidence receipt](../acceptance/live/evidence/linux-subscription-2026-09-23.json)
+records the repository HEAD and explicitly does not certify a release commit: the local binary
+was built from the working tree before that HEAD was committed. Repeat at a clean release commit.
 
 An authenticated ChatGPT subscription with official Codex CLI 0.156.1 also passed Linux replay,
 checkpoint fork, explicit interrupted-turn recovery and completed-resume no-op. The source checkout
@@ -64,6 +67,9 @@ ambient Linux capabilities, so the validation process dropped those capabilities
 started; Codex's workspace sandbox stayed enabled. Only this version/platform has a native
 checkpoint compatibility entry. The private artifacts are summarized by hashes in
 [`compatibility/evidence/codex-0.156.1-linux.json`](../compatibility/evidence/codex-0.156.1-linux.json).
+Codex subscription calls also completed both orders of a judge transport check and a two-turn
+simulator check; the simulator kept the follow-up verbatim. These are real provider integration
+checks, not human calibration of judge or simulator quality.
 
 ## Provider and evaluation limits
 

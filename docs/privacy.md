@@ -11,7 +11,8 @@ Casimir removes API-key and alternate API endpoint overrides from these subproce
 cannot silently use metered API credentials from the parent shell. The optional direct
 Anthropic backend uses an explicitly supplied API credential and in-process HTTPS with redirects
 disabled. Doctor reports status and login method, not credential contents, and makes no model
-completions.
+completions. User-facing subprocess errors classify authentication, rate-limit, sandbox and
+other failures without copying provider stderr; the raw stderr remains in private run logs.
 
 Use `casimir export RUN --share -o shared.json` (or Markdown) for sharing. Sharing exports
 redact known credential patterns, sensitive structured keys, and credential values currently

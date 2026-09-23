@@ -10,5 +10,5 @@
   "attribution": {"status":"blocked"},
   "pilots": [],
   "releaseCandidate": {"status":"pending"},
-  "unresolvedBlockers": ["Full Linux dual-harness and cross-replay acceptance evidence", "Native authenticated subscription acceptance environments on macOS and Windows", "Two independent human reviewers and adjudication", "Three independent pilot users"]
+  "unresolvedBlockers": ["Repeat Linux dual-harness and cross-replay acceptance at the clean release commit", "Native authenticated subscription acceptance environments on macOS and Windows", "Two independent human reviewers and adjudication", "Three independent pilot users"]
 }

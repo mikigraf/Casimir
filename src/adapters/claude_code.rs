@@ -444,7 +444,8 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
         && res.session_id.as_deref().is_some_and(|s| !s.is_empty());
     res.is_error |= !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error);
     if res.is_error && !res.events.iter().any(|e| e.kind == EventKind::Error) {
-        let ev = Event::text(turn, now_iso(), EventKind::Error, format!("claude exited with {status}{}: {}", if !completed { " without a successful result and session ID" } else { "" }, truncate(res.stderr.trim(), 2000)));
+        let detail = crate::util::stderr_error_line(&res.stderr, "provider diagnostics retained privately");
+        let ev = Event::text(turn, now_iso(), EventKind::Error, format!("claude exited with {status}{}: {detail}", if !completed { " without a successful result and session ID" } else { "" }));
         on_event(&ev);
         res.events.push(ev);
     }

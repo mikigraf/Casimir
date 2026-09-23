@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "platform": "linux",
+  "scope": "Authenticated 10-task by 2-harness by 2-replicate orchestration and executable-check acceptance, plus both cross-harness replay directions; not human evaluation calibration or native macOS/Windows acceptance",
+  "summarySha256": "5df8fac82071ce4e53bb2b0a84b08495aacecc09c3ad2e848a15be128147231c",
+  "doctorSha256": "c6f9261a24ea1152843bf11136f8fb39bd7f4390b580e6a576965994398a287e",
+  "harnessVersions": {
+    "claude-code": "2.1.280 (Claude Code)",
+    "codex": "codex-cli 0.156.1"
+  },
+  "subscriptionReady": {
+    "claude-code": true,
+    "codex": true
+  },
+  "runtimeReady": {
+    "claude-code": true,
+    "codex": true
+  },
+  "taskCount": 10,
+  "attemptsByHarness": {
+    "claude-code": 20,
+    "codex": 20
+  },
+  "executionStatuses": {
+    "completed": 40
+  },
+  "executableChecks": {
+    "passed": 40
+  },
+  "overallOutcomes": {
+    "passed": 40
+  },
+  "replayDirections": [
+    "claude-code->codex",
+    "codex->claude-code"
+  ],
+  "sourceCheckoutsUnchanged": true,
+  "fixtureSubstitution": false,
+  "reportSha256": {
+    "pagination/claude-code-1": "7779ee185a0041f723bf08091de0df686a6f6d3aa6f742caca7271d2a834fcd3",
+    "pagination/claude-code-2": "81d75ee09b1c3ab40f2c01a601c14b5fd119475d93ee99c91ee7ed362944d528",
+    "pagination/codex-1": "9c3d530924e4cd75cf228c509eb1dc6c37344b3a90dfb624a86fd5e39c340338",
+    "pagination/codex-2": "04408d094885a3654008ea54a16cedb8a2596310ac50afef2e618c3c0ea82a6c",
+    "currency/claude-code-1": "a4b3eeb583bfde2c0299682b7676789df5ede767e40cbbfa6fc4e4e8fb9f8f14",
+    "currency/claude-code-2": "b026b6585f5c4e9204c749cd57bed6131d7f8b837a36bdf210e32229dda20ae9",
+    "currency/codex-1": "00ad7922bd211f5d1dce5161702ce9c6595f3e5b5def72742c1f84f99992cd9b",
+    "currency/codex-2": "76e1c7d304d7b811aafe0da526e029a1a6376f3feb2ff60ab16686d1f81a4f7e",
+    "csv-unicode/claude-code-1": "ebe46f934087b5f83d30794759352caf3a390b93cc5c2da549e1c83647dc15f6",
+    "csv-unicode/claude-code-2": "25c57aa3831fe09aa7448cf54f70bcac19d5af77b1df55b0ba28065c15c1d939",
+    "csv-unicode/codex-1": "b500ea59d886682a558f442e6aadb0b098adc3903141fa125d96f4c7f87c9c02",
+    "csv-unicode/codex-2": "eaa808a9f1b875d473e9c1c94429e2c2fc86565b294f91df03cd44fd5ca01db4",
+    "config-followup/claude-code-1": "1398051fd17aae6a524b13fa2c4842662ef719bde55450212af759dd101d973e",
+    "config-followup/claude-code-2": "baf2c4aee07c1fd1c816b99cc2c3ebdb2b78a47a7cdb84e3ff76b319798657e7",
+    "config-followup/codex-1": "d22219b35ee5426e25d56527851ce735d5d014f4b75ad06029f545f1a427496b",
+    "config-followup/codex-2": "9169d0b71a4a04dd420f8adab5c1e16f44e3e9f6d8e79fc4c4af818f16b6ef6d",
+    "stable-dedup/claude-code-1": "314e93ca9ccffc51463327349cdfcfd34f97d01f60a1d5fb0ed8d6a984fa64b5",
+    "stable-dedup/claude-code-2": "41d5fec10ff41e2ad75d5e50a697080aef2f5599dfe0f608867bbfaf646a9908",
+    "stable-dedup/codex-1": "62cbefb050abd1b861e78f898d87a5459dd4e77ee8083a82aca5188a004d4212",
+    "stable-dedup/codex-2": "abced912323beea2e21e161d9954d45419561d428951439346fc4b5d87f8cfe0",
+    "transaction-followup/claude-code-1": "cca29b74f93e6a513edbda84d32c76277b8153c8576f6a8c670f144978e01cd1",
+    "transaction-followup/claude-code-2": "66002500a1678d5a2f5256ab2010c3c40293d6635c3ef3be202c2771d5e34f36",
+    "transaction-followup/codex-1": "f0806d85b32d2e8f76854bec82d9595999f0406aab97955f7c4379a30a3f8426",
+    "transaction-followup/codex-2": "723416409e885c963f8178b7579e4c1467a81e509299c9886247b5807407d767",
+    "dependency-migration/claude-code-1": "dbe4f0b4b5a1ede569c93f6b601dca65af5fd058aa5f2b1212d65f5afc6b63a9",
+    "dependency-migration/claude-code-2": "82b8cd1d1d8ba0377469e940ba8320823489540c6231f169b2321d7eb817be1e",
+    "dependency-migration/codex-1": "627beda2b79631c7b855c19f718785e4a6b2cf5a85a9f2ac8edc1b1b2a7b9d64",
+    "dependency-migration/codex-2": "1c34d896a96f701bd2870bd16fbc64a474714aa1f48ec492b93f443f0534681a",
+    "normalization/claude-code-1": "62ef19b6667fafa0f30511440e42da3fc2efd05efd3442c2d117a15aa0c99175",
+    "normalization/claude-code-2": "56de675999534b92925800ba45e2afced4d1117c26856452058ecacb635aa644",
+    "normalization/codex-1": "3468f9ee7b1a0d15eb806be0b0133caebc3f2fcdbf3532704c8d0675475d20bb",
+    "normalization/codex-2": "87d096ba16fe476e7b4a1c6ba5097d4088ee85e3556ed8f4dc8824eb84298777",
+    "age-boundary-tests/claude-code-1": "b807b0de7f96bcc137b5b8cffe2b48f7b09b8089e0ff9c4b36e638b02d3f056b",
+    "age-boundary-tests/claude-code-2": "663012707ef79f3cdaeb80bac08b2368efe1a5241ccd8400c1ef086dc3dbc6b3",
+    "age-boundary-tests/codex-1": "bbeb92fc7f06261f909ff190a9ac7d550c13d0d88856446812bab040b84ddac0",
+    "age-boundary-tests/codex-2": "fa5bebed470da29319b38a57255ffd2d3db2d5b384d01cb80a815b68c4049113",
+    "async-cancellation/claude-code-1": "bbb6fbb5e090f3f9652dab928668b438c1292c4a0be7510c34915a98b13048b6",
+    "async-cancellation/claude-code-2": "e6f51c8914e6d3bda8e927fc94cc0ba55b69ac6b98df4fa68ae2d13fd5370816",
+    "async-cancellation/codex-1": "19bad9063197f080130e3d3e727b8ca5df5f1c6dd6f39cd5f66f501f513ea729",
+    "async-cancellation/codex-2": "9f53cb2a86fd3e90140ff075d552c2f7d790ac229517b2fcff0ec2f763630b48",
+    "cross/claude-code->codex": "5e21f2f662051b3208299a14110550dedb9f4f3756463f09b69bed1fe9e2b719",
+    "cross/codex->claude-code": "fe4127e4ae2d330bbb87b9edf9b71bb3194bf84af3cfa4b84028c2f3ae33b6ce"
+  },
+  "repositoryHead": "5bda973aba4f66bfcd959eb97395d1be94c39ce5",
+  "binaryRevision": "not recorded; local binary was built from the working tree before the repository HEAD was committed",
+  "releaseCommitCertified": false,
+  "releaseNote": "Repeat authenticated acceptance from a clean release commit before using this as the 1.0 release gate."
+}

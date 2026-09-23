@@ -32,7 +32,7 @@ workflow or a fixture success is not evidence that an authenticated provider wor
 | Gate | Required evidence | Current disposition |
 |---|---|---|
 | Reliability | Full deterministic suite on Linux/macOS/Windows; no orphan processes, lost records, duplicate completed turns, or source checkout edits | Deterministic OS/toolchain runs are recorded in GitHub Actions; the release evidence bundle must include a passing run for its exact commit |
-| Live Linux | 10 maintained multi-file tasks × 2 harnesses × 2 replicates; both cross-harness replay directions | Claude 2.1.280 and Codex 0.156.1 replay/fork/interrupted resume validated; full 40-attempt suite in progress |
+| Live Linux | 10 maintained multi-file tasks × 2 harnesses × 2 replicates; both cross-harness replay directions | 40 real attempts, all executable checks, both cross-harness directions, and both native checkpoint/recovery workflows passed on Linux; repeat from the clean release commit for certification |
 | Live macOS/Windows | Authenticated replay, checkpoint fork, interrupted resume | Pending native authenticated environments |
 | Evaluation | Frozen 40-pair corpus, two independent reviewers, adjudication; ≥90% decisive agreement; abstentions and false positives reported | Human review and calibration pending |
 | Simulator/attribution | Reviewed simulator cases and seeded recoverable/unrecoverable checkpoint cases | Acceptance review pending |
