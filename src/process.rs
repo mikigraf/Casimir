@@ -12,7 +12,11 @@ const LIMIT: usize = 4 * 1024 * 1024;
 const TAIL: usize = 64 * 1024;
 
 pub fn install_signal_handler() -> Result<()> {
-    HANDLER.get_or_init(|| ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst)).map_err(|e| e.to_string()))
+    HANDLER.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 { return Err(std::io::Error::last_os_error().to_string()); }
+        ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst)).map_err(|e| e.to_string())
+    })
         .as_ref().map_err(|e| anyhow::anyhow!("installing cancellation handler: {e}"))?;
     Ok(())
 }
@@ -163,13 +167,14 @@ impl Process {
             std::thread::sleep(Duration::from_millis(10));
         };
         self.tree.kill();
+        self.tree.reap()?;
         let stderr = self.stderr.take().context("stderr reader missing")?.join().map_err(|_| anyhow::anyhow!("stderr reader panicked"))??;
         Ok(Output { status, stdout: Vec::new(), stderr })
     }
 }
 
 impl Drop for Process {
-    fn drop(&mut self) { self.tree.kill(); let _ = self.child.kill(); let _ = self.child.wait(); }
+    fn drop(&mut self) { self.tree.kill(); let _ = self.child.kill(); let _ = self.child.wait(); let _ = self.tree.reap(); }
 }
 
 pub fn capture(cmd: &mut Command, input: &[u8], timeout: Duration, spool: Option<&Path>) -> Result<Output> {
@@ -185,12 +190,45 @@ pub fn capture(cmd: &mut Command, input: &[u8], timeout: Duration, spool: Option
 }
 
 #[cfg(unix)]
-struct Tree { pid: i32 }
+struct Tree { pid: i32, descendants: std::cell::RefCell<Vec<i32>>, killed: std::cell::Cell<bool> }
 #[cfg(unix)]
 impl Tree {
     fn configure(cmd: &mut Command) { use std::os::unix::process::CommandExt; cmd.process_group(0); }
-    fn attach(child: &Child) -> Result<Self> { Ok(Self { pid: child.id() as i32 }) }
-    fn kill(&self) { unsafe { libc::kill(-self.pid, libc::SIGKILL); } }
+    fn attach(child: &Child) -> Result<Self> { Ok(Self { pid: child.id() as i32, descendants: std::cell::RefCell::new(Vec::new()), killed: std::cell::Cell::new(false) }) }
+    fn kill(&self) {
+        if self.killed.replace(true) { return; }
+        // Tools can create their own groups. Freeze the root, then include descendants
+        // outside its group before terminating the group and the discovered children.
+        unsafe { libc::kill(-self.pid, libc::SIGSTOP); }
+        let processes = unix_processes();
+        let mut descendants = std::collections::BTreeSet::new();
+        loop {
+            let previous = descendants.len();
+            for &(pid, parent, group) in &processes {
+                if pid != self.pid && (parent == self.pid || group == self.pid || descendants.contains(&parent)) { descendants.insert(pid); }
+            }
+            if descendants.len() == previous { break; }
+        }
+        for &pid in &descendants { unsafe { libc::kill(pid, libc::SIGKILL); } }
+        *self.descendants.borrow_mut() = descendants.into_iter().collect();
+        unsafe { libc::kill(-self.pid, libc::SIGKILL); }
+    }
+    fn reap(&self) -> Result<()> {
+        let start = Instant::now();
+        loop {
+            // Linux adopts orphaned descendants, so reap them rather than leaving zombies
+            // behind in containers whose PID 1 does not reap. The direct child is already reaped.
+            #[cfg(target_os = "linux")]
+            {
+                while unsafe { libc::waitpid(-self.pid, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
+                for &pid in self.descendants.borrow().iter() { unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG); } }
+            }
+            let children_alive = self.descendants.borrow().iter().any(|pid| unsafe { libc::kill(*pid, 0) } == 0);
+            if !children_alive && unsafe { libc::kill(-self.pid, 0) } != 0 { return Ok(()); }
+            if start.elapsed() > Duration::from_secs(2) { bail!("subprocess group did not terminate within the cleanup deadline"); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -231,6 +269,43 @@ impl Tree {
         }
     }
     fn kill(&self) { unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job, 1); } }
+    fn reap(&self) -> Result<()> {
+        use windows_sys::Win32::System::JobObjects::*;
+        let start = Instant::now();
+        loop {
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+            let ok = unsafe { QueryInformationJobObject(self.job, JobObjectBasicAccountingInformation, &mut info as *mut _ as _, std::mem::size_of_val(&info) as u32, std::ptr::null_mut()) };
+            if ok == 0 { return Err(std::io::Error::last_os_error().into()); }
+            if info.ActiveProcesses == 0 { return Ok(()); }
+            if start.elapsed() > Duration::from_secs(2) { bail!("Windows Job Object did not terminate within the cleanup deadline"); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 }
 #[cfg(windows)]
 impl Drop for Tree { fn drop(&mut self) { unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job); } } }
+
+
+#[cfg(target_os = "linux")]
+fn unix_processes() -> Vec<(i32, i32, i32)> {
+    let mut processes = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse() else { continue };
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else { continue };
+            let Some((_, fields)) = stat.rsplit_once(')') else { continue };
+            let mut fields = fields.split_whitespace().skip(1);
+            if let (Some(parent), Some(group)) = (fields.next().and_then(|s| s.parse().ok()), fields.next().and_then(|s| s.parse().ok())) { processes.push((pid, parent, group)); }
+        }
+    }
+    processes
+}
+#[cfg(all(unix, not(target_os = "linux")))]
+fn unix_processes() -> Vec<(i32, i32, i32)> {
+    // Kernel process metadata only; no user strings or shell interpretation.
+    let Ok(output) = Command::new("/bin/ps").args(["-axo", "pid=,ppid=,pgid="]).output() else { return Vec::new() };
+    String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+    }).collect()
+}

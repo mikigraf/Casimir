@@ -2,7 +2,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fs, io::{Read, Write}, path::{Component, Path, PathBuf}, process::Command, time::Duration};
+use std::{collections::{BTreeMap, BTreeSet}, fs, io::{Read, Write}, path::{Component, Path, PathBuf}, process::Command, time::Duration};
 use crate::{model::Harness, util::{atomic_write, private_dir, RunLock}};
 
 pub const DEFAULT_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
@@ -14,6 +14,7 @@ pub struct Entry {
     pub blob: Option<String>,
     pub mode: u32,
     pub target: Option<String>,
+    #[serde(default)] pub symlink_directory: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +22,8 @@ pub struct Checkpoint {
     pub schema_version: u32,
     pub repository: PathBuf,
     pub base: String,
+    pub base_bundle: String,
+    pub index_objects: BTreeMap<String, String>,
     pub subdir: PathBuf,
     pub index: Option<String>,
     pub entries: Vec<Entry>,
@@ -116,7 +119,9 @@ fn collect(dir: &Path, base: &Path, excluded: &[PathBuf], entries: &mut Vec<Entr
         } else if meta.is_dir() { ("directory", None, None) }
         else if meta.is_file() { ("file", Some(put_file(&path, used, limit)?), None) }
         else { bail!("unsupported special file in checkpoint: {}", path.display()); };
-        entries.push(Entry { path: name, kind: kind.into(), blob, mode, target });
+        #[cfg(windows)] let symlink_directory = { use std::os::windows::fs::FileTypeExt; meta.file_type().is_symlink_dir() };
+        #[cfg(not(windows))] let symlink_directory = false;
+        entries.push(Entry { path: name, kind: kind.into(), blob, mode, target, symlink_directory });
         if meta.is_dir() { collect(&path, base, excluded, entries, used, limit)?; }
     }
     Ok(())
@@ -147,6 +152,9 @@ pub fn capture(options: Capture<'_>) -> Result<String> {
     let shared = git(options.cwd, &["rev-parse", "--shared-index-path"])?;
     if !shared.is_empty() { bail!("checkpoint capture requires a non-split Git index"); }
     let mut used = storage_size(&root())?;
+    if used > options.limit { bail!("checkpoint storage already exceeds configured limit"); }
+    let base_bundle = capture_base(options.cwd, &base, &mut used, options.limit)?;
+    let index_objects = capture_index_objects(options.cwd, &mut used, options.limit)?;
     let index = if index_path.is_file() { Some(put_file(&index_path, &mut used, options.limit)?) } else { None };
     let mut entries = Vec::new();
     let excluded = [fs::canonicalize(crate::util::casimir_home())?, fs::canonicalize(options.run_dir)?];
@@ -168,13 +176,14 @@ pub fn capture(options: Capture<'_>) -> Result<String> {
     });
     let conversation_complete = if options.expected_conversation_turns == 0 { options.native.is_none() }
         else { conversation_turns == Some(options.expected_conversation_turns) && has_final_assistant };
-    let checkpoint = Checkpoint { schema_version: 1, repository, base, subdir, index, entries, conversation,
+    let checkpoint = Checkpoint { schema_version: 1, repository, base, base_bundle, index_objects, subdir, index, entries, conversation,
         harness: options.harness, harness_version: options.version, turn: options.turn, conversation_turns: conversation_turns.unwrap_or(0), conversation_complete, pending_prompt: options.prompt.into(),
         configuration_hash: options.configuration_hash.into(), coverage: "Recorded repository workspace, Git index, and native conversation only. External files, services, and process memory are not captured.".into() };
     let bytes = serde_json::to_vec(&checkpoint)?;
     if used.saturating_add(bytes.len() as u64) > options.limit { bail!("checkpoint storage limit exceeded"); }
     let id = hash(&bytes);
     atomic_write(&root().join("manifests").join(format!("{id}.json")), &bytes)?;
+    pin_unlocked(options.run_dir, &id)?;
     Ok(id)
 }
 
@@ -198,16 +207,31 @@ pub fn load(id: &str) -> Result<Checkpoint> {
             _ => bail!("unknown checkpoint entry kind"),
         }
     }
-    for blob in checkpoint.index.iter().chain(checkpoint.conversation.iter()) { verify_blob(blob)?; }
+    for blob in checkpoint.index.iter().chain(checkpoint.conversation.iter()).chain(std::iter::once(&checkpoint.base_bundle)).chain(checkpoint.index_objects.values()) { verify_blob(blob)?; }
     if !checkpoint.subdir.as_os_str().is_empty() && !safe_relative(&checkpoint.subdir) { bail!("invalid checkpoint working directory"); }
     Ok(checkpoint)
 }
 
 /// Only a fresh destination may be restored. The original checkout is never cleaned or reset.
 pub fn restore(id: &str, destination: &Path) -> Result<Checkpoint> {
-    let checkpoint = load(id)?;
+    restore_for_run(id, destination, destination)
+}
+pub fn restore_for_run(id: &str, destination: &Path, owner: &Path) -> Result<Checkpoint> {
+    let checkpoint = {
+        let _lock = RunLock::acquire_wait(&root())?;
+        let checkpoint = load(id)?;
+        pin_unlocked(owner, id)?;
+        checkpoint
+    };
     if destination.exists() { bail!("checkpoint restore requires a fresh worktree destination"); }
-    crate::workspace::create_worktree(&checkpoint.repository, &checkpoint.base, destination)?;
+    let repository = ensure_repository(&checkpoint)?;
+    let temp = tempfile::tempdir()?;
+    let output = crate::process::capture(Command::new("git").args(["worktree", "add", "--no-checkout", "--detach"]).arg(destination).arg(&checkpoint.base).current_dir(&repository), b"", Duration::from_secs(60), Some(&temp.path().join("worktree")))?;
+    if !output.status.success() { bail!("creating checkpoint worktree failed"); }
+    for (object, blob) in &checkpoint.index_objects {
+        let actual = git(&repository, &["hash-object", "-w", blob_path(blob)?.to_str().context("non-Unicode object path")?])?;
+        if &actual != object { bail!("checkpoint Git index object identity mismatch"); }
+    }
     for entry in fs::read_dir(destination)? {
         let entry = entry?;
         if entry.file_name() == ".git" { continue; }
@@ -220,7 +244,11 @@ pub fn restore(id: &str, destination: &Path) -> Result<Checkpoint> {
             "file" => { fs::copy(blob_path(entry.blob.as_ref().unwrap())?, &path)?; },
             "symlink" => {
                 #[cfg(unix)] std::os::unix::fs::symlink(entry.target.as_ref().unwrap(), &path)?;
-                #[cfg(windows)] std::os::windows::fs::symlink_file(entry.target.as_ref().unwrap(), &path).context("restoring symlink requires Windows symlink capability")?;
+                #[cfg(windows)] {
+                    let target = entry.target.as_ref().unwrap();
+                    if entry.symlink_directory { std::os::windows::fs::symlink_dir(target, &path) }
+                    else { std::os::windows::fs::symlink_file(target, &path) }.context("restoring symlink requires Windows symlink capability")?;
+                }
             },
             _ => unreachable!(),
         }
@@ -229,6 +257,12 @@ pub fn restore(id: &str, destination: &Path) -> Result<Checkpoint> {
     #[cfg(unix)] for entry in checkpoint.entries.iter().rev().filter(|e| e.kind != "symlink") {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(destination.join(&entry.path), fs::Permissions::from_mode(entry.mode))?;
+    }
+    #[cfg(windows)] for entry in checkpoint.entries.iter().filter(|e| e.kind == "file") {
+        let path = destination.join(&entry.path);
+        let mut permissions = fs::metadata(&path)?.permissions();
+        permissions.set_readonly(entry.mode & 0o222 == 0);
+        fs::set_permissions(path, permissions)?;
     }
     if let Some(index) = &checkpoint.index {
         let target = PathBuf::from(git(destination, &["rev-parse", "--path-format=absolute", "--git-path", "index"])?);
@@ -252,4 +286,159 @@ pub fn require_compatible(checkpoint: &Checkpoint) -> Result<()> {
     if validated && crate::doctor::harness_version(checkpoint.harness) != checkpoint.harness_version { bail!("installed harness version does not match checkpoint compatibility version"); }
     if !validated { bail!("native transcript format/version has not passed checkpoint compatibility validation; checkpoint operations are refused"); }
     Ok(())
+}
+
+
+fn capture_base(cwd: &Path, base: &str, used: &mut u64, limit: u64) -> Result<String> {
+    if !matches!(base.len(), 40 | 64) || !base.bytes().all(|b| b.is_ascii_hexdigit()) { bail!("invalid Git base object identifier"); }
+    let cache = root().join("bases").join(format!("{base}.json"));
+    if cache.exists() {
+        let id: String = crate::util::read_json(&cache)?;
+        verify_blob(&id)?;
+        return Ok(id);
+    }
+    let temporary = tempfile::tempdir_in(root())?;
+    let bundle = temporary.path().join("base.bundle");
+    git(cwd, &["bundle", "create", bundle.to_str().context("non-Unicode bundle path")?, "HEAD"])?;
+    let id = put_file(&bundle, used, limit)?;
+    crate::util::write_json(&cache, &id)?;
+    Ok(id)
+}
+
+fn capture_index_objects(cwd: &Path, used: &mut u64, limit: u64) -> Result<BTreeMap<String, String>> {
+    use std::io::{BufRead, BufReader};
+    let index = git(cwd, &["ls-files", "--stage", "-z"])?;
+    let mut objects = BTreeMap::new();
+    let mut missing = BTreeSet::new();
+    for record in index.split('\0').filter(|r| !r.is_empty()) {
+        let metadata = record.split('\t').next().context("invalid Git index record")?;
+        let mut fields = metadata.split_whitespace();
+        let mode = fields.next().context("index mode missing")?;
+        let object = fields.next().context("index object missing")?;
+        if mode == "160000" || objects.contains_key(object) { continue; }
+        if !matches!(object.len(), 40 | 64) || !object.bytes().all(|b| b.is_ascii_hexdigit()) { bail!("invalid index object identity"); }
+        let cache = root().join("git-objects").join(format!("{object}.json"));
+        if cache.exists() {
+            let blob: String = crate::util::read_json(&cache)?;
+            if blob_path(&blob)?.exists() { verify_blob(&blob)?; objects.insert(object.into(), blob); continue; }
+        }
+        missing.insert(object.to_string());
+    }
+    if missing.is_empty() { return Ok(objects); }
+    let temp = tempfile::tempdir_in(root())?;
+    let spool = temp.path().join("objects");
+    let input = format!("{}\n", missing.iter().cloned().collect::<Vec<_>>().join("\n"));
+    let output = crate::process::Process::spawn(Command::new("git").args(["cat-file", "--batch"]).current_dir(cwd), input.as_bytes(), Duration::from_secs(60), Some(&spool))?.finish()?;
+    if !output.status.success() { bail!("reading Git index objects failed"); }
+    let mut reader = BufReader::new(fs::File::open(spool.join("stdout.log"))?);
+    for expected in missing {
+        let mut header = String::new();
+        reader.by_ref().take(1024).read_line(&mut header)?;
+        let fields: Vec<_> = header.split_whitespace().collect();
+        if fields.len() != 3 || fields[0] != expected || fields[1] != "blob" { bail!("Git index references a missing or invalid object"); }
+        let size: u64 = fields[2].parse()?;
+        if size > limit { bail!("Git index object exceeds checkpoint storage limit"); }
+        let mut object = tempfile::NamedTempFile::new_in(temp.path())?;
+        if std::io::copy(&mut reader.by_ref().take(size), object.as_file_mut())? != size { bail!("truncated Git index object"); }
+        let mut separator = [0]; reader.read_exact(&mut separator)?;
+        if separator[0] != b'\n' { bail!("invalid Git object boundary"); }
+        let blob = put_file(object.path(), used, limit)?;
+        crate::util::write_json(&root().join("git-objects").join(format!("{expected}.json")), &blob)?;
+        objects.insert(expected, blob);
+    }
+    Ok(objects)
+}
+
+pub fn repository_path(checkpoint: &Checkpoint) -> PathBuf {
+    crate::util::casimir_home().join("repositories").join(&checkpoint.base_bundle)
+}
+fn ensure_repository(checkpoint: &Checkpoint) -> Result<PathBuf> {
+    let _lock = RunLock::acquire_wait(&root())?;
+    let destination = repository_path(checkpoint);
+    if destination.exists() {
+        if fs::read_to_string(destination.join("casimir-bundle"))? != checkpoint.base_bundle { bail!("Git checkpoint cache ownership mismatch"); }
+    } else {
+        let parent = destination.parent().unwrap(); private_dir(parent)?;
+        let temporary = tempfile::tempdir_in(parent)?;
+        let repository = temporary.path().join("repository.git");
+        let output = crate::process::capture(Command::new("git").args(["clone", "--bare", "--quiet"]).arg(blob_path(&checkpoint.base_bundle)?).arg(&repository), b"", Duration::from_secs(60), Some(&temporary.path().join("clone")))?;
+        if !output.status.success() { bail!("checkpoint Git bundle cannot be restored"); }
+        atomic_write(&repository.join("casimir-bundle"), checkpoint.base_bundle.as_bytes())?;
+        fs::rename(repository, &destination)?;
+    }
+    git(&destination, &["cat-file", "-e", &format!("{}^{{commit}}", checkpoint.base)])?;
+    Ok(destination)
+}
+
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct References { schema_version: u32, owner: PathBuf, checkpoints: BTreeSet<String> }
+fn owner_path(path: &Path) -> Result<PathBuf> {
+    Ok(fs::canonicalize(path).unwrap_or(if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) }))
+}
+fn reference_path(owner: &Path) -> Result<PathBuf> {
+    Ok(root().join("references").join(format!("{}.json", hash(&serde_json::to_vec(&owner_path(owner)?)?))))
+}
+fn pin_unlocked(owner: &Path, id: &str) -> Result<()> {
+    let path = reference_path(owner)?;
+    let mut references: References = if path.exists() { crate::util::read_json(&path)? }
+        else { References { schema_version: 1, owner: owner_path(owner)?, checkpoints: BTreeSet::new() } };
+    references.checkpoints.insert(id.into());
+    crate::util::write_json(&path, &references)
+}
+fn objects(checkpoint: &Checkpoint) -> BTreeSet<String> {
+    checkpoint.entries.iter().filter_map(|e| e.blob.clone()).chain(checkpoint.index.iter().cloned())
+        .chain(checkpoint.conversation.iter().cloned()).chain(std::iter::once(checkpoint.base_bundle.clone()))
+        .chain(checkpoint.index_objects.values().cloned()).collect()
+}
+
+/// Optional checkpoint cleanup honors persistent references from other owned runs and restores.
+/// Captures publish their references under the same lock, before a collector can observe them.
+pub fn cleanup_owner(owner: &Path, apply: bool) -> Result<serde_json::Value> {
+    let _lock = RunLock::acquire_wait(&root())?;
+    let target_path = reference_path(owner)?;
+    if !target_path.exists() { return Ok(serde_json::json!({"manifests":0,"objects":0,"bytes":0})); }
+    let target: References = crate::util::read_json(&target_path)?;
+    let deletion_path = target_path.with_extension("deletion");
+    let pending: Option<(Vec<String>, Vec<String>)> = if deletion_path.exists() { Some(crate::util::read_json(&deletion_path)?) } else { None };
+    let mut retained = BTreeSet::new();
+    for entry in fs::read_dir(root().join("references"))? {
+        let entry = entry?;
+        if entry.path() == target_path || entry.path().extension().is_none_or(|e| e != "json") { continue; }
+        if !entry.file_type()?.is_file() { bail!("unexpected reference storage entry"); }
+        let references: References = crate::util::read_json(&entry.path())?;
+        if references.schema_version != 1 { bail!("unsupported checkpoint references"); }
+        retained.extend(references.checkpoints);
+    }
+    let removed: Vec<_> = target.checkpoints.difference(&retained).cloned().collect();
+    let mut retained_objects = BTreeSet::new();
+    for id in &retained { retained_objects.extend(objects(&load(id)?)); }
+    let mut removed_objects = BTreeSet::new();
+    for id in &removed {
+        if root().join("manifests").join(format!("{id}.json")).exists() { removed_objects.extend(objects(&load(id)?)); }
+        else if !pending.as_ref().is_some_and(|(ids,_)| ids.contains(id)) { bail!("missing checkpoint manifest during cleanup"); }
+    }
+    if let Some((_, objects)) = &pending { removed_objects.extend(objects.iter().cloned()); }
+    let removed_objects: Vec<_> = removed_objects.difference(&retained_objects).cloned().collect();
+    let mut bytes = 0;
+    for id in &removed_objects { if let Ok(metadata) = fs::metadata(blob_path(id)?) { bytes += metadata.len(); } }
+    let preview = serde_json::json!({"schemaVersion":1,"preview":!apply,"manifests":removed.len(),"objects":removed_objects.len(),"bytes":bytes,
+        "coverage":"References from owned runs and Casimir restores are retained. Unregistered manual copies are not checkpoint backups."});
+    if apply {
+        crate::util::write_json(&deletion_path, &(&removed, &removed_objects))?;
+        for id in &removed { let path = root().join("manifests").join(format!("{id}.json")); if path.exists() { fs::remove_file(path)?; } }
+        for id in &removed_objects { let path = blob_path(id)?; if path.exists() { fs::remove_file(path)?; } }
+        for cache in ["bases", "git-objects"].iter().map(|name| root().join(name)).filter(|path| path.exists()) {
+            for entry in fs::read_dir(cache)? {
+                let entry = entry?;
+                if entry.path().extension().is_none_or(|e| e != "json") { continue; }
+                let bundle: String = crate::util::read_json(&entry.path())?;
+                if removed_objects.contains(&bundle) { fs::remove_file(entry.path())?; }
+            }
+        }
+        fs::remove_file(target_path)?;
+        fs::remove_file(deletion_path)?;
+    }
+    Ok(preview)
 }

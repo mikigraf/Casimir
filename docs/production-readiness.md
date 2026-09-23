@@ -15,9 +15,9 @@ Results are validated diagnostics on a recorded corpus, never causal proof.
 - Default permission preservation; bypass requires `--allow-unrestricted`, including passthrough.
 - Anthropic HTTPS transport executes in-process; no credential-bearing curl arguments.
 - `doctor --json` performs version/login-status probes, without model calls.
-- Content-addressed repository/index/conversation checkpoints; verified fresh-worktree restore.
+- Content-addressed repository/index/conversation checkpoints, retained Git bundles and staged objects; verified fresh-worktree restore even after source deletion.
 - Frozen executable checks and separate execution, check, judge, and overall outcomes.
-- Redacted sharing exports and ownership-based cleanup previews.
+- Redacted sharing exports, ownership-based cleanup previews, and optional reference-aware checkpoint reclamation.
 - Compiled protocol fixtures; deterministic CI configured for all three operating systems and Rust 1.85.
 
 These items must be checked against actual test artifacts at the release commit. A configured
@@ -27,7 +27,7 @@ workflow or a fixture success is not evidence that an authenticated provider wor
 
 | Gate | Required evidence | Current disposition |
 |---|---|---|
-| Reliability | Full deterministic suite on Linux/macOS/Windows; no orphan processes, lost records, duplicate completed turns, or source checkout edits | Linux under active verification; native CI pending |
+| Reliability | Full deterministic suite on Linux/macOS/Windows; no orphan processes, lost records, duplicate completed turns, or source checkout edits | Earlier implementation commit passed all six OS/toolchain jobs; final changes require a fresh passing CI run |
 | Live Linux | 10 maintained multi-file tasks × 2 harnesses × 2 replicates; both cross-harness replay directions | Blocked on authenticated Codex and Anthropic API access; earlier Claude smoke is insufficient |
 | Live macOS/Windows | Authenticated replay, checkpoint fork, interrupted resume | Pending native authenticated environments |
 | Evaluation | Frozen 40-pair corpus, two independent reviewers, adjudication; ≥90% decisive agreement; abstentions and false positives reported | Human review and calibration pending |
@@ -41,3 +41,10 @@ certifications. Never tag 1.0 before every gate has evidence tied to the release
 
 External prerequisites: authenticated Codex and Anthropic API test access, native macOS and
 Windows acceptance machines, independent reviewers/adjudicator, and three pilot users.
+
+Reliability coverage includes authenticated HTTP failure responses and rate limits, bounded
+response/stream sizes, malformed and truncated JSON, concurrent locks and metadata readers,
+checkpoint corruption, interrupted turn retry without repeating completed turns, process
+descendant cleanup, and Unix signal cancellation and file-size-limit write failure injection.
+The write-failure injection exercises storage errors; it does not certify every physical
+full-disk behavior on every filesystem. Native authenticated and human acceptance remain open.

@@ -52,8 +52,10 @@ fn checkpoint_preserves_index_ignored_binary_unicode_modes_and_symlinks() {
     }
     assert!(checkpoint::restore(&id,repo.path()).is_err(),"never reset original checkout");
 }
+static CHECKPOINT_INTEGRITY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[test]
 fn corrupt_checkpoint_fails_before_creating_worktree() {
+    let _guard = CHECKPOINT_INTEGRITY_TEST.lock().unwrap();
     let repo = repo(); let run = tempfile::tempdir().unwrap();
     std::fs::write(repo.path().join("unique-corrupt-me"),uuid::Uuid::new_v4().to_string()).unwrap();
     let id = capture(repo.path(),run.path(),checkpoint::DEFAULT_LIMIT).unwrap();
@@ -91,10 +93,10 @@ fn supervisor_times_out_and_bounds_response_memory() {
 #[test]
 fn supervisor_terminates_descendants_on_timeout_and_parent_exit() {
     setup();
-    for mode in ["child","orphan"] {
+    for mode in ["child","orphan","separate-group"] {
         let temp = tempfile::tempdir().unwrap(); let spool=temp.path().join("run");
         let result=process::capture(Command::new(fixture::executable("supervisor")).args(["--supervisor",mode]),b"",Duration::from_millis(250),Some(&spool));
-        if mode=="child" {assert!(result.is_err());} else {assert!(result.is_ok());}
+        if mode!="orphan" {assert!(result.is_err());} else {assert!(result.is_ok());}
         let pid=std::fs::read_to_string(spool.join("stdout.log")).unwrap().trim().parse::<i32>().unwrap();
         // Linux may retain a killed orphan as a zombie until PID 1 reaps it.
         #[cfg(unix)]
@@ -128,6 +130,13 @@ fn failed_checks_cannot_be_overridden_by_judge_and_are_frozen() {
     std::fs::write(&source,"edited original").unwrap();
     let results=casimir::checks::execute(&definition,&hash,repo.path(),run.path()).unwrap(); assert_eq!(results.outcome,"failed");
     let mut report=casimir::compare::Report {execution_status:"completed".into(),checks:Some(results),judge:Some(casimir::compare::Judgement {score_b:10.0,evidence_a:vec!["evidence".into()],evidence_b:vec!["evidence".into()],..Default::default()}),..Default::default()}; report.update_outcome(7.0);assert_eq!(report.overall_outcome,"failed");
+    let mut saved = original(repo.path(),1);
+    saved.execution = Some(casimir::model::Execution { requested_turns:1,completed_turns:1,..Default::default() });
+    saved.evaluation = Some(json!({"checks":report.checks,"passThreshold":7.0}));
+    let compared = casimir::compare::compare_sessions(&saved,&saved,None,None,report.judge.clone());
+    assert_eq!(compared.overall_outcome,"failed","standalone comparisons retain required check failures");
+    saved.evaluation = Some(json!({"checks":{"broken":"metadata"}}));
+    assert_eq!(casimir::compare::compare_sessions(&saved,&saved,None,None,report.judge.clone()).overall_outcome,"inconclusive");
     std::fs::write(run.path().join("checks.definition.json"),"tampered").unwrap(); assert!(casimir::checks::execute(&definition,&hash,repo.path(),run.path()).is_err());
 }
 #[test]
@@ -205,4 +214,93 @@ fn calibration_requires_independent_reviews_and_check_failures_never_pass() {
     let report=casimir::calibration::score(&corpus,&paths[0],&paths[1],&paths[2],&paths[3]).unwrap();
     assert!(report["agreement"].as_f64().unwrap()>0.9);assert_eq!(report["falsePositives"],1);assert_eq!(report["requiredCheckViolations"],1);assert_eq!(report["passed"],false);
     assert!(casimir::calibration::score(&corpus,&paths[0],&paths[1],&paths[1],&paths[3]).is_err());
+}
+
+#[test]
+fn checkpoint_restores_after_source_checkout_and_git_objects_are_removed() {
+    let repo=repo();let run=tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("staged.txt"),"index-only contents\n").unwrap();
+    assert!(Command::new("git").args(["add","staged.txt"]).current_dir(repo.path()).status().unwrap().success());
+    std::fs::write(repo.path().join("staged.txt"),"working contents\n").unwrap();
+    let id=capture(repo.path(),run.path(),checkpoint::DEFAULT_LIMIT).unwrap();
+    drop(repo);
+    let destination=run.path().join("restored");checkpoint::restore(&id,&destination).unwrap();
+    let staged=Command::new("git").args(["show",":staged.txt"]).current_dir(&destination).output().unwrap();
+    assert!(staged.status.success());assert_eq!(staged.stdout,b"index-only contents\n");
+    assert_eq!(std::fs::read(destination.join("staged.txt")).unwrap(),b"working contents\n");
+}
+
+#[test]
+fn checkpoint_cleanup_preserves_objects_shared_with_other_runs() {
+    let _guard = CHECKPOINT_INTEGRITY_TEST.lock().unwrap();
+    let repo=repo();let first=tempfile::tempdir().unwrap();let second=tempfile::tempdir().unwrap();
+    // A unique prompt/configuration prevents matching unrelated concurrent fixture captures.
+    let config=uuid::Uuid::new_v4().to_string();
+    let make=|owner:&Path| checkpoint::capture(checkpoint::Capture{cwd:repo.path(),run_dir:owner,native:None,harness:Harness::ClaudeCode,version:None,turn:1,expected_conversation_turns:0,prompt:&config,configuration_hash:&config,limit:checkpoint::DEFAULT_LIMIT}).unwrap();
+    let id=make(first.path());assert_eq!(id,make(second.path()));
+    let preview=checkpoint::cleanup_owner(first.path(),false).unwrap();assert_eq!(preview["manifests"],0);
+    checkpoint::cleanup_owner(first.path(),true).unwrap();assert!(checkpoint::load(&id).is_ok());
+    let preview=checkpoint::cleanup_owner(second.path(),false).unwrap();assert_eq!(preview["manifests"],1);assert!(checkpoint::load(&id).is_ok());
+    checkpoint::cleanup_owner(second.path(),true).unwrap();assert!(checkpoint::load(&id).is_err());
+}
+
+#[test]
+fn interrupted_cleanup_can_resume_after_worktree_removal() {
+    let repo=repo();let output=tempfile::tempdir().unwrap();
+    let run=rerun(&original(repo.path(),1),&RerunOpts {workspace:repo.path().display().to_string(),out_dir:Some(output.path().to_path_buf()),quiet:true,..Default::default()},&mut |_|{},&mut |_|{}).unwrap();
+    assert!(Command::new("git").args(["worktree","remove","--force"]).arg(&run.workspace.dir).current_dir(repo.path()).status().unwrap().success());
+    util::atomic_write(&output.path().join(".deleting"),b"interrupted cleanup").unwrap();
+    assert!(util::RunLock::acquire(output.path()).is_err());
+    casimir::artifacts::cleanup(output.path(),true).unwrap();
+    assert!(!output.path().exists());assert!(repo.path().join(".git").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn storage_write_failure_keeps_atomic_metadata_and_aborts_streaming() {
+    use std::os::unix::process::CommandExt;
+    setup();
+    let directory=tempfile::tempdir().unwrap();
+    let mut command=Command::new(std::env::current_exe().unwrap());
+    command.args(["--exact","storage_fault_child","--nocapture"]).env("CASIMIR_STORAGE_FAULT",directory.path()).env("CASIMIR_FAULT_FIXTURE",fixture::executable("supervisor"));
+    unsafe { command.pre_exec(|| {
+        libc::signal(libc::SIGXFSZ,libc::SIG_IGN);
+        let limit=libc::rlimit {rlim_cur:4096,rlim_max:4096};
+        if libc::setrlimit(libc::RLIMIT_FSIZE,&limit)!=0 {return Err(std::io::Error::last_os_error());} Ok(())
+    }); }
+    let output=command.output().unwrap();assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stdout));
+}
+#[cfg(unix)]
+#[test]
+fn storage_fault_child() {
+    let Some(directory)=std::env::var_os("CASIMIR_STORAGE_FAULT").map(PathBuf::from) else {return};
+    let metadata=directory.join("metadata.json");util::write_json(&metadata,&json!({"state":"committed"})).unwrap();
+    assert!(util::atomic_write(&metadata,&vec![b'x';8192]).is_err());
+    assert_eq!(util::read_json::<serde_json::Value>(&metadata).unwrap()["state"],"committed");
+    let mut command=Command::new(std::env::var_os("CASIMIR_FAULT_FIXTURE").unwrap());command.args(["--supervisor","flood"]);
+    assert!(process::Process::spawn(&mut command,b"",Duration::from_secs(3),Some(&directory.join("spool"))).and_then(process::Process::finish).is_err());
+    assert!(std::fs::metadata(directory.join("spool/stdout.log")).unwrap().len()<=4096);
+}
+
+#[cfg(unix)]
+#[test]
+fn signal_cancellation_preserves_ambiguous_journal_and_reaps_children() {
+    let repo=repo();let directory=tempfile::tempdir().unwrap();let input=directory.path().join("input.json");let run=directory.path().join("run");
+    util::write_json(&input,&original(repo.path(),1)).unwrap();
+    let mut child=Command::new(env!("CARGO_BIN_EXE_casimir")).args(["rerun"]).arg(&input).args(["--workspace"]).arg(repo.path()).args(["-o"]).arg(&run).args(["--quiet","--","--supervisor","child"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let started=Instant::now();let path=run.join("turns/1/stdout.log");
+    let descendant=loop {
+        if let Ok(text)=std::fs::read_to_string(&path) {if let Ok(pid)=text.trim().parse::<i32>() {break pid;}}
+        if started.elapsed()>Duration::from_secs(10) {let _=child.kill();panic!("fixture child did not start");}
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    unsafe {libc::kill(child.id() as i32,libc::SIGTERM);}
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed()>Duration::from_secs(15) {let _=child.kill();panic!("cancellation did not complete");}
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_ne!(unsafe {libc::kill(descendant,0)},0,"cancelled descendant remained alive");
+    let journal:serde_json::Value=util::read_json(&run.join("recovery.json")).unwrap();assert_eq!(journal["active"],true);
+    assert!(casimir::recovery::resume(&run,false,&mut |_|{},&mut |_|{}).is_err());
+    assert!(!repo.path().join("out.txt").exists());
 }

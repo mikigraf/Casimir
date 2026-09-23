@@ -71,7 +71,7 @@ fn checkpointed_original(repo: &Path) -> Session {
     let id = casimir::checkpoint::capture(casimir::checkpoint::Capture { cwd: repo, run_dir: &tmp("checkpoint-source"), native: Some(&native), harness: Harness::ClaudeCode, version: Some("casimir-fixture 1.0.0".into()), turn: 2, expected_conversation_turns: 1, prompt: &user_turns(&original)[1].text, configuration_hash: &configuration_hash, limit: casimir::checkpoint::DEFAULT_LIMIT }).unwrap();
     original.checkpoints.insert(2, id);
     original.configuration_hash = Some(configuration_hash);
-    original.evaluation = Some(json!({"outcome":"failed","execution":"completed","judgeModel":"fake:judge","passThreshold":7.0}));
+    original.evaluation = Some(json!({"outcome":"failed","execution":"completed","judgeModel":"fake:judge","passThreshold":7.0,"rubricHash":null}));
     original
 }
 

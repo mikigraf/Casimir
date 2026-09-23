@@ -84,7 +84,6 @@ fn resolve_auth() -> Result<Credential> {
 }
 
 fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
-    let auth = resolve_auth()?;
     let body = json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -92,9 +91,13 @@ fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeou
         "messages": [{ "role": "user", "content": prompt }],
         "fallbacks": "default",
     });
+    request_api(resolve_auth()?, API_URL, body, timeout, spool)
+}
+
+fn request_api(auth: Credential, url: &str, body: Value, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
     let mut betas = vec!["server-side-fallback-2026-07-01"];
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(timeout)).redirects(0).build();
-    let mut request = agent.post(API_URL).set("content-type", "application/json").set("anthropic-version", "2023-06-01");
+    let mut request = agent.post(url).set("content-type", "application/json").set("anthropic-version", "2023-06-01");
     match &auth {
         Credential::ApiKey(k) => request = request.set("x-api-key", k),
         Credential::Bearer(t) => request = request.set("Authorization", &format!("Bearer {t}")),
@@ -109,7 +112,9 @@ fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeou
             ureq::Error::Transport(_) => anyhow::anyhow!("Anthropic API transport failed or timed out"),
         })?;
     let mut bytes = Vec::new();
-    response.into_reader().take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    let read = response.into_reader().take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes);
+    crate::util::atomic_write(&spool.join("response.raw"), &bytes)?;
+    read.context("reading API response (partial bytes retained privately)")?;
     if bytes.len() > 4 * 1024 * 1024 { bail!("API response exceeds 4 MiB"); }
     let resp: Value = serde_json::from_slice(&bytes).context("parsing API response")?;
     crate::util::write_json(&spool.join("response.json"), &resp)?;
@@ -190,4 +195,57 @@ pub fn complete_json(system: &str, prompt: &str, o: &LlmOpts) -> Result<Value> {
     let retry = format!("{prompt}\n\nRespond with a single JSON object and nothing else.");
     let text2 = complete(system, &retry, o)?;
     extract_json(&text2).with_context(|| format!("LLM did not return JSON: {}", text2.chars().take(300).collect::<String>()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    fn server(response: Vec<u8>, delay: Duration) -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/messages",listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream,_) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut received = Vec::new();
+            let mut byte = [0];
+            while !received.ends_with(b"\r\n\r\n") { stream.read_exact(&mut byte).unwrap(); received.push(byte[0]); }
+            let header = String::from_utf8(received).unwrap();
+            let length = header.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|n|n.trim().parse::<usize>().unwrap())).unwrap_or(0);
+            let mut body = vec![0;length];stream.read_exact(&mut body).unwrap();
+            std::thread::sleep(delay);
+            let _ = stream.write_all(&response);
+            header
+        });
+        (url,handle)
+    }
+    #[test]
+    fn authentication_and_rate_limit_errors_omit_response_secrets() {
+        for status in [401,403,429] {
+            let (url,server) = server(format!("HTTP/1.1 {status} Error\r\nContent-Length: 13\r\nConnection: close\r\n\r\nsecret-token!").into_bytes(),Duration::ZERO);
+            let directory = tempfile::tempdir().unwrap();
+            let error = request_api(Credential::ApiKey("test-credential".into()),&url,json!({}),2,directory.path()).err().unwrap().to_string();
+            assert!(error.contains(&status.to_string()));assert!(!error.contains("secret-token"));assert!(!error.contains("test-credential"));
+            let request = server.join().unwrap();assert!(request.contains("x-api-key: test-credential"));
+        }
+    }
+    #[test]
+    fn malformed_and_partial_api_responses_are_retained_and_fail() {
+        for response in [b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot-json".to_vec(),b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{\"partial\":".to_vec()] {
+            let (url,server) = server(response,Duration::ZERO);let directory = tempfile::tempdir().unwrap();
+            assert!(request_api(Credential::Bearer("test".into()),&url,json!({}),2,directory.path()).is_err());
+            assert!(!std::fs::read(directory.path().join("response.raw")).unwrap().is_empty());server.join().unwrap();
+        }
+    }
+    #[test]
+    fn api_deadline_and_usage_are_reported() {
+        let (url,slow) = server(Vec::new(),Duration::from_millis(1200));let directory = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        assert!(request_api(Credential::Bearer("test".into()),&url,json!({}),1,directory.path()).is_err());
+        assert!(start.elapsed()<Duration::from_secs(2));slow.join().unwrap();
+        let body = json!({"model":"observed-model","usage":{"input_tokens":12,"output_tokens":3},"content":[{"type":"text","text":"reply"}]}).to_string();
+        let (url,server) = server(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).into_bytes(),Duration::ZERO);
+        let reply = request_api(Credential::ApiKey("test".into()),&url,json!({}),2,directory.path()).unwrap();
+        assert_eq!(reply.text,"reply");assert_eq!(reply.usage.unwrap()["input_tokens"],12);assert!(reply.cost_usd.is_none());server.join().unwrap();
+    }
 }

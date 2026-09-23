@@ -356,7 +356,8 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
     };
     let mut report = Report {
         schema_version: 1, execution_status: if b.execution.as_ref().is_some_and(|e| e.failed_turns == 0 && e.completed_turns + e.preserved_turns + e.skipped_turns >= e.requested_turns) { "completed".into() } else { "incomplete_or_failed".into() },
-        overall_outcome: "inconclusive".into(), judge_assessment: "unassessed".into(), checks: None,        a: describe(a),
+        overall_outcome: "inconclusive".into(), judge_assessment: "unassessed".into(), checks: b.evaluation.as_ref().and_then(|e| e.get("checks")).filter(|v| !v.is_null()).map(|v| serde_json::from_value(v.clone()).unwrap_or_else(|_| crate::checks::Results { schema_version: 1, definition_hash: String::new(), outcome: "error".into(), results: Vec::new() })),
+        a: describe(a),
         b: describe(b),
         files: FileSets {
             only_a: fa.iter().filter(|f| !fb.contains(f)).cloned().collect(),
@@ -376,7 +377,7 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
         simulator_drift: crate::model::simulator_drift(a, b),
         intent_coverage: None,
     };
-    report.update_outcome(7.0);
+    report.update_outcome(b.evaluation.as_ref().and_then(|e| e["passThreshold"].as_f64()).unwrap_or(7.0));
     report
 }
 

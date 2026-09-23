@@ -312,7 +312,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     if let Some(cp) = &checkpoint { if from_turn as usize <= o.turns.unwrap_or(turns.len()).min(turns.len()) { crate::checkpoint::require_compatible(cp)?; } }
     let ws = if let Some(cp) = &checkpoint {
         let root = casimir_home().join("worktrees").join(&run_id);
-        WorkspacePlan { dir: root.join(&cp.subdir), mode: "worktree".into(), root: Some(root), commit: Some(cp.base.clone()), how: Some("verified checkpoint".into()), repo: Some(cp.repository.clone()), note: Some(cp.coverage.clone()), restored: Some("checkpoint".into()) }
+        WorkspacePlan { dir: root.join(&cp.subdir), mode: "worktree".into(), root: Some(root), commit: Some(cp.base.clone()), how: Some("verified checkpoint".into()), repo: Some(crate::checkpoint::repository_path(cp)), note: Some(cp.coverage.clone()), restored: Some("checkpoint".into()) }
     } else { plan_workspace_at(&workspace_original, &o.workspace, &run_id, None)? };
     let max_turns = o.turns.map(|n| n.min(turns.len())).unwrap_or(turns.len());
     let run_dir = o.out_dir.clone().unwrap_or_else(|| casimir_home().join("runs").join(&run_id));
@@ -354,7 +354,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
         if name != ".lock" && !(recovery.is_some() && name == "recovery.json") { bail!("output directory must be empty to establish artifact ownership"); }
     }
     if let Some(id) = &restore_id {
-        crate::checkpoint::restore(id, ws.root.as_ref().unwrap())?;
+        crate::checkpoint::restore_for_run(id, ws.root.as_ref().unwrap(), &run_dir)?;
     } else if ws.mode == "worktree" {
         create_worktree(ws.repo.as_ref().unwrap(), ws.commit.as_ref().unwrap(), ws.root.as_ref().unwrap())?;
         log(&format!("  created worktree {}", ws.root.as_ref().unwrap().display()));
@@ -617,7 +617,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     let mut diff = diff_base.as_deref().map(|base| capture_diff_against(&ws.dir, base)).unwrap_or_else(|| capture_diff(&ws.dir));
     diff.source = Some(format!("captured from {} against {}", ws.dir.display(), diff_base.as_deref().unwrap_or("unavailable git base")));
     fs::write(run_dir.join("diff.patch"), &diff.patch)?;
-    write_json(&run_dir.join("diff.json"), &json!({ "files": diff.files, "stat": diff.stat, "source": diff.source }))?;
+    write_json(&run_dir.join("diff.json"), &json!({ "schemaVersion": 1, "files": diff.files, "stat": diff.stat, "source": diff.source }))?;
     if let Some(d) = &diff_a {
         fs::write(run_dir.join("original.patch"), &d.patch)?;
     }
@@ -650,7 +650,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     }
     fs::write(run_dir.join("report.md"), render_compare_markdown(&report, "original", "rerun"))?;
     write_json(&run_dir.join("report.json"), &report)?;
-    session.evaluation = Some(json!({"outcome":report.overall_outcome,"execution":report.execution_status,"checks":report.checks,"judgeAssessment":report.judge_assessment,"judgeModel":if o.judge {Some(effective_model(&o.judge_llm))} else {None},"passThreshold":o.pass_threshold}));
+    session.evaluation = Some(json!({"outcome":report.overall_outcome,"execution":report.execution_status,"checks":report.checks,"judgeAssessment":report.judge_assessment,"judgeModel":if o.judge {Some(effective_model(&o.judge_llm))} else {None},"passThreshold":o.pass_threshold,"rubricHash":brief.as_ref().map(|b| crate::checkpoint::hash(b.rubric_text().as_bytes()))}));
     write_json(&session_path, &session)?;
     if session.execution.as_ref().is_some_and(|e| e.failed_turns == 0) { journal.session = session.clone(); }
     journal.state = if session.execution.as_ref().is_some_and(|e| e.failed_turns > 0) { "failed".into() } else { "completed".into() };
@@ -714,7 +714,7 @@ pub fn write_record(path: &Path, session: &Session, permission_mode: &str, sandb
         }
     }
     let mut file = fs::File::create(path)?;
-    for envelope in envelopes { writeln!(file, "{envelope}")?; }
+    for mut envelope in envelopes { envelope["schemaVersion"] = json!(1); writeln!(file, "{envelope}")?; }
     Ok(())
 }
 
@@ -824,6 +824,7 @@ pub struct SimulatorSpread {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MatrixSummary {
+    #[serde(default)] pub schema_version: u32,
     pub run_dir: PathBuf,
     pub replicates: usize,
     pub pass_threshold: f64,
@@ -1059,7 +1060,7 @@ pub fn summarize(entries: Vec<ReplicateEntry>, run_dir: PathBuf, replicates: usi
     }
     if !judged { notes.push("pass@1 measures clean execution only; task correctness has not been evaluated".into()); }
     notes.push("lucky and principled are heuristic process flags, not validated AgentLens quality classifications".into());
-    MatrixSummary { run_dir, replicates, pass_threshold: threshold, judged, entries, groups, simulator_spread, notes }
+    MatrixSummary { schema_version: 1, run_dir, replicates, pass_threshold: threshold, judged, entries, groups, simulator_spread, notes }
 }
 
 pub fn render_matrix_text(m: &MatrixSummary) -> String {
@@ -1291,6 +1292,7 @@ pub struct TurnEffect {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Attribution {
+    #[serde(default)] pub schema_version: u32,
     pub run_dir: PathBuf,
     pub effects: Vec<TurnEffect>,
     /// Latest turn whose resampling still rescues the run (CI excludes zero). None = no turn does.
@@ -1318,6 +1320,10 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
     let evaluation = original.evaluation.as_ref().context("attribution withheld: original has no recorded evaluation; demonstrate failure under frozen criteria first")?;
     if evaluation["outcome"] != "failed" || evaluation["execution"] != "completed" { bail!("attribution withheld: original must demonstrate task failure without infrastructure failure"); }
     if evaluation["judgeModel"].as_str() != Some(effective_model(&o.judge_llm).as_str()) || evaluation["passThreshold"].as_f64() != Some(o.pass_threshold) { bail!("attribution withheld: evaluation configuration differs from the original"); }
+    let rubric_hash = o.brief.as_ref().map(|path| Brief::load(path).map(|b| crate::checkpoint::hash(b.rubric_text().as_bytes()))).transpose()?;
+    if evaluation.get("rubricHash").is_none() || evaluation["rubricHash"] != json!(rubric_hash) {
+        bail!("attribution withheld: supply the original frozen --brief; rubric evidence is missing or differs");
+    }
     let checks_hash = o.checks.as_ref().map(fs::read).transpose()?.map(|bytes| crate::checkpoint::hash(&bytes));
     let configuration_hash = crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":original.harness(),"permissionMode":o.permission_mode.as_deref().unwrap_or("preserve"),"sandbox":o.sandbox.as_deref().unwrap_or("preserve"),"extraArgs":o.extra_args,"checksHash":checks_hash}))?);
     if original.configuration_hash.as_deref() != Some(&configuration_hash) { bail!("attribution withheld: harness permissions, arguments, or executable checks differ from original"); }
@@ -1341,7 +1347,10 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
         if checkpoint.configuration_hash != configuration_hash { bail!("attribution withheld: checkpoint configuration differs"); }
     }
     let _experiment_lock = if o.dry_run { None } else { Some(crate::util::RunLock::acquire(&parent_dir)?) };
-    let frozen = prepare_experiment(original, o, &parent_dir, log)?;
+    // Never draft a replacement rubric for attribution: null means the original used generic criteria.
+    let mut attribution_options = o.clone();
+    attribution_options.freeze_inputs = true;
+    let frozen = prepare_experiment(original, &attribution_options, &parent_dir, log)?;
     let mut effects = Vec::new();
     let mut original_failed = true;
     let mut execution_failed = false;
@@ -1356,14 +1365,14 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
         let (single, matrix) = rerun_matrix(original, &opts, log, out)?;
         let (n, passes) = match (&single, &matrix) {
             (_, Some(m)) => {
-                execution_failed |= m.entries.iter().any(|e| e.errors > 0 || e.judge_score.is_none());
+                execution_failed |= m.entries.iter().any(|e| e.errors > 0 || e.judge_score.is_none() || e.outcome == "inconclusive" || e.model != original.model);
                 original_failed &= m.entries.iter().all(|e| e.original_judge_score.is_some_and(|s| s < o.pass_threshold));
                 (m.entries.len(), m.entries.iter().filter(|e| e.pass).count())
             }
             (Some(s), None) => {
                 if s.dry_run { continue; }
                 let entry = entry_from("r1", original, false, None, user_turns(original).len(), s, o);
-                execution_failed |= entry.errors > 0 || entry.judge_score.is_none();
+                execution_failed |= entry.errors > 0 || entry.judge_score.is_none() || entry.outcome == "inconclusive" || entry.model != original.model;
                 original_failed &= entry.original_judge_score.is_some_and(|s| s < o.pass_threshold);
                 (1, usize::from(entry.pass))
             }
@@ -1376,7 +1385,7 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
     let mut notes = vec!["Turn-level diagnostic conditional on a failed original, judge scores, and reconstructed workspace state; not proof of a causal step. Wilson intervals describe rescue proportions, not paired effect differences.".into()];
     if !original_failed { notes.push("Point of commitment withheld: the judge did not consistently score the original below the pass threshold (or judging failed).".into()); }
     if execution_failed { notes.push("Point of commitment withheld: a harness or judge failed; inspect the saved run diagnostics.".into()); }
-    let att = Attribution { run_dir: parent_dir.clone(), effects, point_of_commitment, replicates: o.replicates, dry_run: o.dry_run, execution_failed, notes };
+    let att = Attribution { schema_version: 1, run_dir: parent_dir.clone(), effects, point_of_commitment, replicates: o.replicates, dry_run: o.dry_run, execution_failed, notes };
     if !o.dry_run {
         write_json(&parent_dir.join("attribution.json"), &att)?;
         fs::write(parent_dir.join("report.md"), render_attribution_markdown(&att))?;

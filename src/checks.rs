@@ -66,7 +66,7 @@ pub fn execute(definition: &Definition, hash: &str, cwd: &Path, run_dir: &Path) 
             Ok(output) => (if output.status.code() == Some(check.expected_exit_status) { "passed" } else { "failed" }, output.status.code(), None),
             Err(err) => ("error", None, Some(err.to_string())),
         };
-        if outcome != "passed" { results.outcome = outcome.into(); }
+        if outcome == "failed" || (outcome == "error" && results.outcome != "failed") { results.outcome = outcome.into(); }
         results.results.push(ResultRecord { index, outcome: outcome.into(), exit_status, expected_exit_status: check.expected_exit_status,
             duration_ms: start.elapsed().as_millis(), stdout: spool.join("stdout.log").display().to_string(), stderr: spool.join("stderr.log").display().to_string(), error });
         crate::util::write_json(&run_dir.join("checks.json"), &results)?;

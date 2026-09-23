@@ -229,7 +229,7 @@ pub enum Cmd {
         #[arg(short, long)] output: Option<PathBuf>,
     },
     /// Preview removal of manifest-owned run artifacts and worktrees
-    Cleanup { run: PathBuf, #[arg(long)] apply: bool },
+    Cleanup { run: PathBuf, #[arg(long)] apply: bool, #[arg(long)] checkpoints: bool },
     /// Continue a durable run; ambiguous prompts require an explicit new attempt
     Resume { run: PathBuf, #[arg(long)] retry_interrupted: bool },
     /// Diagnose local installation and login status without paid model calls
@@ -397,7 +397,7 @@ pub fn run() -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&result)?);
             if result["passed"] != true { return Ok(1); }
         },
-        Cmd::Cleanup { run, apply } => println!("{}", serde_json::to_string_pretty(&crate::artifacts::cleanup(&run, apply)?)?),
+        Cmd::Cleanup { run, apply, checkpoints } => println!("{}", serde_json::to_string_pretty(&crate::artifacts::cleanup_with_checkpoints(&run, apply, checkpoints)?)?),
         Cmd::Resume { run, retry_interrupted } => {
             let result = crate::recovery::resume(&run, retry_interrupted, &mut |s| eprintln!("{}", crate::privacy::redact(s)), &mut |s| println!("{s}"))?;
             if let Some(result) = result { println!("Recovery attempt: {}", result.run_dir.display());

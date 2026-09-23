@@ -23,6 +23,7 @@ pub struct PairCandidate {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Pair {
+    #[serde(default)] pub schema_version: u32,
     pub pair_id: String,
     pub task_summary: String,
     pub candidates: Vec<PairCandidate>,
@@ -88,6 +89,7 @@ pub fn export_pairs(runs: &[PathBuf], out_dir: &Path) -> Result<PairsExport> {
             y.label = "Y".into();
             key.insert(pair_id.clone(), PairKey { real: if real_first { "X".into() } else { "Y".into() }, run: run.clone(), turn: source_turn, session: original.id.clone() });
             pairs.push(Pair {
+                schema_version: 1,
                 pair_id,
                 task_summary: clip(original.title.as_deref().unwrap_or(""), 200),
                 candidates: vec![x, y],

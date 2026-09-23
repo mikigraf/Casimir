@@ -156,12 +156,14 @@ impl RunLock {
             }
         }
     }
-    pub fn acquire(dir: &Path) -> Result<Self> {
-        if dir.join(".deleting").exists() { anyhow::bail!("run is being cleaned up"); }
+    pub fn acquire(dir: &Path) -> Result<Self> { Self::acquire_inner(dir, false) }
+    pub(crate) fn acquire_cleanup(dir: &Path) -> Result<Self> { Self::acquire_inner(dir, true) }
+    fn acquire_inner(dir: &Path, cleanup: bool) -> Result<Self> {
+        if !cleanup && dir.join(".deleting").exists() { anyhow::bail!("run is being cleaned up"); }
         private_dir(dir)?;
         let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(".lock"))?;
         fs2::FileExt::try_lock_exclusive(&file).context("run is locked by another Casimir process")?;
-        if dir.join(".deleting").exists() { anyhow::bail!("run is being cleaned up"); }
+        if !cleanup && dir.join(".deleting").exists() { anyhow::bail!("run is being cleaned up"); }
         Ok(Self { _file: file })
     }
 }

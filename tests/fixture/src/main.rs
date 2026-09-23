@@ -19,10 +19,13 @@ fn main() {
     if let Some(mode) = arg(&args, "--supervisor") {
         match mode {
             "hang" => loop { std::thread::sleep(std::time::Duration::from_secs(60)); },
-            "child" | "orphan" => {
-                let child = Command::new(std::env::current_exe().unwrap()).args(["--supervisor", "hang"]).spawn().unwrap();
+            "child" | "orphan" | "separate-group" => {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command.args(["--supervisor", "hang"]);
+                #[cfg(unix)] if mode == "separate-group" { use std::os::unix::process::CommandExt; command.process_group(0); }
+                let child = command.spawn().unwrap();
                 println!("{}", child.id()); std::io::stdout().flush().unwrap();
-                if mode == "child" { loop { std::thread::sleep(std::time::Duration::from_secs(60)); } }
+                if mode != "orphan" { loop { std::thread::sleep(std::time::Duration::from_secs(60)); } }
                 return;
             },
             "flood" => { for _ in 0..1024 { println!("{}", "x".repeat(8192)); eprintln!("{}", "e".repeat(8192)); } return; },

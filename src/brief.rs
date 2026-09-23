@@ -36,6 +36,7 @@ pub struct Intent {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Brief {
+    #[serde(default)] pub schema_version: u32,
     pub session_id: String,
     pub drafted_by: String,
     pub drafted_at: String,
@@ -160,6 +161,7 @@ pub fn draft_brief(original: &Session, diff: Option<&Diff>, llm: &LlmOpts) -> Re
         })
         .unwrap_or_default();
     Ok(Brief {
+        schema_version: 1,
         session_id: original.id.clone(),
         drafted_by: effective_model(llm),
         drafted_at: now_iso(),
