@@ -7,6 +7,7 @@ fn setup() {
     INIT.get_or_init(|| {
         let home = std::env::temp_dir().join(format!("casimir-reliability-{}",std::process::id()));
         std::env::set_var("CASIMIR_HOME", &home);
+        std::env::set_var("CASIMIR_TEST_PASSWORD", "known \"quoted\" credential\\path");
         std::env::set_var("CASIMIR_CLAUDE_BIN", fixture::executable("fake-claude"));
         std::env::set_var("CASIMIR_LLM_CMD", fixture::executable("fake-llm"));
         std::env::set_var("CLAUDE_CONFIG_DIR", home.join("claude"));
@@ -169,8 +170,15 @@ fn cleanup_previews_and_preserves_original_and_unowned_directories() {
 }
 #[test]
 fn shared_exports_redact_credentials_and_mark_redaction() {
+    setup();
     let value=json!({"api_key":"very-secret","text":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz and sk-ant-12345678901234567890","checkpoints":{"1":"private"}});
     let shared=casimir::privacy::share(&value);let text=shared.to_string();assert_eq!(shared["redacted"],true);assert!(!text.contains("very-secret"));assert!(!text.contains("abcdefghijklmnopqrstuvwxyz"));assert!(shared["data"].get("checkpoints").is_none());
+    let secret=std::env::var("CASIMIR_TEST_PASSWORD").unwrap();
+    let shared=casimir::privacy::share(&json!({"text":format!("password=\"{secret}\"")}));
+    let encoded=serde_json::to_string(&shared["data"]).unwrap();
+    assert!(!encoded.contains("quoted"));assert!(!encoded.contains("credential"));
+    assert!(serde_json::from_str::<serde_json::Value>(&encoded).is_ok());
+
 }
 
 #[test]

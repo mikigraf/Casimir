@@ -34,7 +34,7 @@ class EvaluationEvidence(unittest.TestCase):
                         workspace.mkdir()
                         for name, content in trace['files'].items():
                             path = workspace / name
-                            self.assertTrue(path.resolve().is_relative_to(workspace))
+                            self.assertTrue(path.resolve().is_relative_to(workspace.resolve()))
                             path.parent.mkdir(parents=True, exist_ok=True)
                             path.write_text(content, encoding='utf-8')
                         checker = root / 'check.py'

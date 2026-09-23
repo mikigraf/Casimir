@@ -19,17 +19,24 @@
       "sourceUnchanged": true
     }
   ],
-  "summarySha256": "db129fe4a68eb00f7c7307313298a1ee531e10cd60dc58b1bc77a4be1a9f7246",
+  "summarySha256": "1eeea3ed7290c164e7b686733f50e4ee14cec27a2409ba78783d4a27609f58f1",
   "artifacts": {
-    "replay/session.json": "b8458946d0a85f925cb4429bce0875cb0402933fc098adf33eebea8b9687e7c7",
-    "replay/report.json": "d95cc9c3ea179b16ef461d23af180e64dc29f1293a2f2b5ee505b04ccd4d9ba7",
-    "replay/recovery.json": "a218e7b787775e5deecacdf96fe759f2fb95b434901b18e0a60455d004e86b71",
-    "fork/session.json": "ec2f227269576ae18a9f10979a0da36e134b802120c986ed338dcf30cd5c882f",
-    "fork/report.json": "d0bdb6c2cccd486d3fa4a3df9bd7ef8d64b9a4e60df531a581d57231cfd99cd4",
-    "fork/recovery.json": "ea5e0fd25825569fafd821f5047024a6929f603af0c136ee3e8370b26b4c2367",
-    "interrupted/session.json": "a52205ac53f46f3a21126bb9fc6a40f368f229f20e1a863578c41ccbb476d18d",
-    "interrupted/report.json": "1d26efd49a8f48f80e80274ad373a287a1866e12308eb060536ee5c412403f36",
-    "interrupted/recovery.json": "bd5ebd04abe456c33580a1a088686da1b38d17fa4768dd12ffb238f73e184cee"
+    "replay/session.json": "ded4e8944ded3534386b3ec24d9f46358d10dd4923e6e399378fc313fdc3d4b1",
+    "replay/report.json": "19b6f96e964c6b591bd40ef31cf50a1fb0380e345521183db4b6da521779f618",
+    "replay/recovery.json": "7c3343ff741367754e8f04a144892906316af2b24664ae1948617ae135dc2ba7",
+    "fork/session.json": "b8a9f9d91750d00316f0c992e298906c430fcf6971fef5b0f74702a13a62e7d1",
+    "fork/report.json": "660ec641549ee386b724b597f2fe9a5add2d1fbdb3680f1f479a4a2c5ccf990e",
+    "fork/recovery.json": "cdddf3c2d1ffb57960ce673fa0deb0e12a3defd913fddda5928d182d6f2dc1b5",
+    "interrupted/session.json": "ea4127605a347535663adb53de2e10eadfa9b145f4dfa665dd5df0ccd23f6f2e",
+    "interrupted/report.json": "aa2343bcfe565b7cbbf18e7722fcdf8f10b28435a851e7366b5fd753919bcebb",
+    "interrupted/recovery.json": "223c41a90c45bde222f083c73fc6a1ee30d5af7fb9ba15e78042f4010c3e2e1f",
+    "resumed/report.json": "c566545dadf4248326e69860dd02421e1fed51db43dbee34fc09b73bc9b47ae7"
   },
-  "testedCommit": "db298969b7e0d8330068a3378018bec602ae9788"
+  "testedCommit": "ed8c7997951f31ed18d16f2841b3b77a84e71e50",
+  "permissionMode": "acceptEdits",
+  "executableCheckOutcomes": {
+    "replay": "passed",
+    "fork": "passed",
+    "resumedAttempt": "passed"
+  }
 }

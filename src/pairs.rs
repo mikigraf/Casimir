@@ -100,10 +100,12 @@ pub fn export_pairs(runs: &[PathBuf], out_dir: &Path) -> Result<PairsExport> {
     let pairs_path = out_dir.join("pairs.jsonl");
     let mut text = String::new();
     for p in &pairs {
-        text.push_str(&serde_json::to_string(p)?);
+        let mut shared = serde_json::to_value(p)?;
+        crate::privacy::redact_value(&mut shared);
+        text.push_str(&serde_json::to_string(&shared)?);
         text.push('\n');
     }
-    crate::util::atomic_write(&pairs_path, crate::privacy::redact(&text).as_bytes())?;
+    crate::util::atomic_write(&pairs_path, text.as_bytes())?;
     write_json(&out_dir.join("sharing.json"), &serde_json::json!({"schemaVersion":1,"redacted":true,"notice":"Review exports before sharing; arbitrary secrets cannot always be recognized."}))?;
     let key_path = out_dir.join("pairs.key.json");
     write_json(&key_path, &key)?;

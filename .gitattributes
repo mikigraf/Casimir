@@ -1,0 +1,3 @@
+
+# Frozen calibration hashes must be identical under Windows core.autocrlf.
+acceptance/evaluation/corpus.json -text
