@@ -12,11 +12,11 @@ use crate::adapters::{self, RunOpts};
 use crate::brief::{draft_brief, intent_coverage, Brief};
 use crate::compare::{compare_sessions, judge_sessions_with, render_compare_markdown, sequence_similarity, JudgeOpts, Report};
 use crate::llm::{effective_model, LlmOpts};
-use crate::model::{action_sequence, files_touched, renumber_turns, stats, user_turns, Event, EventKind, Harness, RerunOf, Session, Simulated, SimulatorInfo};
+use crate::model::{action_sequence, files_touched, renumber_turns, stats, user_turns, Event, EventKind, Execution, Harness, RerunOf, Session, Simulated, SimulatorInfo};
 use crate::render::{format_event, RenderOpts};
 use crate::simulate::{simulate_user_turn, SimState};
 use crate::util::{casimir_home, colors, first_line, fmt_num, now_iso, now_stamp, pad, slug, write_json};
-use crate::workspace::{base_commit, capture_diff, commit_exists, create_worktree, is_git_repo, reconstruct_original_diff, repo_root, Diff};
+use crate::workspace::{base_commit, capture_diff, capture_diff_against, commit_exists, create_worktree, is_git_repo, reconstruct_original_diff, repo_root, Diff};
 
 #[derive(Clone, Debug)]
 pub struct RerunOpts {
@@ -58,6 +58,10 @@ pub struct RerunOpts {
     pub judge_repeats: usize,
     /// Per-session brief (rubric, session analysis, intents). None = draft one when needed.
     pub brief: Option<PathBuf>,
+    /// Matrix runs freeze their brief and reference diff before executing any candidates.
+    pub freeze_inputs: bool,
+    /// Repository supplied by --workspace DIR, used to create independent matrix worktrees.
+    pub workspace_repo: Option<PathBuf>,
 }
 
 impl Default for RerunOpts {
@@ -89,6 +93,8 @@ impl Default for RerunOpts {
             intervention: None,
             judge_repeats: 1,
             brief: None,
+            freeze_inputs: false,
+            workspace_repo: None,
         }
     }
 }
@@ -106,7 +112,7 @@ fn resolve_brief(original: &Session, o: &RerunOpts, diff_a: Option<&Diff>, run_d
     if existing.exists() {
         return Ok(Some(Brief::load(&existing)?));
     }
-    let needed = o.judge || o.user_mode == "simulate" || o.user_mode == "auto";
+    let needed = !o.freeze_inputs && (o.judge || o.user_mode == "simulate" || o.user_mode == "auto");
     if !needed {
         return Ok(None);
     }
@@ -226,17 +232,17 @@ pub fn plan_workspace_at(original: &Session, workspace: &str, run_id: &str, from
 
 pub fn make_run_id(original: &Session, harness: Harness, model: Option<&str>) -> String {
     let id: String = original.id.chars().take(8).collect();
-    format!("{}-{}-{}-{}", now_stamp(), slug(harness.as_str()), slug(model.unwrap_or("default")), id)
+    format!("{}-{}-{}-{}-{}", now_stamp(), slug(harness.as_str()), slug(model.unwrap_or("default")), id, &uuid::Uuid::new_v4().to_string()[..8])
 }
 
 /// Merge the harness's own log for the rerun with our live capture: our user events carry
 /// simulation metadata, everything else comes from the log, plus live errors the log lacks.
 fn merge_with_harness_log(session: &mut Session, full: Session) {
-    let ours: Vec<Event> = session.events.iter().filter(|e| e.kind == EventKind::User).cloned().collect();
+    let ours: Vec<Event> = session.events.iter().filter(|e| e.kind == EventKind::User && !e.sidechain).cloned().collect();
     let mut merged: Vec<Event> = Vec::new();
     let mut ui = 0;
     for e in &full.events {
-        if e.kind == EventKind::User {
+        if e.kind == EventKind::User && !e.sidechain {
             merged.push(ours.get(ui).cloned().unwrap_or_else(|| e.clone()));
             ui += 1;
         } else {
@@ -245,7 +251,8 @@ fn merge_with_harness_log(session: &mut Session, full: Session) {
     }
     let known: Vec<String> = full.events.iter().filter(|e| e.kind == EventKind::Error).map(|e| e.text_str().to_string()).collect();
     for e in &session.events {
-        if e.kind == EventKind::Error && !known.iter().any(|k| k == e.text_str()) {
+        if (e.kind == EventKind::Error && !known.iter().any(|k| k == e.text_str()))
+            || (e.kind == EventKind::System && e.subtype.as_deref().is_some_and(|s| s == "fork" || s.starts_with("simulator-"))) {
             merged.push(e.clone());
         }
     }
@@ -258,14 +265,30 @@ fn merge_with_harness_log(session: &mut Session, full: Session) {
         session.usage_total = full.usage_total;
     }
     session.harness_log_path = full.path;
+    session.version = full.version.or(session.version.clone());
 }
 
 /// Original-session diff: the caller's, else reconstructed from git history when the cwd is a repo.
 fn original_diff_for(original: &Session, o: &RerunOpts) -> Option<Diff> {
-    o.original_diff.clone().or_else(|| reconstruct_original_diff(original))
+    o.original_diff.clone().or_else(|| if o.freeze_inputs { None } else { reconstruct_original_diff(original) })
+}
+
+fn validate_run(original: &Session, o: &RerunOpts) -> Result<()> {
+    let n = user_turns(original).len();
+    if n == 0 { bail!("original session has no user turns to replay"); }
+    if o.replicates == 0 || o.judge_repeats == 0 { bail!("replicates and judge repeats must be at least 1"); }
+    if !o.pass_threshold.is_finite() || !(0.0..=10.0).contains(&o.pass_threshold) { bail!("pass threshold must be a finite score from 0 to 10"); }
+    if o.turns == Some(0) { bail!("turns must be at least 1"); }
+    if let Some(t) = o.from_turn {
+        if t < 2 || t as usize > o.turns.unwrap_or(n).min(n) { bail!("fork turn must be between 2 and the last requested turn"); }
+        if o.harness.unwrap_or(original.harness()) != original.harness() { bail!("fork-at-turn requires the same harness as the original"); }
+        if matches!(original.harness(), Harness::Copilot | Harness::Gemini) { bail!("fork-at-turn is not supported for {}", original.harness()); }
+    }
+    Ok(())
 }
 
 pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: &mut dyn FnMut(&str)) -> Result<RerunOutcome> {
+    validate_run(original, o)?;
     let c = colors();
     let harness = o.harness.unwrap_or(original.harness());
     let same_harness = harness == original.harness();
@@ -282,9 +305,12 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     if from_turn > 1 && !same_harness {
         bail!("fork-at-turn requires the same harness as the original ({}); the forked transcript is resumed natively", original.harness());
     }
-    let ws = plan_workspace_at(original, &o.workspace, &run_id, o.from_turn)?;
+    let mut workspace_original = original.clone();
+    if let Some(repo) = &o.workspace_repo { workspace_original.cwd = Some(repo.display().to_string()); }
+    let ws = plan_workspace_at(&workspace_original, &o.workspace, &run_id, o.from_turn)?;
     let max_turns = o.turns.map(|n| n.min(turns.len())).unwrap_or(turns.len());
     let run_dir = o.out_dir.clone().unwrap_or_else(|| casimir_home().join("runs").join(&run_id));
+    if run_dir.join("meta.json").exists() { bail!("run directory already contains a run: {}; choose a fresh output directory", run_dir.display()); }
     let simulate = o.user_mode == "simulate" || o.user_mode == "auto";
     let sim_model = effective_model(&o.sim_llm);
 
@@ -314,6 +340,8 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         create_worktree(ws.repo.as_ref().unwrap(), ws.commit.as_ref().unwrap(), ws.root.as_ref().unwrap())?;
         log(&format!("  created worktree {}", ws.root.as_ref().unwrap().display()));
     }
+    // Freeze the base before the agent can commit. For forks include the preserved prefix's edits.
+    let diff_base = if is_git_repo(&ws.dir) { Some(base_commit(&workspace_original, &ws.dir)?.0) } else { None };
     fs::create_dir_all(&run_dir)?;
     write_json(&run_dir.join("original.json"), original)?;
 
@@ -322,6 +350,8 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     session.cwd = Some(ws.dir.display().to_string());
     session.title = original.title.clone();
     session.started_at = Some(now_iso());
+    session.git_commit = diff_base.clone();
+    session.execution = Some(Execution { requested_turns: max_turns, preserved_turns: (from_turn - 1) as usize, ..Default::default() });
     session.rerun_of = Some(RerunOf { harness: original.harness(), id: original.id.clone(), path: original.path.clone() });
     session.workspace = Some(serde_json::to_value(&ws)?);
     if simulate {
@@ -346,7 +376,6 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     let mut cost = 0.0f64;
     let mut saw_cost = false;
     let mut sim_state = SimState::default();
-    let mut completed_turns = 0usize;
     let diff_a = original_diff_for(original, o);
     let brief = resolve_brief(original, o, diff_a.as_ref(), &run_dir, log)?;
     if let Some(b) = &brief {
@@ -390,12 +419,14 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
                 None if sim.no_op => {
                     log(&format!("{}simulator: no-op at turn {} ({}){}", c.magenta, t.turn, sim.reason, c.reset));
                     session.events.push(Event::system(t.turn, now_iso(), "simulator-noop", sim.reason));
+                    session.execution.as_mut().unwrap().skipped_turns += 1;
                     continue;
                 }
                 None => {
                     let reason = sim.stop_reason.clone().unwrap_or_else(|| "goals_met".into());
                     log(&format!("{}simulator stopped the session ({reason}): {}{}", c.magenta, sim.reason, c.reset));
                     session.events.push(Event::system(t.turn, now_iso(), &format!("simulator-stop:{reason}"), sim.reason));
+                    session.execution.as_mut().unwrap().stop_reason = Some(reason);
                     break;
                 }
                 Some(m) => {
@@ -432,14 +463,30 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
             bin: None,
         };
         let mut live: Vec<Event> = Vec::new();
-        let res = adapters::run_turn(harness, &opts, &mut |ev: &Event| {
+        let result = adapters::run_turn(harness, &opts, &mut |ev: &Event| {
             live.push(ev.clone());
             if !o.quiet {
                 if let Some(s) = format_event(ev, &render, start) {
                     out(&s);
                 }
             }
-        })?;
+        });
+        let mut res = match result {
+            Ok(res) => res,
+            Err(err) => {
+                live.push(Event::text(t.turn, now_iso(), EventKind::Error, format!("harness execution failed: {err}")));
+                adapters::RunResult { is_error: true, ..Default::default() }
+            }
+        };
+        res.is_error |= live.iter().any(|e| e.kind == EventKind::Error);
+        if res.is_error {
+            session.execution.as_mut().unwrap().failed_turns += 1;
+            if !live.iter().any(|e| e.kind == EventKind::Error) {
+                live.push(Event::text(t.turn, now_iso(), EventKind::Error, "harness reported an unsuccessful turn"));
+            }
+        } else {
+            session.execution.as_mut().unwrap().completed_turns += 1;
+        }
         session.events.extend(live);
         for r in &res.raw {
             let _ = writeln!(raw, "{r}");
@@ -463,7 +510,6 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
             log(&format!("{}harness reported an error in turn {}; stopping (use --continue-on-error to keep going){}", c.red, t.turn, c.reset));
             break;
         }
-        completed_turns += 1;
     }
 
     session.id = harness_session_id.clone().unwrap_or_else(|| run_id.clone());
@@ -491,7 +537,8 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     write_json(&session_path, &session)?;
     write_record(&run_dir.join("record.jsonl"), &session, &permission_mode, &sandbox)?;
 
-    let diff = capture_diff(&ws.dir);
+    let mut diff = diff_base.as_deref().map(|base| capture_diff_against(&ws.dir, base)).unwrap_or_else(|| capture_diff(&ws.dir));
+    diff.source = Some(format!("captured from {} against {}", ws.dir.display(), diff_base.as_deref().unwrap_or("unavailable git base")));
     fs::write(run_dir.join("diff.patch"), &diff.patch)?;
     write_json(&run_dir.join("diff.json"), &json!({ "files": diff.files, "stat": diff.stat, "source": diff.source }))?;
     if let Some(d) = &diff_a {
@@ -525,7 +572,8 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     write_json(&run_dir.join("report.json"), &report)?;
     meta["endedAt"] = json!(session.ended_at);
     meta["harnessSessionId"] = json!(harness_session_id);
-    meta["completedTurns"] = json!(completed_turns);
+    meta["completedTurns"] = json!(session.execution.as_ref().unwrap().completed_turns);
+    meta["execution"] = json!(session.execution);
     write_json(&run_dir.join("meta.json"), &meta)?;
     Ok(RerunOutcome { run_dir, session: Some(session), report: Some(report), diff: Some(diff), workspace: ws, dry_run: false })
 }
@@ -537,46 +585,50 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
 /// (after Chronicle, arXiv 2609.20625): `boundary[occurrence]` with input, output and drift metadata.
 /// This is bookkeeping for auditing and diffing runs, not a replay source.
 pub fn write_record(path: &Path, session: &Session, permission_mode: &str, sandbox: &str) -> Result<()> {
-    let mut out = String::new();
+    let mut envelopes: Vec<Value> = Vec::new();
     let mut model_n = 0usize;
     let mut tool_n: std::collections::HashMap<String, usize> = Default::default();
-    let mut pending_inputs: std::collections::HashMap<String, (String, usize, u32, String, Value)> = Default::default();
+    let mut pending: std::collections::HashMap<String, usize> = Default::default();
     let drift = json!({ "harness": session.harness(), "model": session.model, "harnessVersion": session.version, "permissionMode": permission_mode, "sandbox": sandbox, "simulator": session.simulator });
-    for e in &session.events {
-        if e.sidechain {
-            continue;
-        }
+    for (index, e) in session.events.iter().enumerate() {
+        if e.sidechain { continue; }
+        let inherited = session.execution.as_ref().is_some_and(|x| e.turn as usize <= x.preserved_turns);
         match e.kind {
             EventKind::Assistant => {
                 model_n += 1;
-                let env = json!({ "boundary": "model", "occurrence": model_n, "address": format!("model[{model_n}]"), "turn": e.turn, "ts": e.ts, "output": e.text, "usage": e.usage, "model": e.model, "drift": drift });
-                out.push_str(&env.to_string());
-                out.push('\n');
+                // The transcript does not expose the complete model request (system prompt, tool
+                // schemas, compaction). Mark it unavailable instead of inventing a replay input.
+                envelopes.push(json!({ "boundary": "model", "occurrence": model_n, "address": format!("model[{model_n}]"), "turn": e.turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "input": Value::Null, "inputAvailable": false, "output": e.text, "usage": e.usage, "model": e.model, "drift": drift }));
             }
             EventKind::ToolCall => {
                 if let Some(t) = &e.tool {
                     let n = tool_n.entry(t.name.clone()).or_insert(0);
                     *n += 1;
-                    pending_inputs.insert(t.id.clone(), (t.name.clone(), *n, e.turn, e.ts.clone(), t.input.clone()));
+                    pending.insert(t.id.clone(), envelopes.len());
+                    envelopes.push(json!({ "boundary": format!("tool:{}", t.name), "occurrence": n, "address": format!("tool:{}[{n}]", t.name), "turn": e.turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "id": t.id, "input": t.input, "inputAvailable": true, "output": Value::Null, "unanswered": true, "drift": drift }));
                 }
             }
             EventKind::ToolResult => {
                 if let Some(r) = &e.result {
-                    let (name, n, turn, ts, input) = pending_inputs.remove(&r.id).unwrap_or_else(|| (r.name.clone().unwrap_or_else(|| "tool".into()), 0, e.turn, e.ts.clone(), Value::Null));
-                    let env = json!({ "boundary": format!("tool:{name}"), "occurrence": n, "address": format!("tool:{name}[{n}]"), "turn": turn, "ts": ts, "input": input, "output": r.output, "isError": r.is_error, "resultTs": e.ts, "drift": drift });
-                    out.push_str(&env.to_string());
-                    out.push('\n');
+                    if let Some(i) = pending.remove(&r.id) {
+                        let env = &mut envelopes[i];
+                        env["output"] = json!(r.output);
+                        env["isError"] = json!(r.is_error);
+                        env["resultTs"] = json!(e.ts);
+                        env["unanswered"] = json!(false);
+                    } else {
+                        let name = r.name.as_deref().unwrap_or("tool");
+                        let n = tool_n.entry(name.to_string()).or_insert(0);
+                        *n += 1;
+                        envelopes.push(json!({ "boundary": format!("tool:{name}"), "occurrence": n, "address": format!("tool:{name}[{n}]"), "turn": e.turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "id": r.id, "input": Value::Null, "inputAvailable": false, "output": r.output, "isError": r.is_error, "orphaned": true, "drift": drift }));
+                    }
                 }
             }
             _ => {}
         }
     }
-    for (id, (name, n, turn, ts, input)) in pending_inputs {
-        let env = json!({ "boundary": format!("tool:{name}"), "occurrence": n, "address": format!("tool:{name}[{n}]"), "turn": turn, "ts": ts, "input": input, "output": Value::Null, "isError": false, "unanswered": true, "id": id, "drift": drift });
-        out.push_str(&env.to_string());
-        out.push('\n');
-    }
-    fs::write(path, out)?;
+    let mut file = fs::File::create(path)?;
+    for envelope in envelopes { writeln!(file, "{envelope}")?; }
     Ok(())
 }
 
@@ -590,6 +642,8 @@ pub struct ReplicateEntry {
     /// Same harness and model as the original: measures the noise floor.
     #[serde(default)]
     pub control: bool,
+    #[serde(default)]
+    pub control_model_verified: bool,
     pub simulator_model: Option<String>,
     pub requested_turns: usize,
     pub completed_turns: usize,
@@ -599,6 +653,8 @@ pub struct ReplicateEntry {
     pub output_tokens: u64,
     pub cost_usd: Option<f64>,
     pub judge_score: Option<f64>,
+    #[serde(default)]
+    pub original_judge_score: Option<f64>,
     pub judge_winner: Option<String>,
     pub order_sensitive: bool,
     pub judge_position_bias: Option<f64>,
@@ -697,28 +753,38 @@ pub struct MatrixSummary {
 fn entry_from(label: &str, original: &Session, control: bool, sim_model: Option<String>, requested: usize, outcome: &RerunOutcome, threshold: f64, judged: bool) -> ReplicateEntry {
     let session = outcome.session.as_ref().unwrap();
     let st = stats(session);
+    // Inherited errors belong to the factual prefix, not to this continuation.
+    let start = session.execution.as_ref().map(|e| e.preserved_turns as u32 + 1).unwrap_or(1);
+    let scoped = |s: &Session| Session { events: s.events.iter().filter(|e| e.turn >= start && e.turn <= requested as u32).cloned().collect(), ..s.clone() };
+    let reference = scoped(original);
+    let candidate = scoped(session);
+    let continuation_errors = stats(&candidate).errors;
     let report = outcome.report.as_ref().unwrap();
-    let completed = user_turns(session).iter().filter(|t| t.turn <= requested as u32).count();
+    let completed = session.execution.as_ref().map(|e| e.preserved_turns + e.completed_turns + e.skipped_turns).unwrap_or(0);
     let judge_score = report.judge.as_ref().map(|j| j.score_b);
-    let end_state = report.end_state.as_ref().map(|e| e.score);
-    let all_turns_done = completed >= requested && !session.events.iter().any(|e| e.kind == EventKind::System && e.subtype.as_deref().is_some_and(|s| s.starts_with("simulator-stop:cannot") || s.starts_with("simulator-stop:out")));
-    let pass = st.errors == 0 && all_turns_done && (!judged || judge_score.is_some_and(|s| s >= threshold));
-    let distance = 1.0 - sequence_similarity(&action_sequence(original), &action_sequence(session));
+    let end_state = report.end_state.as_ref().filter(|e| e.informative).map(|e| e.score);
+    let stopped = session.execution.as_ref().and_then(|e| e.stop_reason.as_deref());
+    let all_turns_done = (completed >= requested && stopped.is_none()) || (stopped == Some("goals_met") && judged);
+    let pass = continuation_errors == 0 && session.execution.as_ref().is_some_and(|e| e.failed_turns == 0) && all_turns_done && (!judged || report.judge.as_ref().is_some_and(|j| j.score_b >= threshold && j.invalid_b.is_empty()));
+    // Compare only the executed suffix for forks; a long preserved prefix must not dilute distance.
+    let distance = 1.0 - sequence_similarity(&action_sequence(&reference), &action_sequence(&candidate));
     ReplicateEntry {
         label: label.into(),
         dir: outcome.run_dir.clone(),
         harness: session.harness,
         model: session.model.clone(),
         control,
+        control_model_verified: !control || original.model.as_deref().zip(session.model.as_deref()).is_some_and(|(a, b)| a == b),
         simulator_model: sim_model,
         requested_turns: requested,
         completed_turns: completed,
-        errors: st.errors,
+        errors: continuation_errors,
         tool_calls: st.tool_calls,
         files_touched: st.files_touched,
         output_tokens: st.usage.output,
         cost_usd: st.cost_usd,
         judge_score,
+        original_judge_score: report.judge.as_ref().map(|j| j.score_a),
         judge_winner: report.judge.as_ref().map(|j| j.winner.clone()),
         order_sensitive: report.judge.as_ref().is_some_and(|j| j.order_sensitive),
         judge_position_bias: report.judge.as_ref().map(|j| j.position_bias),
@@ -726,9 +792,9 @@ fn entry_from(label: &str, original: &Session, control: bool, sim_model: Option<
         judge_family_warning: report.judge.as_ref().and_then(|j| j.family_warning.clone()),
         intent_coverage: report.intent_coverage.as_ref().map(|ic| ic.score),
         end_state_score: end_state,
-        end_state_recall: report.end_state.as_ref().map(|e| e.recall),
+        end_state_recall: report.end_state.as_ref().filter(|e| e.informative).map(|e| e.recall),
         tool_sequence_distance: distance,
-        first_divergent_turn: report.first_divergent_turn,
+        first_divergent_turn: crate::compare::first_divergent_turn(&reference, &candidate),
         lucky: pass && st.anti_patterns.any(),
         pass,
     }
@@ -745,7 +811,7 @@ pub fn wilson(successes: usize, n: usize) -> (f64, f64) {
     let denom = 1.0 + z * z / nf;
     let centre = (p + z * z / (2.0 * nf)) / denom;
     let half = z * ((p * (1.0 - p) / nf) + z * z / (4.0 * nf * nf)).sqrt() / denom;
-    ((centre - half).max(0.0), (centre + half).min(1.0))
+    (if successes == 0 { 0.0 } else { (centre - half).max(0.0) }, if successes == n { 1.0 } else { (centre + half).min(1.0) })
 }
 
 fn mean(v: &[f64]) -> Option<f64> {
@@ -853,13 +919,21 @@ pub fn summarize(entries: Vec<ReplicateEntry>, run_dir: PathBuf, replicates: usi
         })
         .collect();
     // the simulator model is a blocking factor: compare targets only against the control run with the same simulator
-    let controls: Vec<(Option<String>, f64)> = groups.iter().filter(|g| g.control).map(|g| (g.simulator_model.clone(), g.max_distance)).collect();
+    let clean_group = |g: &GroupSummary| entries.iter().filter(|e| e.control == g.control && e.harness == g.harness && e.model == g.model && e.simulator_model == g.simulator_model).all(|e| e.errors == 0 && e.completed_turns >= e.requested_turns);
+    let controls: Vec<(Option<String>, f64)> = groups.iter().filter(|g| g.control && clean_group(g) && entries.iter().filter(|e| e.control && e.model == g.model && e.simulator_model == g.simulator_model).all(|e| e.control_model_verified)).map(|g| (g.simulator_model.clone(), g.max_distance)).collect();
     let mut notes: Vec<String> = Vec::new();
+    if entries.iter().any(|e| e.control && !e.control_model_verified) {
+        notes.push("control model identity did not match the recorded original model; that group cannot establish a same-model noise floor (use full model identifiers)".into());
+    }
     for g in groups.iter_mut().filter(|g| !g.control) {
+        if !clean_group(g) {
+            notes.push("control-spread comparison withheld for an incomplete or failed target group".into());
+            continue;
+        }
         if let Some((_, cm)) = controls.iter().find(|(sim, _)| *sim == g.simulator_model) {
             g.exceeds_control = Some(g.mean_distance > *cm);
-        } else if !controls.is_empty() {
-            notes.push(format!("no control group shares simulator {:?}; the comparison against the noise floor is skipped for that group", g.simulator_model));
+        } else if entries.iter().any(|e| e.control) {
+            notes.push(format!("no complete, error-free control group shares simulator {:?}; the comparison against the noise floor is skipped for that group", g.simulator_model));
         }
     }
     let mut simulator_spread: Vec<SimulatorSpread> = Vec::new();
@@ -889,8 +963,10 @@ pub fn summarize(entries: Vec<ReplicateEntry>, run_dir: PathBuf, replicates: usi
         notes.push("simulated-user pass rates are relative comparisons between groups sharing a simulator, not absolute task success: simulators inflate agent success by roughly 14–20 points against real users (arXiv 2603.11245, 2601.17087)".into());
     }
     if replicates <= 3 {
-        notes.push(format!("{replicates} replicate(s) per group cannot resolve differences below roughly 10 percentage points; the pass@1 intervals show the resolution"));
+        notes.push(format!("{replicates} replicate(s) per group give only a coarse estimate; inspect the Wilson intervals before interpreting differences"));
     }
+    if !judged { notes.push("pass@1 measures clean execution only; task correctness has not been evaluated".into()); }
+    notes.push("lucky and principled are heuristic process flags, not validated AgentLens quality classifications".into());
     MatrixSummary { run_dir, replicates, pass_threshold: threshold, judged, entries, groups, simulator_spread, notes }
 }
 
@@ -1009,6 +1085,10 @@ pub fn render_matrix_markdown(m: &MatrixSummary) -> String {
 
 /// Run `replicates` reruns for each simulator model (or once when neither is set) and aggregate.
 pub fn rerun_matrix(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: &mut dyn FnMut(&str)) -> Result<(Option<RerunOutcome>, Option<MatrixSummary>)> {
+    validate_run(original, o)?;
+    if o.control && original.model.as_deref().is_none_or(|m| m.trim().is_empty()) {
+        bail!("a same-model control requires the original model to be recorded in the session");
+    }
     let simulate = o.user_mode == "simulate" || o.user_mode == "auto";
     let sim_models: Vec<Option<String>> = if simulate && !o.sim_models.is_empty() { o.sim_models.iter().cloned().map(Some).collect() } else { vec![None] };
     let replicates = o.replicates.max(1);
@@ -1023,7 +1103,7 @@ pub fn rerun_matrix(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str)
     let model = o.model.clone().or_else(|| if harness == original.harness() { original.model.clone() } else { None });
     let parent_id = o.run_id.clone().unwrap_or_else(|| make_run_id(original, harness, model.as_deref()));
     let parent_dir = o.out_dir.clone().unwrap_or_else(|| casimir_home().join("runs").join(&parent_id));
-    fs::create_dir_all(&parent_dir)?;
+    let frozen = prepare_experiment(original, o, &parent_dir, log)?;
     let requested = o.turns.map(|n| n.min(user_turns(original).len())).unwrap_or(user_turns(original).len());
     let mut entries = Vec::new();
     let c = colors();
@@ -1038,7 +1118,7 @@ pub fn rerun_matrix(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str)
             for r in 1..=replicates {
                 let label = format!("{}{}r{r}", if *control { "control-" } else { "" }, sm.as_ref().map(|m| format!("{}-", slug(m))).unwrap_or_default());
                 log(&format!("\n{}=== replicate {label} ==={}", c.bold, c.reset));
-                let mut single = o.clone();
+                let mut single = frozen.clone();
                 single.control = false;
                 single.harness = *h;
                 single.model = m.clone();
@@ -1065,6 +1145,32 @@ pub fn rerun_matrix(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str)
     Ok((None, Some(summary)))
 }
 
+/// One reference and rubric for the whole experiment, and a fresh worktree for every replicate.
+fn prepare_experiment(original: &Session, o: &RerunOpts, dir: &Path, log: &mut dyn FnMut(&str)) -> Result<RerunOpts> {
+    let mut frozen = o.clone();
+    if o.workspace == "same" { bail!("replicates require independent worktrees; use --workspace auto or a git repository directory"); }
+    if !matches!(o.workspace.as_str(), "auto" | "worktree") {
+        let repo = fs::canonicalize(&o.workspace)?;
+        if !is_git_repo(&repo) { bail!("replicates require a git repository to create independent worktrees"); }
+        frozen.workspace_repo = Some(repo);
+    } else if frozen.workspace_repo.is_none() && !original.cwd.as_deref().is_some_and(|p| is_git_repo(Path::new(p))) {
+        bail!("replicates require a git repository; pass --workspace <repository>");
+    }
+    frozen.workspace = "worktree".into();
+    if !o.dry_run {
+        if dir.join("replicates.json").exists() || dir.join("attribution.json").exists() { bail!("experiment directory already contains results: {}; choose a fresh output directory", dir.display()); }
+        fs::create_dir_all(dir)?;
+        frozen.original_diff = original_diff_for(original, o);
+        if let Some(brief) = resolve_brief(original, o, frozen.original_diff.as_ref(), dir, log)? {
+            let path = dir.join("brief.json");
+            brief.save(&path)?;
+            frozen.brief = Some(path);
+        }
+        frozen.freeze_inputs = true;
+    }
+    Ok(frozen)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Failure attribution by resampling at each turn (point-of-commitment rule, arXiv 2606.08275)
 
@@ -1088,19 +1194,41 @@ pub struct Attribution {
     /// Latest turn whose resampling still rescues the run (CI excludes zero). None = no turn does.
     pub point_of_commitment: Option<u32>,
     pub replicates: usize,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// Resample the session at each candidate turn (fork, same message) with replicates, and locate the
 /// point of commitment: the latest turn whose pass-rate interval excludes zero. Earlier turns with
 /// non-zero effects are confounded by everything re-rolled after them, so the latest one wins.
 pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn FnMut(&str), out: &mut dyn FnMut(&str)) -> Result<Attribution> {
+    validate_run(original, o)?;
+    if !o.judge { bail!("attribution requires --judge: clean execution alone cannot establish that a failed task was rescued"); }
+    if o.harness.unwrap_or(original.harness()) != original.harness() || o.model.as_ref().is_some_and(|m| Some(m) != original.model.as_ref()) {
+        bail!("attribution resamples the original harness and model; use fork for model-change interventions");
+    }
+    if original.model.is_none() { bail!("attribution requires the original model to be recorded"); }
+    if o.user_mode != "verbatim" || o.sim_models.len() > 1 { bail!("attribution requires verbatim user turns to avoid mixing simulator effects with turn effects"); }
+    let n = user_turns(original).len();
+    if o.turns.is_some_and(|t| t < n) { bail!("attribution must evaluate the whole task; omit --turns"); }
+    if turns.is_empty() { bail!("attribution requires at least one fork turn"); }
+    let mut unique = std::collections::BTreeSet::new();
+    for &k in turns {
+        if !unique.insert(k) { bail!("duplicate attribution turn {k}"); }
+        let mut check = o.clone();
+        check.from_turn = Some(k);
+        validate_run(original, &check)?;
+    }
     let harness = o.harness.unwrap_or(original.harness());
     let parent_id = o.run_id.clone().unwrap_or_else(|| format!("{}-attribute", make_run_id(original, harness, o.model.as_deref())));
     let parent_dir = o.out_dir.clone().unwrap_or_else(|| casimir_home().join("runs").join(&parent_id));
-    fs::create_dir_all(&parent_dir)?;
+    let frozen = prepare_experiment(original, o, &parent_dir, log)?;
     let mut effects = Vec::new();
+    let mut original_failed = true;
     for &k in turns {
-        let mut opts = o.clone();
+        let mut opts = frozen.clone();
         opts.from_turn = Some(k);
         opts.intervention = None;
         opts.control = false;
@@ -1109,9 +1237,14 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
         opts.replicates = o.replicates.max(1);
         let (single, matrix) = rerun_matrix(original, &opts, log, out)?;
         let (n, passes) = match (&single, &matrix) {
-            (_, Some(m)) => (m.entries.len(), m.entries.iter().filter(|e| e.pass).count()),
+            (_, Some(m)) => {
+                original_failed &= m.entries.iter().all(|e| e.original_judge_score.is_some_and(|s| s < o.pass_threshold));
+                (m.entries.len(), m.entries.iter().filter(|e| e.pass).count())
+            }
             (Some(s), None) => {
+                if s.dry_run { continue; }
                 let entry = entry_from("r1", original, false, None, user_turns(original).len(), s, o.pass_threshold, o.judge);
+                original_failed &= entry.original_judge_score.is_some_and(|s| s < o.pass_threshold);
                 (1, usize::from(entry.pass))
             }
             _ => (0, 0),
@@ -1119,14 +1252,19 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
         let (lo, hi) = wilson(passes, n);
         effects.push(TurnEffect { turn: k, n, passes, pass_rate: if n == 0 { 0.0 } else { passes as f64 / n as f64 }, ci_low: lo, ci_high: hi, run_dir: opts.out_dir.clone().unwrap() });
     }
-    let point_of_commitment = effects.iter().filter(|e| e.ci_low > 0.0).map(|e| e.turn).max();
-    let att = Attribution { run_dir: parent_dir.clone(), effects, point_of_commitment, replicates: o.replicates.max(1) };
-    write_json(&parent_dir.join("attribution.json"), &att)?;
-    fs::write(parent_dir.join("report.md"), render_attribution_markdown(&att))?;
+    let point_of_commitment = if original_failed && !o.dry_run { effects.iter().filter(|e| e.ci_low > 0.0).map(|e| e.turn).max() } else { None };
+    let mut notes = vec!["Turn-level diagnostic conditional on a failed original, judge scores, and reconstructed workspace state; not proof of a causal step. Wilson intervals describe rescue proportions, not paired effect differences.".into()];
+    if !original_failed { notes.push("Point of commitment withheld: the judge did not consistently score the original below the pass threshold (or judging failed).".into()); }
+    let att = Attribution { run_dir: parent_dir.clone(), effects, point_of_commitment, replicates: o.replicates, dry_run: o.dry_run, notes };
+    if !o.dry_run {
+        write_json(&parent_dir.join("attribution.json"), &att)?;
+        fs::write(parent_dir.join("report.md"), render_attribution_markdown(&att))?;
+    }
     Ok(att)
 }
 
 pub fn render_attribution_text(a: &Attribution) -> String {
+    if a.dry_run { return "Dry run: attribution planned; no outcomes evaluated or artifacts written.".into(); }
     let c = colors();
     let mut out = vec![format!("{}resample-at-turn attribution ({} replicates per turn){}", c.bold, a.replicates, c.reset)];
     out.push(format!("{}{}{}{}", pad("turn", 6), pad("pass rate", 12), pad("95% CI", 16), "runs"));
@@ -1135,9 +1273,10 @@ pub fn render_attribution_text(a: &Attribution) -> String {
     }
     out.push(String::new());
     out.push(match a.point_of_commitment {
-        Some(t) => format!("{}point of commitment: turn {t}{} — the latest turn where re-deciding still rescues the run; earlier turns' effects are confounded by re-rolling everything after them", c.bold, c.reset),
-        None => format!("{}no point of commitment found: resampling at none of the tested turns produced a pass{}", c.yellow, c.reset),
+        Some(t) => format!("{}candidate point of commitment: turn {t}{} — latest tested turn with observed rescues under the configured judge", c.bold, c.reset),
+        None => format!("{}no supported point of commitment; see evaluation notes{}", c.yellow, c.reset),
     });
+    out.extend(a.notes.iter().cloned());
     out.join("\n")
 }
 
@@ -1148,5 +1287,7 @@ pub fn render_attribution_markdown(a: &Attribution) -> String {
     for e in &a.effects {
         md.push(format!("| {} | {}/{} | {:.2} | [{:.2}, {:.2}] | {} |", e.turn, e.passes, e.n, e.pass_rate, e.ci_low, e.ci_high, e.run_dir.display()));
     }
+    md.push(String::new());
+    md.extend(a.notes.iter().map(|n| format!("- {n}")));
     md.join("\n")
 }

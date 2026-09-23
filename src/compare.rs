@@ -1,5 +1,5 @@
 //! Side-by-side comparison of two sessions, end-state similarity, and an order-swapped LLM judge.
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -145,6 +145,10 @@ pub struct EndState {
     pub recall: f64,
     pub files_a: usize,
     pub files_b: usize,
+    /// A line-overlap score needs a non-empty textual reference; exclude empty/binary-only
+    /// references from aggregate metrics instead of rewarding empty-versus-empty agreement.
+    #[serde(default)]
+    pub informative: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_a: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,7 +288,7 @@ pub fn end_state_similarity(a: &Diff, b: &Diff) -> EndState {
         hit += la.intersection(&lb).count();
     }
     let recall = if ref_lines == 0 { 1.0 } else { hit as f64 / ref_lines as f64 };
-    EndState { score: files_jaccard * content_similarity, files_jaccard, content_similarity, recall, files_a: fa.len(), files_b: fb.len(), source_a: a.source.clone(), source_b: b.source.clone() }
+    EndState { score: files_jaccard * content_similarity, files_jaccard, content_similarity, recall, files_a: fa.len(), files_b: fb.len(), informative: ref_lines > 0, source_a: a.source.clone(), source_b: b.source.clone() }
 }
 
 /// Longest-common-subsequence ratio between two sequences (2·lcs / (|a|+|b|)).
@@ -379,7 +383,7 @@ fn process_rows(r: &Report) -> Vec<(&'static str, String, String)> {
     let (a, b) = (&r.a.anti_patterns, &r.b.anti_patterns);
     let yn = |v: bool| if v { "yes".to_string() } else { "no".to_string() };
     let pct = |v: f64| format!("{:.0}%", v * 100.0);
-    let kinds = ["search", "file_read", "file_write", "command", "fetch", "agent_spawn", "plan", "reason"];
+    let kinds = ["search", "file_read", "file_write", "command", "navigate", "fetch", "agent_spawn", "plan", "reason", "other"];
     let mut rows: Vec<(&'static str, String, String)> = vec![
         ("search loops (≥10 reads, no write)", a.search_loops.to_string(), b.search_loops.to_string()),
         ("re-read churn (files)", a.reread_churn_files.len().to_string(), b.reread_churn_files.len().to_string()),
@@ -396,10 +400,12 @@ fn process_rows(r: &Report) -> Vec<(&'static str, String, String)> {
                 "file_read" => "  actions: file_read",
                 "file_write" => "  actions: file_write",
                 "command" => "  actions: command",
+                "navigate" => "  actions: navigate",
                 "fetch" => "  actions: fetch",
                 "agent_spawn" => "  actions: agent_spawn",
                 "plan" => "  actions: plan",
-                _ => "  actions: reason",
+                "reason" => "  actions: reason",
+                _ => "  actions: other",
             };
             rows.push((label, va.to_string(), vb.to_string()));
         }
@@ -410,7 +416,11 @@ fn process_rows(r: &Report) -> Vec<(&'static str, String, String)> {
 fn end_state_lines(r: &Report, label_a: &str, label_b: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(es) = &r.end_state {
-        out.push(format!("  end-state similarity: {:.2}  (files {:.2} × content {:.2}; {} vs {} changed files)  recall of {label_a}'s changes: {:.2}   [agreement with one trajectory, not validity]", es.score, es.files_jaccard, es.content_similarity, es.files_a, es.files_b, es.recall));
+        if es.informative {
+            out.push(format!("  end-state similarity: {:.2}  (files {:.2} × content {:.2}; {} vs {} changed files)  recall of {label_a}'s changes: {:.2}   [agreement with one trajectory, not validity]", es.score, es.files_jaccard, es.content_similarity, es.files_a, es.files_b, es.recall));
+        } else {
+            out.push(format!("  end-state similarity / recall: n/a (reference has no textual changes; {} vs {} changed files; excluded from aggregate scores)", es.files_a, es.files_b));
+        }
         if let Some(s) = &es.source_a {
             out.push(format!("    {label_a} diff: {s}"));
         }
@@ -675,11 +685,17 @@ fn invalid_list(v: Option<&Value>) -> Vec<String> {
 fn judge_once(system: &str, turns_block: &str, first: (&Session, Option<&Diff>), second: (&Session, Option<&Diff>), llm: &LlmOpts) -> Result<JudgeCall> {
     let prompt = [turns_block.to_string(), String::new(), run_block("A", first.0, first.1), String::new(), run_block("B", second.0, second.1)].join("\n");
     let obj = complete_json(system, &prompt, llm)?;
-    let num = |k: &str| obj.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+    let winner = obj.get("winner").and_then(Value::as_str).context("judge response missing winner")?;
+    if !matches!(winner, "A" | "B" | "tie") { bail!("judge winner must be A, B or tie"); }
+    let num = |k: &str| -> Result<f64> {
+        let value = obj.get(k).and_then(Value::as_f64).with_context(|| format!("judge response missing numeric {k}"))?;
+        if !value.is_finite() || !(0.0..=10.0).contains(&value) { bail!("judge {k} must be a finite score from 0 to 10"); }
+        Ok(value)
+    };
     Ok(JudgeCall {
-        winner: obj.get("winner").and_then(Value::as_str).unwrap_or("tie").to_string(),
-        score_first: num("scoreA"),
-        score_second: num("scoreB"),
+        winner: winner.to_string(),
+        score_first: num("scoreA")?,
+        score_second: num("scoreB")?,
         summary: obj.get("summary").and_then(Value::as_str).unwrap_or("").to_string(),
         differences: obj.get("differences").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
         invalid_first: invalid_list(obj.get("invalidA")),

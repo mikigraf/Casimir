@@ -168,53 +168,31 @@ pub fn reconstruct_original_diff(session: &Session) -> Option<Diff> {
 
 /// Like `capture_diff`, but relative to an arbitrary commit instead of HEAD.
 pub fn capture_diff_against(dir: &Path, commit: &str) -> Diff {
-    if !is_git_repo(dir) {
-        return Diff::default();
+    let Ok(root) = repo_root(dir) else { return Diff::default() };
+    let dir = root.as_path();
+    // NUL-delimited names preserve whitespace and newlines. Disable rename detection so each
+    // status record has exactly one path and both sides of a rename are included in the patch.
+    let names = git_lenient(&["diff", "--name-status", "-z", "--no-renames", commit, "--"], dir);
+    let mut fields = names.split('\0').filter(|s| !s.is_empty());
+    let mut files = Vec::new();
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        files.push(ChangedFile { status: status.to_string(), path: path.to_string() });
     }
-    let status = git_lenient(&["status", "--porcelain", "--untracked-files=all"], dir);
-    let mut files: Vec<ChangedFile> = status
-        .lines()
-        .filter(|l| l.len() > 3)
-        .map(|l| ChangedFile { status: l[..2].trim().to_string(), path: l[3..].trim().to_string() })
-        .collect();
-    for l in git_lenient(&["diff", "--name-status", commit], dir).lines() {
-        if let Some((st, p)) = l.split_once('\t') {
-            if !files.iter().any(|f| f.path == p.trim()) {
-                files.push(ChangedFile { status: st.trim().to_string(), path: p.trim().to_string() });
-            }
-        }
-    }
-    let mut patch = git_lenient(&["diff", commit, "--no-color"], dir);
-    let untracked: Vec<String> = git_lenient(&["ls-files", "--others", "--exclude-standard"], dir).lines().map(String::from).collect();
+    let mut patch = git_lenient(&["diff", "--binary", "--no-ext-diff", "--no-renames", "--no-color", commit, "--"], dir);
+    let untracked_output = git_lenient(&["ls-files", "--others", "--exclude-standard", "-z"], dir);
+    let untracked: Vec<&str> = untracked_output.split('\0').filter(|f| !f.is_empty()).collect();
     for f in &untracked {
-        patch.push_str(&git_lenient(&["diff", "--no-index", "--no-color", "--", "/dev/null", f], dir));
+        files.push(ChangedFile { status: "??".into(), path: (*f).to_string() });
+        patch.push_str(&git_lenient(&["diff", "--no-index", "--binary", "--no-ext-diff", "--no-color", "--", "/dev/null", f], dir));
     }
-    let mut stat = git_lenient(&["diff", commit, "--stat", "--no-color"], dir);
-    for f in &untracked {
-        stat.push_str(&format!(" {f} | (new file)\n"));
-    }
+    let mut stat = git_lenient(&["diff", "--stat", "--no-renames", "--no-color", commit, "--"], dir);
+    for f in &untracked { stat.push_str(&format!(" {f} | (new file)\n")); }
     Diff { files, stat: stat.trim().to_string(), patch, source: None }
 }
 
 /// Changed files and a unified patch, including untracked files.
 pub fn capture_diff(dir: &Path) -> Diff {
-    if !is_git_repo(dir) {
-        return Diff::default();
-    }
-    let status = git_lenient(&["status", "--porcelain", "--untracked-files=all"], dir);
-    let files = status
-        .lines()
-        .filter(|l| l.len() > 3)
-        .map(|l| ChangedFile { status: l[..2].trim().to_string(), path: l[3..].trim().to_string() })
-        .collect();
-    let mut patch = git_lenient(&["diff", "HEAD", "--no-color"], dir);
-    let untracked: Vec<String> = git_lenient(&["ls-files", "--others", "--exclude-standard"], dir).lines().map(String::from).collect();
-    for f in &untracked {
-        patch.push_str(&git_lenient(&["diff", "--no-index", "--no-color", "--", "/dev/null", f], dir));
-    }
-    let mut stat = git_lenient(&["diff", "HEAD", "--stat", "--no-color"], dir);
-    for f in &untracked {
-        stat.push_str(&format!(" {f} | (new file)\n"));
-    }
-    Diff { files, stat: stat.trim().to_string(), patch, source: Some(format!("captured from {}", dir.display())) }
+    let mut diff = capture_diff_against(dir, "HEAD");
+    diff.source = Some(format!("captured from {}", dir.display()));
+    diff
 }

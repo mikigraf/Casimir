@@ -196,6 +196,18 @@ pub struct RerunOf {
     pub path: Option<String>,
 }
 
+/// Execution evidence from casimir, independent of how many prompts a transcript contains.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Execution {
+    pub requested_turns: usize,
+    pub preserved_turns: usize,
+    pub completed_turns: usize,
+    pub skipped_turns: usize,
+    pub failed_turns: usize,
+    pub stop_reason: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
@@ -244,6 +256,8 @@ pub struct Session {
     pub workspace: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simulator: Option<SimulatorInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Execution>,
     #[serde(default)]
     pub events: Vec<Event>,
 }

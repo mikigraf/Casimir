@@ -4,8 +4,8 @@ Replay, rerun, and compare coding-agent sessions recorded by **Claude Code**, **
 **GitHub Copilot CLI**, and **Gemini CLI**. Written in Rust; a single binary with no runtime
 dependencies beyond `git` (and `curl` for the optional Anthropic API backend).
 
-Both harnesses already write a complete transcript of every session to disk. `casimir` reads those
-logs, normalizes them into one event model, and lets you:
+These harnesses write a complete transcript of every session to disk. `casimir` reads those logs,
+normalizes them into one event model, and lets you:
 
 - **list / show / play** any past session as a readable transcript, with the original pacing;
 - **rerun** a session's user turns against a different model or a different harness, in a fresh git
@@ -18,6 +18,9 @@ logs, normalizes them into one event model, and lets you:
 - **replicate** reruns (and vary the simulator model) to get pass@1, pass^k and score spreads instead
   of a single, unrepeatable result.
 
+The [research audit](docs/research.md) explains the experimental objective, primary sources, and
+where Casimir uses approximations rather than reproducing a paper’s method.
+
 ## Install
 
 ```
@@ -26,7 +29,7 @@ cargo install --path .        # puts `casimir` on your PATH
 cargo build --release         # binary at target/release/casimir
 ```
 
-Requires a Rust toolchain (1.80+) and a C linker.
+Requires a Rust toolchain (1.85+) and a C linker.
 
 ## Where the logs come from
 
@@ -84,7 +87,7 @@ casimir runs
    between turns, so the target harness keeps its own context exactly as it would interactively.
 4. Events stream to the terminal as they happen. When the harness finishes, casimir re-reads the
    harness's own on-disk log for the new session so the rerun has the same fidelity as the original.
-5. The workspace diff is captured (including untracked files), and a comparison report is written:
+5. The workspace diff is captured against the initial base (including committed and untracked edits), and a comparison report is written:
 
 ```
 ~/.casimir/runs/<timestamp>-<harness>-<model>-<orig-id>/
@@ -141,16 +144,19 @@ headline verdict when that warning appears.
 
 A **per-session brief** grounds the judge in the task. `casimir brief <session>` drafts an
 objective, constraints, intervention conditions, a rubric of 5 to 10 checkable criteria with
-must-have flags, and atomic intents; edit the JSON, set `humanReviewed` to true, and pass
-`--brief`. A human-refined rubric was what lifted judge-human agreement on patch validity from a
-kappa of 0.38 to 0.57 to 0.75 in arXiv 2511.10865; the same paper found 43.5 percent of
-test-passing agent patches judged invalid, so the judge is also asked to check root cause and to
-list **invalid reasons** from a fixed taxonomy: requirement violation, root cause not addressed,
-incomplete implementation, new issues introduced. Reruns that judge or simulate draft a brief
-automatically into the run directory when none is passed.
+must-have flags, and atomic intents; edit the JSON, set `humanReviewed` to true, and pass `--brief`.
+The human-refined rubric study reports kappa 0.57 on its full dataset and 0.75 on the
+unanimous-human subset (different subsets, not successive refinement stages; arXiv 2511.10865). The
+same paper found 43.5 percent of test-passing agent patches judged invalid, so the judge is also
+asked to check root cause and to list **invalid reasons** from a fixed taxonomy: requirement
+violation, root cause not addressed, incomplete implementation, new issues introduced. Reruns that
+judge or simulate draft a brief automatically into the run directory when none is passed. Matrices
+and attribution draft it once and reuse it across every replicate, alongside a frozen reference
+diff.
 
 End-state similarity measures agreement with one human trajectory, not correctness; the report
-labels it as such and never uses it as a validity signal.
+labels it as such and never uses it as a validity signal. Empty or binary-only reference patches are
+marked uninformative and excluded from aggregate line-overlap scores.
 
 ### Live re-execution, not log stitching
 
@@ -165,10 +171,14 @@ addressable record for auditing (see below), never used as a replay source.
 The same study found that same-model forks at temperature zero also diverge, by an amount that
 depends on the serving stack. So a swap that "looks different" may be noise. `--control` adds a
 group that reruns the **original** harness and model alongside the target. Every replicate reports
-its divergence from the original: the first user turn whose canonical action sequence differs, and
-a tool-sequence distance (one minus the longest-common-subsequence similarity of canonical
-actions). A target group is only called different when its mean distance exceeds the control
-group's largest distance; otherwise the report says so explicitly.
+its divergence from the original: the first user turn whose canonical action sequence differs, and a
+tool-sequence distance (one minus the longest-common-subsequence similarity of canonical actions). A
+target group is flagged as beyond the observed control spread when its mean distance exceeds the
+control group's largest distance. This is a descriptive threshold, not a statistical significance
+test. Fork distances use only the requested post-fork suffix; preserved history does not dilute
+divergence. Canonical-kind distance does not detect changed arguments within the same action kind. A
+control requires a recorded original model. If the reported control model differs from that
+identifier, or either group fails to complete cleanly, the control comparison is withheld.
 
 ### Fork at a turn
 
@@ -179,17 +189,22 @@ turn-N message (a resample) or an edited one (an intervention). In-situ interven
 suspected failure step flipped 17.6 percent of failed trials in one study, while end-of-trace
 self-refinement flipped none (arXiv 2512.06749). Message-only logs cannot restore the agent's
 state, which is why the fork leans on the harness's own resume: Claude Code and Codex are
-supported; Copilot CLI and Gemini CLI cannot resume a truncated transcript. The plan notes
+supported experimentally; Copilot CLI and Gemini CLI cannot resume a truncated transcript.
+Native transcript formats and indexing may change; a copied transcript is not a full checkpoint. The plan notes
 whether the workspace before turn N could be restored exactly, from commits, or only heuristically
 (no commit between the session base and turn N although files were edited).
 
 ### Attribution: the point of commitment
 
-`casimir attribute <session> --turns-at 2,3,4` resamples the session at each listed turn with
-replicates and reports the pass rate with a Wilson interval per turn. Resampling turn k re-rolls
-everything after it, so early turns show spurious effects; the causal locus is the **latest** turn
-whose interval still excludes zero, the last point at which re-deciding still rescues the run
-(arXiv 2606.08275).
+`casimir attribute <session> --turns-at 2,3,4 --judge` resamples the original harness and model
+at each listed turn. It requires verbatim user turns and full-task evaluation. A clean exit alone
+cannot show that a failed task was rescued. The report withholds a candidate point of commitment
+unless the judge consistently scores the original below the pass threshold.
+
+Resampling turn k also re-rolls downstream decisions. Inspired by arXiv 2606.08275, Casimir selects
+the latest tested turn with observed rescues and a positive Wilson lower bound. These are intervals
+for rescue proportions, not paired causal effects. The result is a turn-level diagnostic conditional
+on the judge and reconstructed workspace, not proof of a causal step.
 
 ### Process metrics and anti-patterns
 
@@ -198,13 +213,15 @@ command, plan, navigate, fetch, agent spawn, reason) so trajectories from differ
 comparable, and three anti-patterns are labelled with deterministic rules (arXiv 2607.06184): a
 **search loop** is ten or more consecutive search or read actions with no write and no validation
 command; **re-read churn** is the same file read three or more times in a ten-action window with no
-intervening write; a **verification skip** is no recognized test, build, or lint command after the
-last source write. These were more common in failed than in resolved SWE-bench runs (search loops
-56 vs 41 percent, churn 45 vs 34 percent). Stats and comparisons show them together with the
-failed-action share and exploration share. A replicate that passes but shows an anti-pattern is
-flagged as a **lucky pass**, and each group reports a principled pass rate that excludes them
-(after the "lucky pass" analysis in arXiv 2605.12925, where ranking by process quality reordered
-models materially).
+intervening write; a **verification skip** is no recognized test, build, or lint command in the
+overlap of the final five actions and the region after the last write (the paper’s tail-validation
+diagnostic). Search loops and churn were more common in failed than in resolved SWE-bench runs
+(search loops 56 vs 41 percent, churn 45 vs 34 percent). Stats and comparisons show them together
+with the failed-action share and exploration share. A replicate that passes but shows an
+anti-pattern is flagged as a **lucky pass**, and each group reports a principled pass rate that
+excludes them (after the "lucky pass" analysis in arXiv 2605.12925, where ranking by process quality
+reordered models materially). These are Casimir heuristics, not AgentLens quality classifications; a
+tail-validation flag is descriptive and does not by itself invalidate a successful patch.
 
 ### Record envelopes
 
@@ -212,7 +229,9 @@ Each run directory also gets `record.jsonl`: every model reply and every tool ca
 an envelope addressed by boundary and occurrence (`model[3]`, `tool:Bash[7]`) with its input,
 output, and drift metadata (harness, version, model, permission mode, sandbox, simulator). This
 follows Chronicle's record design (arXiv 2609.20625) and is bookkeeping for auditing and diffing
-runs; it is not a replay mode.
+runs; it is not a replay mode. Envelopes follow call order and retain unanswered or orphaned tool
+events. Inherited fork records are marked. Full model request inputs are unavailable in the
+normalized logs and are explicitly marked `inputAvailable: false`.
 
 ### Replicates
 
@@ -220,12 +239,23 @@ Agent runs are noisy, so one rerun is not a result. `--replicates N` runs the sa
 (each in its own worktree and run directory) and reports pass@1 (fraction that passed), pass^k
 (every replicate passed), the judge-score range, end-state similarity, and token and tool-call
 spreads. A replicate passes when it finishes every turn without a harness error and, if judged,
-scores at least `--pass-threshold` (default 7 of 10). Each group also gets a majority verdict
-(arXiv 2512.06749): **validated** when at least two thirds pass, **partial** when fewer pass but
-at least two thirds completed cleanly, **inconclusive** when most did not complete, **refuted**
-otherwise. Replicates default to three whenever a judge, a control group, a fork, or attribution is
-involved. Pass one or more `--sim-model` values to run the matrix once per simulator model; the
-summary groups results by simulator so simulator-induced variance is visible instead of hidden.
+scores at least `--pass-threshold` (default 7 of 10) with no explicit invalidity findings. Without a
+judge, pass@1 measures execution completion, not task correctness. Submitted prompts and failed
+turns are not counted as completed. Simulator no-ops are recorded separately; an early `goals_met`
+stop counts as success only with a passing judge. Each group also gets a Casimir majority verdict
+(inspired by the two-of-three success threshold in arXiv 2512.06749): **validated** when at least
+two thirds pass, **partial** when at least one but fewer than two thirds pass and at least two
+thirds complete cleanly, **inconclusive** when fewer than two thirds complete cleanly, **refuted**
+when none pass despite sufficient completion. These buckets do not reproduce DoVer’s
+intervention-fulfillment and milestone-progress categories. Replicates default to three whenever a
+judge, a control group, a fork, or attribution is involved. Pass one or more `--sim-model` values to
+run the matrix once per simulator model; the summary groups results by simulator so
+simulator-induced variance is visible instead of hidden. Every matrix replicate uses a fresh
+worktree. For a matrix, `--workspace DIR` names its source git repository; `--workspace same` and
+non-git directories are rejected. Single runs still support explicit in-place execution. Dry runs
+create no experiment files or worktrees. Existing run outputs are never overwritten. Harness
+failures and missing requested judge results return a nonzero CLI exit status after saving
+diagnostics.
 
 ### The user simulator (`--user simulate`)
 
@@ -331,12 +361,11 @@ Environment knobs: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `GEMINI_CL
   adapters were validated against real files written by the current CLI versions and against
   fixtures, not against long-running sessions.
 - Replicates and order-swapped judging multiply API cost: N replicates × 2 × `--judge-repeats`
-  judge calls, plus one brief draft and one intent-coverage call per run.
+  judge calls, plus one shared brief draft per experiment and an intent-coverage call per judged
+  simulated run.
 - Replicate statistics are thin: the per-group pass@1 interval is a Wilson interval treating
-  replicates as independent, and three replicates cannot resolve differences below roughly ten
-  percentage points; the report says so. No verified guidance on temperature or seed effects,
-  serving-stack variance, or adaptive stopping was found.
-- No trace export format is offered. Two research passes produced no verified evidence on which
-  schema (OpenTelemetry GenAI conventions, OpenInference, SWE-agent or OpenHands trajectories) a
-  tool like this should target, so the normalized `session.json` and `record.jsonl` stay the
-  interchange formats rather than an unverified mapping.
+  replicates as independent, and three replicates provide only a coarse estimate; inspect the interval rather than assuming
+  a fixed percentage-point resolution. Serving-stack effects in the cited studies do not guarantee reproducibility for the installed
+  harnesses; seed controls and adaptive stopping are not implemented.
+- No standard trace export mapping is implemented. The normalized `session.json` and
+  `record.jsonl` are the interchange formats.

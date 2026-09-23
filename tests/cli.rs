@@ -59,6 +59,182 @@ fn tmp_repo() -> PathBuf {
 fn no_log(_: &str) {}
 
 #[test]
+fn rerun_retains_commits_and_reports_failed_execution() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let base = RerunOpts { workspace: repo.display().to_string(), quiet: true, turns: Some(1), ..Default::default() };
+    let committed = rerun(&original, &RerunOpts { out_dir: Some(tmp("committed")), extra_args: vec!["--fake-commit".into()], ..base.clone() }, &mut no_log, &mut no_log).unwrap();
+    assert!(committed.diff.unwrap().patch.contains("+hi"), "committed edits remain part of the outcome");
+    assert!(Command::new("git").args(["diff", "HEAD", "--exit-code"]).current_dir(&repo).status().unwrap().success());
+    for flag in ["--fake-error", "--fake-crash", "--fake-empty"] {
+        let out_dir = tmp("failed-run");
+        let options = RerunOpts { out_dir: Some(out_dir.clone()), replicates: 2, extra_args: vec![flag.into()], continue_on_error: true, ..base.clone() };
+        let (_, matrix) = rerun_matrix(&original, &options, &mut no_log, &mut no_log).unwrap();
+        let matrix = matrix.unwrap();
+        assert!(matrix.entries.iter().all(|e| !e.pass && e.completed_turns == 0 && e.errors > 0), "{flag}: failed prompts must not count as completed turns");
+        assert_eq!(matrix.groups[0].verdict, "inconclusive");
+        let session = load_session_file(&out_dir.join("r1")).unwrap();
+        assert_eq!(session.execution.unwrap().failed_turns, 1);
+        assert!(out_dir.join("r1/record.jsonl").exists());
+        if flag == "--fake-crash" {
+            assert!(std::fs::read_to_string(out_dir.join("r1/raw.jsonl")).unwrap().contains("init"));
+        }
+    }
+}
+
+#[test]
+fn matrix_freezes_rubric_and_isolates_workspaces() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let out_dir = tmp("frozen");
+    let options = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, replicates: 2, judge: true, judge_llm: fake_llm("judge"), ..Default::default() };
+    let mut logs = Vec::new();
+    let (_, matrix) = rerun_matrix(&original, &options, &mut |s| logs.push(s.to_string()), &mut no_log).unwrap();
+    assert_eq!(logs.iter().filter(|s| s.contains("drafting a per-session brief")).count(), 1);
+    assert!(!repo.join("out.txt").exists(), "replicates must not mutate the source repository");
+    let first = load_session_file(&out_dir.join("r1")).unwrap();
+    let second = load_session_file(&out_dir.join("r2")).unwrap();
+    assert_ne!(first.cwd, second.cwd);
+    assert_eq!(std::fs::read(out_dir.join("r1/brief.json")).unwrap(), std::fs::read(out_dir.join("r2/brief.json")).unwrap());
+    assert!(matrix.unwrap().entries.iter().all(|e| e.pass));
+}
+
+#[test]
+fn attribution_requires_outcomes_and_dry_runs_leave_no_artifacts() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let output = tmp("plan-parent").join("not-created");
+    let mut options = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(output.clone()), quiet: true, replicates: 2, dry_run: true, judge_llm: fake_llm("judge-both-pass"), ..Default::default() };
+    assert!(attribute(&original, &options, &[2], &mut no_log, &mut no_log).unwrap_err().to_string().contains("requires --judge"));
+    options.judge = true;
+    assert!(attribute(&original, &options, &[2], &mut no_log, &mut no_log).unwrap().dry_run);
+    assert!(!output.exists());
+    assert!(attribute(&original, &options, &[2, 2], &mut no_log, &mut no_log).is_err());
+    assert!(attribute(&original, &options, &[1], &mut no_log, &mut no_log).is_err());
+    options.dry_run = false;
+    options.replicates = 1;
+    let att = attribute(&original, &options, &[2], &mut no_log, &mut no_log).unwrap();
+    assert_eq!(att.point_of_commitment, None, "a successful original is not a rescued failure");
+    assert!(att.notes.iter().any(|n| n.contains("withheld")));
+    assert_eq!(wilson(0, 7).0, 0.0, "floating point residue must not look like a positive effect");
+}
+
+#[test]
+fn judge_schema_and_invalidity_are_enforced() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    assert!(judge_sessions(&original, &original, None, None, &fake_llm("judge-malformed")).is_err());
+    let repo = tmp_repo();
+    let options = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(tmp("invalid-patch")), quiet: true, replicates: 2, judge: true, judge_llm: fake_llm("judge-invalid-patch"), ..Default::default() };
+    let (_, matrix) = rerun_matrix(&original, &options, &mut no_log, &mut no_log).unwrap();
+    assert!(matrix.unwrap().entries.iter().all(|e| !e.pass), "a high score cannot override an explicit invalidity finding");
+}
+
+#[test]
+fn record_envelopes_are_ordered_unique_and_preserve_unanswered_calls() {
+    let events = vec![
+        call(1, "a", "Bash", json!({"command": "one"})),
+        call(1, "b", "Bash", json!({"command": "two"})),
+        Event::text(1, "2026-01-01T00:00:00Z", EventKind::Assistant, "reply"),
+        Event::tool_result(1, "2026-01-01T00:00:01Z", "b", Some("Bash".into()), "second finishes first", false),
+        Event::tool_result(1, "2026-01-01T00:00:02Z", "orphan", Some("Bash".into()), "missing call", false),
+        Event::tool_result(1, "2026-01-01T00:00:03Z", "other-orphan", Some("Bash".into()), "also missing", false),
+    ];
+    let session = Session { events, ..Default::default() };
+    let path = tmp("records").join("record.jsonl");
+    casimir::rerun::write_record(&path, &session, "test", "test").unwrap();
+    let bytes = std::fs::read_to_string(&path).unwrap();
+    casimir::rerun::write_record(&path, &session, "test", "test").unwrap();
+    assert_eq!(bytes, std::fs::read_to_string(path).unwrap());
+    let rows: Vec<serde_json::Value> = bytes.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(rows[0]["unanswered"], true);
+    assert_eq!(rows[1]["output"], "second finishes first");
+    assert_eq!(rows[2]["inputAvailable"], false);
+    let addresses: std::collections::BTreeSet<_> = rows.iter().map(|r| r["address"].as_str().unwrap()).collect();
+    assert_eq!(addresses.len(), rows.len());
+    assert!(rows.windows(2).all(|r| r[0]["eventIndex"].as_u64() < r[1]["eventIndex"].as_u64()));
+}
+
+#[test]
+fn cli_accepts_standalone_patches_and_returns_failure_for_harness_errors() {
+    setup_env();
+    let repo = tmp_repo();
+    let output = tmp("cli-failure");
+    let patch = output.join("reference.patch");
+    std::fs::write(&patch, "diff --git a/out.txt b/out.txt\n--- /dev/null\n+++ b/out.txt\n@@ -0,0 +1 @@\n+hi\n").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_casimir"))
+        .args(["rerun", fx("claude-code.jsonl").to_str().unwrap(), "--workspace", repo.to_str().unwrap(), "--turns", "1", "--quiet", "--original-diff", patch.to_str().unwrap(), "-o", output.join("run").to_str().unwrap(), "--", "--fake-crash"])
+        .output().unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    assert_eq!(std::fs::read(output.join("run/original.patch")).unwrap(), std::fs::read(patch).unwrap());
+    assert!(output.join("run/report.json").exists(), "a failed CLI run still saves its report");
+}
+
+#[test]
+fn simulator_noops_and_goals_met_have_explicit_completion_semantics() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    for (mode, judged, expected_pass) in [("sim-noop", true, true), ("sim-goals-met", true, true), ("sim-goals-met", false, false), ("sim-stop", true, false)] {
+        let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(tmp("sim-completion")), quiet: true, replicates: 2, user_mode: "simulate".into(), sim_llm: fake_llm(mode), judge: judged, judge_llm: fake_llm("judge"), ..Default::default() };
+        let (_, matrix) = rerun_matrix(&original, &opts, &mut no_log, &mut no_log).unwrap();
+        assert!(matrix.unwrap().entries.iter().all(|e| e.pass == expected_pass), "{mode}, judge={judged}");
+    }
+}
+
+#[test]
+fn invalid_plans_fail_before_creating_artifacts() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let output = tmp("invalid-plan").join("not-created");
+    let base = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(output.clone()), quiet: true, ..Default::default() };
+    for opts in [RerunOpts { replicates: 0, ..base.clone() }, RerunOpts { turns: Some(0), ..base.clone() }, RerunOpts { pass_threshold: f64::NAN, ..base.clone() }, RerunOpts { from_turn: Some(2), turns: Some(1), ..base.clone() }] {
+        assert!(rerun_matrix(&original, &opts, &mut no_log, &mut no_log).is_err());
+        assert!(!output.exists());
+    }
+    let mut unknown = original.clone();
+    unknown.model = None;
+    assert!(rerun_matrix(&unknown, &RerunOpts { control: true, ..base }, &mut no_log, &mut no_log).is_err());
+    assert!(!output.exists());
+}
+
+#[test]
+fn diff_capture_from_subdirectory_keeps_staged_and_untracked_paths() {
+    let repo = tmp_repo();
+    let sub = repo.join("src");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("with space.txt"), "untracked\n").unwrap();
+    std::fs::write(repo.join("README.md"), "staged\n").unwrap();
+    assert!(Command::new("git").args(["add", "README.md"]).current_dir(&repo).status().unwrap().success());
+    let diff = casimir::workspace::capture_diff_against(&sub, "HEAD");
+    assert!(diff.patch.contains("+staged"));
+    assert!(diff.patch.contains("+untracked"));
+    assert!(diff.files.iter().any(|f| f.path == "src/with space.txt"));
+    let empty = end_state_similarity(&Diff::default(), &Diff::default());
+    assert!(!empty.informative, "empty reference patches cannot support an agreement score");
+}
+
+#[test]
+fn mismatched_or_failed_controls_cannot_establish_a_noise_floor() {
+    setup_env();
+    let mut original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let options = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(tmp("model-mismatch")), quiet: true, control: true, ..Default::default() };
+    let (_, matrix) = rerun_matrix(&original, &options, &mut no_log, &mut no_log).unwrap();
+    let matrix = matrix.unwrap();
+    assert!(matrix.entries.iter().filter(|e| e.control).all(|e| !e.control_model_verified));
+    assert!(matrix.groups.iter().all(|g| g.exceeds_control.is_none()));
+    original.model = Some("fake-model".into());
+    let options = RerunOpts { out_dir: Some(tmp("failed-control")), extra_args: vec!["--fake-error".into()], ..options };
+    let (_, matrix) = rerun_matrix(&original, &options, &mut no_log, &mut no_log).unwrap();
+    assert!(matrix.unwrap().groups.iter().all(|g| g.exceeds_control.is_none()));
+}
+
+#[test]
 fn claude_code_parses_log_into_normalized_session() {
     let s = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
     assert_eq!(s.harness, Some(Harness::ClaudeCode));
@@ -603,7 +779,8 @@ fn divergence_recall_verdict_and_wilson() {
 #[test]
 fn control_group_measures_the_noise_floor() {
     setup_env();
-    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let mut original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    original.model = Some("fake-model".into());
     let repo = tmp_repo();
     let out_dir = tmp("control");
     let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, replicates: 2, control: true, model: Some("other-model".into()), run_id: Some("t-control".into()), ..Default::default() };
@@ -671,7 +848,7 @@ fn attribution_finds_the_point_of_commitment() {
     let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
     let repo = tmp_repo();
     let out_dir = tmp("attr");
-    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, replicates: 2, run_id: Some("t-attr".into()), ..Default::default() };
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, replicates: 2, judge: true, judge_llm: fake_llm("judge"), run_id: Some("t-attr".into()), ..Default::default() };
     let att = attribute(&original, &opts, &[2], &mut no_log, &mut no_log).unwrap();
     assert_eq!(att.effects.len(), 1);
     assert_eq!(att.effects[0].n, 2);
@@ -827,7 +1004,8 @@ fn simulated_rerun_with_brief_noop_and_pairs_export() {
 #[test]
 fn matrix_reports_judge_quality_spread_and_notes() {
     setup_env();
-    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let mut original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    original.model = Some("fake-model".into());
     let repo = tmp_repo();
     let out_dir = tmp("mx");
     let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir), quiet: true, replicates: 2, judge: true, judge_llm: fake_llm("judge-flip"), user_mode: "simulate".into(), sim_llm: fake_llm("sim-verbatim"), sim_models: vec!["fake:sim-verbatim".into(), "fake:sim-adapt".into()], control: true, run_id: Some("t-mx".into()), ..Default::default() };
@@ -846,7 +1024,7 @@ fn matrix_reports_judge_quality_spread_and_notes() {
     }
     assert_eq!(m.simulator_spread.len(), 2, "one spread per target (control and target)");
     assert!(m.notes.iter().any(|n| n.contains("relative comparisons")));
-    assert!(m.notes.iter().any(|n| n.contains("cannot resolve")));
+    assert!(m.notes.iter().any(|n| n.contains("coarse estimate")));
     let text = casimir::rerun::render_matrix_text(&m);
     assert!(text.contains("between-simulator spread"));
 }

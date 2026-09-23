@@ -18,7 +18,13 @@ if "# Agent's final message in the original session" in prompt:  # brief draftin
 elif "# Original intents" in prompt:  # intent coverage
     out({"covered": ["I3"], "in_scope": [0]})
 elif "# User requests" in prompt:  # judge
-    if mode == "judge-flip":  # always prefers whichever candidate is shown first
+    if mode == "judge-malformed":
+        out({"winner": "invalid", "scoreA": 99, "scoreB": 99})
+    elif mode == "judge-both-pass":
+        out({"winner": "tie", "scoreA": 9, "scoreB": 9, "summary": "both pass"})
+    elif mode == "judge-invalid-patch":
+        out({"winner": "tie", "scoreA": 9, "scoreB": 9, "invalidA": ["requirement_violation"], "invalidB": ["requirement_violation"]})
+    elif mode == "judge-flip":  # always prefers whichever candidate is shown first
         out({"winner": "A", "scoreA": 8, "scoreB": 6, "summary": "first looked better", "differences": ["order"]})
     else:  # consistent: prefers the run whose block mentions the fake harness output
         a = prompt.split("## Run A")[1].split("## Run B")[0]
@@ -31,8 +37,8 @@ elif "# Task" in prompt:  # user simulator
         out({"action": "no_op", "kind": None, "message": "", "verbatim": False, "grounded_in": [], "reason": "already satisfied", "stop_reason": None, "memory": "skipped"})
     elif mode == "sim-adapt":
         out({"action": "send", "kind": "redirect", "message": "please use World as the default (see turn 2)", "verbatim": False, "grounded_in": [2], "reason": "adapted", "stop_reason": None, "memory": "asked for default"})
-    elif mode == "sim-stop":
-        out({"action": "stop", "message": "", "verbatim": False, "grounded_in": [], "reason": "nothing left to ask", "stop_reason": "out_of_scope", "memory": "stopped"})
+    elif mode in ("sim-stop", "sim-goals-met"):
+        out({"action": "stop", "message": "", "verbatim": False, "grounded_in": [], "reason": "nothing left to ask", "stop_reason": "goals_met" if mode == "sim-goals-met" else "out_of_scope", "memory": "stopped"})
     elif mode == "sim-retry":
         # count calls via a file keyed by a stable prompt hash so parallel tests do not collide
         key = "/tmp/casimir-fake-llm-" + hashlib.md5(original.encode()).hexdigest()[:12] + ".count"

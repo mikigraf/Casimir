@@ -441,9 +441,6 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     }
     let status = child.wait()?;
     res.stderr = err_thread.join().unwrap_or_default();
-    if !status.success() && result_rec.is_none() {
-        bail!("claude exited with {status}: {}", truncate(res.stderr.trim(), 2000));
-    }
     if let Some(r) = &result_rec {
         res.cost_usd = r.get("total_cost_usd").and_then(Value::as_f64);
         res.is_error = r.get("is_error").and_then(Value::as_bool).unwrap_or(false);
@@ -451,6 +448,12 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     }
     if res.model.is_none() {
         res.model = res.events.iter().find_map(|e| e.model.clone());
+    }
+    if !status.success() || result_rec.is_none() {
+        res.is_error = true;
+        let ev = Event::text(turn, now_iso(), EventKind::Error, format!("claude exited with {status}{}: {}", if result_rec.is_none() { " without a result record" } else { "" }, truncate(res.stderr.trim(), 2000)));
+        on_event(&ev);
+        res.events.push(ev);
     }
     Ok(res)
 }

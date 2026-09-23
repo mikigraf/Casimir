@@ -157,12 +157,12 @@ pub struct RunArgs {
 }
 
 impl RunArgs {
-    fn opts(&self, forcing_replicates: bool) -> RerunOpts {
+    fn opts(&self, forcing_replicates: bool) -> Result<RerunOpts> {
         let mut sim = self.llm.opts();
         if let Some(b) = &self.sim_llm {
             sim.backend = b.clone();
         }
-        RerunOpts {
+        Ok(RerunOpts {
             harness: self.harness,
             model: self.model.clone(),
             user_mode: self.user_mode.clone(),
@@ -183,13 +183,18 @@ impl RunArgs {
             replicates: self.replicates.unwrap_or(if self.judge || self.control || forcing_replicates { 3 } else { 1 }),
             sim_models: self.sim_model.clone(),
             pass_threshold: self.pass_threshold,
-            original_diff: self.original_diff.as_deref().and_then(|p| load_diff(&p.display().to_string())),
+            original_diff: match &self.original_diff {
+                Some(p) => Some(load_diff(&p.display().to_string()).ok_or_else(|| anyhow::anyhow!("cannot read original diff from {}", p.display()))?),
+                None => None,
+            },
             control: self.control,
             from_turn: None,
             intervention: None,
             judge_repeats: self.judge_repeats,
             brief: self.brief.clone(),
-        }
+            freeze_inputs: false,
+            workspace_repo: None,
+        })
     }
 }
 
@@ -321,6 +326,11 @@ fn load_diff(reference: &str) -> Option<Diff> {
     if !p.exists() {
         return None;
     }
+    if p.is_file() && p.extension().is_some_and(|e| e == "patch" || e == "diff") {
+        let patch = fs::read_to_string(p).ok()?;
+        let files = crate::workspace::parse_patch(&patch).keys().map(|p| crate::workspace::ChangedFile { status: "M".into(), path: p.clone() }).collect();
+        return Some(Diff { patch, files, source: Some(format!("patch file {}", p.display())), ..Default::default() });
+    }
     let dir = if p.is_dir() { p.to_path_buf() } else { p.parent()?.to_path_buf() };
     let dj = dir.join("diff.json");
     if !dj.exists() {
@@ -395,7 +405,7 @@ pub fn run() -> Result<i32> {
         }
         Cmd::Attribute { session, turns_at, run } => {
             let original = resolve_session(&session)?;
-            let mut opts = run.opts(true);
+            let mut opts = run.opts(true)?;
             opts.judge = run.judge;
             let n = user_turns(&original).len() as u32;
             let turns: Vec<u32> = if turns_at.is_empty() { (2..=n).collect() } else { turns_at };
@@ -405,7 +415,7 @@ pub fn run() -> Result<i32> {
             let att = attribute(&original, &opts, &turns, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
             println!();
             println!("{}", render_attribution_text(&att));
-            println!("{}saved under:{} {}", c.bold, c.reset, att.run_dir.display());
+            if !att.dry_run { println!("{}saved under:{} {}", c.bold, c.reset, att.run_dir.display()); }
         }
         Cmd::Rerun { session, run } | Cmd::Fork { session, run, .. } => {
             let original = resolve_session(&session)?;
@@ -413,7 +423,7 @@ pub fn run() -> Result<i32> {
                 Some((t, m)) => (Some(*t), m.clone()),
                 None => (None, None),
             };
-            let mut opts = run.opts(from_turn.is_some());
+            let mut opts = run.opts(from_turn.is_some())?;
             opts.from_turn = from_turn;
             opts.intervention = intervention;
             let (single, matrix) = rerun_matrix(&original, &opts, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
@@ -430,6 +440,7 @@ pub fn run() -> Result<i32> {
                     println!("{}worktree kept at {root} (remove with: git worktree remove --force {root}){}", c.dim, c.reset);
                 }
                 println!("{}casimir show {}   |   casimir compare {} {}{}", c.dim, res.run_dir.display(), original.path.clone().unwrap_or(original.id.clone()), res.run_dir.display(), c.reset);
+                if res.session.as_ref().unwrap().execution.as_ref().is_some_and(|e| e.failed_turns > 0) || (opts.judge && res.report.as_ref().unwrap().judge.is_none()) { return Ok(1); }
             }
             if let Some(m) = matrix {
                 println!();
@@ -437,6 +448,7 @@ pub fn run() -> Result<i32> {
                 println!();
                 println!("{}runs saved under:{} {}", c.bold, c.reset, m.run_dir.display());
                 println!("{}worktrees are kept under {} (remove with: git worktree remove --force <dir>){}", c.dim, casimir_home().join("worktrees").display(), c.reset);
+                if m.entries.iter().any(|e| e.errors > 0 || (m.judged && e.judge_score.is_none())) { return Ok(1); }
             }
         }
         Cmd::Compare { a, b, judge, llm, judge_repeats, brief, format } => {
