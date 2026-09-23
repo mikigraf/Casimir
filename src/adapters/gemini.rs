@@ -8,7 +8,7 @@
 //! `.project_root` file with the workspace path; older layouts name the directory by a SHA-256 of
 //! that path, which `projects.json` lets us invert.
 //! Rerun: `gemini -p … --output-format stream-json --approval-mode yolo`, resumed with `--resume <id>`.
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
@@ -406,13 +406,12 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     flush(&mut buffer, &mut res, on_event);
     let status = child.wait()?;
     res.stderr = err_thread.join().unwrap_or_default();
-    if !status.success() && res.raw.is_empty() {
-        bail!("gemini exited with {status}: {}", truncate(res.stderr.trim(), 2000));
-    }
-    if !status.success() || res.events.iter().any(|e| e.kind == EventKind::Error) {
+    let completed = res.session_id.as_deref().is_some_and(|s| !s.is_empty())
+        && res.raw.iter().any(|r| s(r, "type") == Some("result") && s(r, "status") == Some("success"));
+    if res.is_error || !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error) {
         res.is_error = true;
-        if res.raw.iter().all(|r| s(r, "type") != Some("error")) && !status.success() {
-            let msg = crate::util::stderr_error_line(&res.stderr, "gemini failed");
+        if !res.events.iter().any(|e| e.kind == EventKind::Error) {
+            let msg = crate::util::stderr_error_line(&res.stderr, "gemini ended without a successful result");
             let e = Event::text(turn, now_iso(), EventKind::Error, msg);
             on_event(&e);
             res.events.push(e);

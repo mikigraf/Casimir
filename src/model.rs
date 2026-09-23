@@ -123,6 +123,9 @@ pub struct SimulatorInfo {
 #[serde(rename_all = "camelCase")]
 pub struct Event {
     pub turn: u32,
+    /// Turn in the immediate original session, before skipped simulator turns are renumbered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn: Option<u32>,
     pub ts: String,
     pub kind: EventKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,6 +152,7 @@ impl Event {
     pub fn new(turn: u32, ts: impl Into<String>, kind: EventKind) -> Event {
         Event {
             turn,
+            source_turn: None,
             ts: ts.into(),
             kind,
             text: None,
@@ -297,8 +301,7 @@ pub fn final_assistant_text(session: &Session, turn: Option<u32>) -> String {
     session
         .events
         .iter()
-        .filter(|e| e.kind == EventKind::Assistant && !e.sidechain && !e.text_str().trim().is_empty() && turn.is_none_or(|t| e.turn == t))
-        .next_back()
+        .rfind(|e| e.kind == EventKind::Assistant && !e.sidechain && !e.text_str().trim().is_empty() && turn.is_none_or(|t| e.turn == t))
         .map(|e| e.text_str().to_string())
         .unwrap_or_default()
 }
@@ -347,7 +350,7 @@ fn patch_files(patch: &str) -> Vec<(String, String)> {
 fn shell_written_files(cmd: &str) -> Vec<String> {
     let mut out = Vec::new();
     // split into simple commands on ; & | ( and newlines
-    for part in cmd.split(|c| c == ';' || c == '&' || c == '|' || c == '(' || c == '\n') {
+    for part in cmd.split([';', '&', '|', '(', '\n']) {
         let t = part.trim_start();
         let is_writer = ["cat", "echo", "printf"].iter().any(|w| t.starts_with(w) && t[w.len()..].starts_with(|c: char| c.is_whitespace() || c == '>'));
         if is_writer {

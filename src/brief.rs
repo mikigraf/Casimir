@@ -95,13 +95,17 @@ impl Brief {
 
 const BRIEF_SYSTEM: &str = "You analyse a recorded session between a human developer and a coding agent and produce a brief
 that other tools will use to judge reruns of the same task and to simulate the same user.
-Ground everything in the user's own messages; do not invent requirements. Reply with a JSON object only:
+Ground everything in the user's own messages; do not invent requirements. The original agent's wording
+is context, not a requirement. Asking to verify an action does not require describing that verification
+in the final reply unless the user explicitly asks for such a description. Do not turn optional
+presentation preferences into implementation requirements. Reply with a JSON object only:
 {\"objective\": \"...\",
  \"constraints\": [\"...\"],
  \"intervention_conditions\": [\"when the agent did X, the user asked for Y (turn N)\", ...],
  \"criteria\": [{\"id\": \"C1\", \"text\": \"...\", \"must\": true|false}, ...],
  \"intents\": [{\"id\": \"I1\", \"text\": \"one atomic thing the user asked for\", \"turn\": N}, ...]}
-Criteria must be concrete and independently checkable against a code diff and a final message (5-10 items).
+Criteria must be concrete and checkable against the diff, recorded tool calls/results, and final message.
+Use only as many criteria as the task warrants; do not invent extra requirements to fill a quota.
 Intents are atomic: split compound requests, keep each tied to the turn it was expressed in.";
 
 fn clip(s: &str, n: usize) -> String {
@@ -217,7 +221,7 @@ pub fn intent_coverage(brief: &Brief, rerun: &Session, llm: &LlmOpts) -> Result<
         .events
         .iter()
         .filter(|e| e.kind == crate::model::EventKind::User && !e.sidechain)
-        .filter_map(|e| e.simulated.as_ref().map(|s| (e.turn, s.verbatim, e.text_str().to_string())))
+        .filter_map(|e| e.simulated.as_ref().map(|s| (e.source_turn.unwrap_or(e.turn), s.verbatim, e.text_str().to_string())))
         .collect();
     if sim_msgs.is_empty() {
         return Ok(None);

@@ -221,7 +221,9 @@ pub fn extract_json(text: &str) -> Option<Value> {
 
 /// Env vars that make nested harness invocations misbehave.
 pub fn is_nested_harness_var(key: &str) -> bool {
-    key == "CLAUDECODE" || key.starts_with("CLAUDE_CODE_") || key == "CLAUDE_PID" || key == "CLAUDE_AGENT_SDK_VERSION"
+    // Credentials and user configuration are not nesting markers. In particular,
+    // CLAUDE_CODE_OAUTH_TOKEN is the only authentication source in some CI/cloud setups.
+    matches!(key, "CLAUDECODE" | "CLAUDE_PID" | "CLAUDE_AGENT_SDK_VERSION" | "CLAUDE_CODE_ENTRYPOINT")
 }
 
 pub fn clean_command(cmd: &mut std::process::Command) {

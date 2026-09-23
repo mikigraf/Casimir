@@ -102,6 +102,8 @@ casimir runs
 
 With `--replicates N` (or several `--sim-model` values) the directory instead holds one
 subdirectory per replicate plus `replicates.json` and a summary `report.md`.
+When the input is a saved run, its captured patch is reused as the reference even if that
+run's workspace has changed since. `--original-diff` overrides it explicitly.
 
 Permissions: in an isolated worktree or explicit directory the harness runs with permission prompts
 bypassed (`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`), because
@@ -152,7 +154,9 @@ asked to check root cause and to list **invalid reasons** from a fixed taxonomy:
 violation, root cause not addressed, incomplete implementation, new issues introduced. Reruns that
 judge or simulate draft a brief automatically into the run directory when none is passed. Matrices
 and attribution draft it once and reuse it across every replicate, alongside a frozen reference
-diff.
+diff. Judges receive bounded recorded tool inputs/results as evidence for requirements such as
+committing or running verification. User requests take precedence over requirements invented by an
+unreviewed draft rubric; a draft still needs review before a research experiment.
 
 End-state similarity measures agreement with one human trajectory, not correctness; the report
 labels it as such and never uses it as a validity signal. Empty or binary-only reference patches are
@@ -232,6 +236,8 @@ follows Chronicle's record design (arXiv 2609.20625) and is bookkeeping for audi
 runs; it is not a replay mode. Envelopes follow call order and retain unanswered or orphaned tool
 events. Inherited fork records are marked. Full model request inputs are unavailable in the
 normalized logs and are explicitly marked `inputAvailable: false`.
+`sourceTurn` records the corresponding turn in the immediate original session, so skipped
+simulator turns do not shift comparison, intent-coverage, or blinded-pair alignment.
 
 ### Replicates
 
@@ -338,8 +344,25 @@ casimir compare codex:last ~/.casimir/runs/2026-09-22_11-40-03-claude-code-sonne
 
 ```
 cargo test          # parsers, renderers, comparison, and reruns driven by fake harness scripts
+cargo clippy --all-targets -- -D warnings
 cargo build --release
 ```
+
+CI runs the tests on stable Rust and the minimum supported Rust 1.85, plus strict Clippy and
+a release build. The opt-in live check requires Python 3 and an authenticated Claude Code CLI;
+it makes billable model calls and keeps its worktrees and reports for inspection:
+
+```
+python3 scripts/smoke-claude.py --output .context/live-check
+```
+
+Use a fresh output directory for each run, or `--resume` to reuse completed stages and continue
+missing ones. A valid experiment can report a model failing a requirement: the check verifies
+that completion and judge evidence agree with the reported outcome, rather than demanding a
+perfect model pass rate. It checks actual file contents, two-turn resume,
+committed workspace restoration, native transcript forking, reference-patch reuse, matched
+controls, judging, user simulation, intent coverage, and attribution withholding for a successful
+original. See [validation results](docs/validation.md) for the tested scope and provider limits.
 
 Environment knobs: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `GEMINI_CLI_HOME`,
 `CASIMIR_HOME` (runs and worktrees), `CASIMIR_CLAUDE_BIN`, `CASIMIR_CODEX_BIN`,

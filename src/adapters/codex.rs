@@ -197,12 +197,10 @@ pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
                                 session.events.push(Event::text(turn, ts, EventKind::User, text));
                             }
                         }
-                        Some("assistant") => {
-                            if !text.trim().is_empty() {
-                                let mut e = Event::text(cur, ts, EventKind::Assistant, text);
-                                e.model = session.model.clone();
-                                session.events.push(e);
-                            }
+                        Some("assistant") if !text.trim().is_empty() => {
+                            let mut e = Event::text(cur, ts, EventKind::Assistant, text);
+                            e.model = session.model.clone();
+                            session.events.push(e);
                         }
                         _ => {} // developer/system roles are harness prompts
                     }
@@ -483,10 +481,15 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     }
     let status = child.wait()?;
     res.stderr = err_thread.join().unwrap_or_default();
-    if !status.success() && state.thread_id.is_none() {
-        bail!("codex exited with {status}: {}", truncate(res.stderr.trim(), 2000));
+    let completed = state.thread_id.as_deref().is_some_and(|s| !s.is_empty())
+        && res.raw.iter().any(|r| s(r, "type") == Some("turn.completed"));
+    res.is_error = !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error);
+    if res.is_error && !res.events.iter().any(|e| e.kind == EventKind::Error) {
+        let fallback = if status.success() { "codex ended without turn.completed or a thread ID" } else { "codex failed" };
+        let ev = Event::text(turn, now_iso(), EventKind::Error, crate::util::stderr_error_line(&res.stderr, fallback));
+        on_event(&ev);
+        res.events.push(ev);
     }
-    res.is_error = !status.success() || res.events.iter().any(|e| e.kind == EventKind::Error);
     res.session_id = state.thread_id;
     res.usage = state.usage;
     Ok(res)
@@ -501,7 +504,7 @@ pub fn detect(rec: &Value) -> bool {
 /// from there. Whether the installed Codex version indexes rollouts it did not write itself is not
 /// guaranteed; a resume failure surfaces as a harness error.
 pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Path) -> Result<PathBuf> {
-    let src = original.path.as_deref().context("original session has no on-disk path to fork from")?;
+    let src = original.harness_log_path.as_deref().or(original.path.as_deref()).context("original session has no native on-disk transcript to fork from")?;
     let records = read_jsonl(Path::new(src))?;
     let mut kept: Vec<Value> = Vec::new();
     let mut turn = 0u32;
@@ -511,7 +514,7 @@ pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Pat
             && rec.get("payload").is_some_and(|p| {
                 s(p, "type") == Some("message") && s(p, "role") == Some("user") && {
                     let text = text_of(p.get("content").unwrap_or(&Value::Null));
-                    !text.trim().is_empty() && !is_injected(&text) && !text.trim_start().starts_with('<')
+                    !text.trim().is_empty() && !is_injected(&text) && !text.trim_start().starts_with("<turn_aborted>") && !text.trim_start().starts_with("<user_shell_command>")
                 }
             });
         if is_user_turn {
@@ -535,7 +538,7 @@ pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Pat
         }
         kept.push(rec);
     }
-    if turn + 1 < up_to_turn {
+    if turn < up_to_turn {
         bail!("session has only {turn} turn(s) before turn {up_to_turn}");
     }
     let now = chrono::Utc::now();

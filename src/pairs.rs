@@ -76,15 +76,17 @@ pub fn export_pairs(runs: &[PathBuf], out_dir: &Path) -> Result<PairsExport> {
             if sim.verbatim || sim.action.as_deref() == Some("intervention") {
                 continue;
             }
-            let Some(orig) = original.events.iter().find(|o| o.kind == EventKind::User && !o.sidechain && o.turn == e.turn) else { continue };
-            let pair_id = format!("{}-{}", &rerun.id.chars().take(8).collect::<String>(), e.turn);
+            let source_turn = e.source_turn.unwrap_or(e.turn);
+            let Some(orig) = original.events.iter().find(|o| o.kind == EventKind::User && !o.sidechain && o.turn == source_turn) else { continue };
+            // Full session IDs and run identity avoid collisions across imports and replicas.
+            let pair_id = format!("{}-{}-{}", rerun.id, pairs.len(), source_turn);
             let real_first = side_for(&pair_id);
-            let human = PairCandidate { label: String::new(), preceding_agent_message: clip(&final_assistant_text(&original, Some(e.turn - 1)), 1500), message: orig.text_str().to_string() };
+            let human = PairCandidate { label: String::new(), preceding_agent_message: clip(&final_assistant_text(&original, Some(source_turn.saturating_sub(1))), 1500), message: orig.text_str().to_string() };
             let simulated = PairCandidate { label: String::new(), preceding_agent_message: clip(&final_assistant_text(&rerun, Some(e.turn - 1)), 1500), message: e.text_str().to_string() };
             let (mut x, mut y) = if real_first { (human, simulated) } else { (simulated, human) };
             x.label = "X".into();
             y.label = "Y".into();
-            key.insert(pair_id.clone(), PairKey { real: if real_first { "X".into() } else { "Y".into() }, run: run.clone(), turn: e.turn, session: original.id.clone() });
+            key.insert(pair_id.clone(), PairKey { real: if real_first { "X".into() } else { "Y".into() }, run: run.clone(), turn: source_turn, session: original.id.clone() });
             pairs.push(Pair {
                 pair_id,
                 task_summary: clip(original.title.as_deref().unwrap_or(""), 200),

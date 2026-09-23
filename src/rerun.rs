@@ -239,6 +239,9 @@ pub fn make_run_id(original: &Session, harness: Harness, model: Option<&str>) ->
 /// simulation metadata, everything else comes from the log, plus live errors the log lacks.
 fn merge_with_harness_log(session: &mut Session, full: Session) {
     let ours: Vec<Event> = session.events.iter().filter(|e| e.kind == EventKind::User && !e.sidechain).cloned().collect();
+    let source_turns: std::collections::HashMap<u32, u32> = full.events.iter()
+        .filter(|e| e.kind == EventKind::User && !e.sidechain).zip(&ours)
+        .map(|(logged, ours)| (logged.turn, ours.source_turn.unwrap_or(ours.turn))).collect();
     let mut merged: Vec<Event> = Vec::new();
     let mut ui = 0;
     for e in &full.events {
@@ -246,7 +249,9 @@ fn merge_with_harness_log(session: &mut Session, full: Session) {
             merged.push(ours.get(ui).cloned().unwrap_or_else(|| e.clone()));
             ui += 1;
         } else {
-            merged.push(e.clone());
+            let mut e = e.clone();
+            e.source_turn = source_turns.get(&e.turn).copied();
+            merged.push(e);
         }
     }
     let known: Vec<String> = full.events.iter().filter(|e| e.kind == EventKind::Error).map(|e| e.text_str().to_string()).collect();
@@ -414,7 +419,18 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
             }
         } else if i > 0 && simulate {
             log(&format!("{}simulating user for turn {}…{}", c.magenta, t.turn, c.reset));
-            let sim = simulate_user_turn(original, &session, t.turn, &o.sim_llm, &mut sim_state)?;
+            let sim = match simulate_user_turn(original, &session, t.turn, &o.sim_llm, &mut sim_state) {
+                Ok(sim) => sim,
+                Err(err) => {
+                    let message = format!("user simulator failed at turn {}: {err}", t.turn);
+                    log(&message);
+                    session.events.push(Event::text(t.turn, now_iso(), EventKind::Error, message));
+                    let execution = session.execution.as_mut().unwrap();
+                    execution.failed_turns += 1;
+                    execution.stop_reason = Some("simulator_error".into());
+                    break;
+                }
+            };
             match sim.message {
                 None if sim.no_op => {
                     log(&format!("{}simulator: no-op at turn {} ({}){}", c.magenta, t.turn, sim.reason, c.reset));
@@ -489,7 +505,7 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         }
         session.events.extend(live);
         for r in &res.raw {
-            let _ = writeln!(raw, "{r}");
+            writeln!(raw, "{r}")?;
         }
         if res.session_id.is_some() {
             harness_session_id = res.session_id.clone();
@@ -501,8 +517,12 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
             cost += cu;
             saw_cost = true;
         }
-        if res.usage.is_some() {
-            session.usage_total = res.usage.clone();
+        if let Some(usage) = &res.usage {
+            if matches!(harness, Harness::Codex | Harness::Gemini) {
+                session.usage_total.get_or_insert_with(Default::default).add(usage);
+            } else {
+                session.usage_total = Some(usage.clone());
+            }
         }
         session.ended_at = Some(now_iso());
         write_json(&session_path, &session)?;
@@ -517,6 +537,7 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     if saw_cost {
         session.cost_usd = Some(cost);
     }
+    for e in &mut session.events { e.source_turn = Some(e.turn); }
     if let Some(hid) = &harness_session_id {
         if let Some(file) = adapters::find_log_by_id(harness, hid) {
             match adapters::parse_file(harness, &file) {
@@ -592,20 +613,20 @@ pub fn write_record(path: &Path, session: &Session, permission_mode: &str, sandb
     let drift = json!({ "harness": session.harness(), "model": session.model, "harnessVersion": session.version, "permissionMode": permission_mode, "sandbox": sandbox, "simulator": session.simulator });
     for (index, e) in session.events.iter().enumerate() {
         if e.sidechain { continue; }
-        let inherited = session.execution.as_ref().is_some_and(|x| e.turn as usize <= x.preserved_turns);
+        let inherited = session.execution.as_ref().is_some_and(|x| e.source_turn.unwrap_or(e.turn) as usize <= x.preserved_turns);
         match e.kind {
             EventKind::Assistant => {
                 model_n += 1;
                 // The transcript does not expose the complete model request (system prompt, tool
                 // schemas, compaction). Mark it unavailable instead of inventing a replay input.
-                envelopes.push(json!({ "boundary": "model", "occurrence": model_n, "address": format!("model[{model_n}]"), "turn": e.turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "input": Value::Null, "inputAvailable": false, "output": e.text, "usage": e.usage, "model": e.model, "drift": drift }));
+                envelopes.push(json!({ "boundary": "model", "occurrence": model_n, "address": format!("model[{model_n}]"), "turn": e.turn, "sourceTurn": e.source_turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "input": Value::Null, "inputAvailable": false, "output": e.text, "usage": e.usage, "model": e.model, "drift": drift }));
             }
             EventKind::ToolCall => {
                 if let Some(t) = &e.tool {
                     let n = tool_n.entry(t.name.clone()).or_insert(0);
                     *n += 1;
                     pending.insert(t.id.clone(), envelopes.len());
-                    envelopes.push(json!({ "boundary": format!("tool:{}", t.name), "occurrence": n, "address": format!("tool:{}[{n}]", t.name), "turn": e.turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "id": t.id, "input": t.input, "inputAvailable": true, "output": Value::Null, "unanswered": true, "drift": drift }));
+                    envelopes.push(json!({ "boundary": format!("tool:{}", t.name), "occurrence": n, "address": format!("tool:{}[{n}]", t.name), "turn": e.turn, "sourceTurn": e.source_turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "id": t.id, "input": t.input, "inputAvailable": true, "output": Value::Null, "unanswered": true, "drift": drift }));
                 }
             }
             EventKind::ToolResult => {
@@ -620,7 +641,7 @@ pub fn write_record(path: &Path, session: &Session, permission_mode: &str, sandb
                         let name = r.name.as_deref().unwrap_or("tool");
                         let n = tool_n.entry(name.to_string()).or_insert(0);
                         *n += 1;
-                        envelopes.push(json!({ "boundary": format!("tool:{name}"), "occurrence": n, "address": format!("tool:{name}[{n}]"), "turn": e.turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "id": r.id, "input": Value::Null, "inputAvailable": false, "output": r.output, "isError": r.is_error, "orphaned": true, "drift": drift }));
+                        envelopes.push(json!({ "boundary": format!("tool:{name}"), "occurrence": n, "address": format!("tool:{name}[{n}]"), "turn": e.turn, "sourceTurn": e.source_turn, "ts": e.ts, "eventIndex": index, "inherited": inherited, "id": r.id, "input": Value::Null, "inputAvailable": false, "output": r.output, "isError": r.is_error, "orphaned": true, "drift": drift }));
                     }
                 }
             }
@@ -750,14 +771,19 @@ pub struct MatrixSummary {
     pub notes: Vec<String>,
 }
 
-fn entry_from(label: &str, original: &Session, control: bool, sim_model: Option<String>, requested: usize, outcome: &RerunOutcome, threshold: f64, judged: bool) -> ReplicateEntry {
+fn entry_from(label: &str, original: &Session, control: bool, sim_model: Option<String>, requested: usize, outcome: &RerunOutcome, opts: &RerunOpts) -> ReplicateEntry {
+    let threshold = opts.pass_threshold;
+    let judged = opts.judge;
     let session = outcome.session.as_ref().unwrap();
     let st = stats(session);
     // Inherited errors belong to the factual prefix, not to this continuation.
     let start = session.execution.as_ref().map(|e| e.preserved_turns as u32 + 1).unwrap_or(1);
-    let scoped = |s: &Session| Session { events: s.events.iter().filter(|e| e.turn >= start && e.turn <= requested as u32).cloned().collect(), ..s.clone() };
-    let reference = scoped(original);
-    let candidate = scoped(session);
+    let scoped = |s: &Session, align_source: bool| Session { events: s.events.iter().cloned().map(|mut e| {
+        if align_source { e.turn = e.source_turn.unwrap_or(e.turn); }
+        e
+    }).filter(|e| e.turn >= start && e.turn <= requested as u32).collect(), ..s.clone() };
+    let reference = scoped(original, false);
+    let candidate = scoped(session, true);
     let continuation_errors = stats(&candidate).errors;
     let report = outcome.report.as_ref().unwrap();
     let completed = session.execution.as_ref().map(|e| e.preserved_turns + e.completed_turns + e.skipped_turns).unwrap_or(0);
@@ -987,7 +1013,7 @@ pub fn render_matrix_text(m: &MatrixSummary) -> String {
             pad(&e.judge_score.map(|s| format!("{s:.1}{}", if e.order_sensitive { "*" } else { "" })).unwrap_or_else(|| "-".into()), 7),
             pad(&format!("{}/{}", f(e.end_state_score), f(e.end_state_recall)), 11),
             pad(&format!("{:.2}@{}", e.tool_sequence_distance, e.first_divergent_turn.map(|t| t.to_string()).unwrap_or_else(|| "-".into())), 10),
-            format!("{}{}", if e.pass { "yes" } else { "no" }, if e.lucky { " (lucky)" } else { "" })
+            format_args!("{}{}", if e.pass { "yes" } else { "no" }, if e.lucky { " (lucky)" } else { "" })
         ));
     }
     if m.entries.iter().any(|e| e.order_sensitive) {
@@ -1016,8 +1042,8 @@ pub fn render_matrix_text(m: &MatrixSummary) -> String {
             g.min_tool_calls, g.max_tool_calls,
             if g.disagree { format!("  {}⚠ replicates disagree on pass/fail{}", c.yellow, c.reset) } else { String::new() },
             match g.exceeds_control {
-                Some(true) => format!("  {}→ diverges from the original beyond the control noise floor{}", c.green, c.reset),
-                Some(false) => format!("  {}→ within the control noise floor: no evidence of a real difference{}", c.yellow, c.reset),
+                Some(true) => format!("  {}→ mean distance exceeds the observed control maximum (descriptive){}", c.green, c.reset),
+                Some(false) => format!("  {}→ mean distance does not exceed the observed control maximum (descriptive){}", c.yellow, c.reset),
                 None => String::new(),
             }
         ));
@@ -1041,7 +1067,7 @@ pub fn render_matrix_text(m: &MatrixSummary) -> String {
             sp.simulators));
     }
     if !m.groups.iter().any(|g| g.control) && m.groups.len() > 1 {
-        out.push(format!("{}no control group: add --control to measure the same-model noise floor before calling a difference real{}", c.dim, c.reset));
+        out.push(format!("{}no control group: add --control to measure observed same-model variation{}", c.dim, c.reset));
     }
     for n in &m.notes {
         out.push(format!("{}note: {n}{}", c.dim, c.reset));
@@ -1132,7 +1158,7 @@ pub fn rerun_matrix(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str)
                     continue;
                 }
                 let sim_model = if simulate { Some(effective_model(&single.sim_llm)) } else { None };
-                entries.push(entry_from(&label, original, *control, sim_model, requested, &outcome, o.pass_threshold, o.judge));
+                entries.push(entry_from(&label, original, *control, sim_model, requested, &outcome, o));
             }
         }
     }
@@ -1196,6 +1222,9 @@ pub struct Attribution {
     pub replicates: usize,
     #[serde(default)]
     pub dry_run: bool,
+    /// Infrastructure failure is distinct from a valid experiment with no rescues.
+    #[serde(default)]
+    pub execution_failed: bool,
     #[serde(default)]
     pub notes: Vec<String>,
 }
@@ -1227,6 +1256,7 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
     let frozen = prepare_experiment(original, o, &parent_dir, log)?;
     let mut effects = Vec::new();
     let mut original_failed = true;
+    let mut execution_failed = false;
     for &k in turns {
         let mut opts = frozen.clone();
         opts.from_turn = Some(k);
@@ -1238,12 +1268,14 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
         let (single, matrix) = rerun_matrix(original, &opts, log, out)?;
         let (n, passes) = match (&single, &matrix) {
             (_, Some(m)) => {
+                execution_failed |= m.entries.iter().any(|e| e.errors > 0 || e.judge_score.is_none());
                 original_failed &= m.entries.iter().all(|e| e.original_judge_score.is_some_and(|s| s < o.pass_threshold));
                 (m.entries.len(), m.entries.iter().filter(|e| e.pass).count())
             }
             (Some(s), None) => {
                 if s.dry_run { continue; }
-                let entry = entry_from("r1", original, false, None, user_turns(original).len(), s, o.pass_threshold, o.judge);
+                let entry = entry_from("r1", original, false, None, user_turns(original).len(), s, o);
+                execution_failed |= entry.errors > 0 || entry.judge_score.is_none();
                 original_failed &= entry.original_judge_score.is_some_and(|s| s < o.pass_threshold);
                 (1, usize::from(entry.pass))
             }
@@ -1252,10 +1284,11 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
         let (lo, hi) = wilson(passes, n);
         effects.push(TurnEffect { turn: k, n, passes, pass_rate: if n == 0 { 0.0 } else { passes as f64 / n as f64 }, ci_low: lo, ci_high: hi, run_dir: opts.out_dir.clone().unwrap() });
     }
-    let point_of_commitment = if original_failed && !o.dry_run { effects.iter().filter(|e| e.ci_low > 0.0).map(|e| e.turn).max() } else { None };
+    let point_of_commitment = if original_failed && !execution_failed && !o.dry_run { effects.iter().filter(|e| e.ci_low > 0.0).map(|e| e.turn).max() } else { None };
     let mut notes = vec!["Turn-level diagnostic conditional on a failed original, judge scores, and reconstructed workspace state; not proof of a causal step. Wilson intervals describe rescue proportions, not paired effect differences.".into()];
     if !original_failed { notes.push("Point of commitment withheld: the judge did not consistently score the original below the pass threshold (or judging failed).".into()); }
-    let att = Attribution { run_dir: parent_dir.clone(), effects, point_of_commitment, replicates: o.replicates, dry_run: o.dry_run, notes };
+    if execution_failed { notes.push("Point of commitment withheld: a harness or judge failed; inspect the saved run diagnostics.".into()); }
+    let att = Attribution { run_dir: parent_dir.clone(), effects, point_of_commitment, replicates: o.replicates, dry_run: o.dry_run, execution_failed, notes };
     if !o.dry_run {
         write_json(&parent_dir.join("attribution.json"), &att)?;
         fs::write(parent_dir.join("report.md"), render_attribution_markdown(&att))?;

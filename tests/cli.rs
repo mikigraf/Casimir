@@ -34,6 +34,8 @@ fn setup_env() {
     INIT.call_once(|| {
         std::env::set_var("CASIMIR_CLAUDE_BIN", fx("fake-claude.sh"));
         std::env::set_var("CASIMIR_CODEX_BIN", fx("fake-codex.sh"));
+        std::env::set_var("CASIMIR_COPILOT_BIN", fx("fake-stream.py"));
+        std::env::set_var("CASIMIR_GEMINI_BIN", fx("fake-stream.py"));
         std::env::set_var("CASIMIR_HOME", tmp("home"));
         std::env::set_var("CASIMIR_LLM_CMD", fx("fake-llm.py"));
         std::env::set_var("COPILOT_HOME", fx("copilot"));
@@ -57,6 +59,93 @@ fn tmp_repo() -> PathBuf {
 }
 
 fn no_log(_: &str) {}
+
+#[test]
+fn nested_harness_cleanup_preserves_authentication_and_configuration() {
+    for key in ["CLAUDECODE", "CLAUDE_PID", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT"] {
+        assert!(casimir::util::is_nested_harness_var(key), "{key}");
+    }
+    for key in ["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_SANDBOXED", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "CODEX_HOME"] {
+        assert!(!casimir::util::is_nested_harness_var(key), "{key}");
+    }
+}
+
+#[test]
+fn simulator_cannot_claim_verbatim_or_goals_met_with_invalid_output() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    for mode in ["sim-malformed", "sim-false-verbatim"] {
+        let mut state = SimState::default();
+        let result = simulate_user_turn(&original, &original, 2, &fake_llm(mode), &mut state).unwrap();
+        assert_eq!(result.message, Some(user_turns(&original)[1].text.clone()));
+        assert!(result.verbatim);
+        assert_eq!(result.retries, 3);
+        assert!(result.stop_reason.is_none());
+        assert!(state.memory.is_empty(), "rejected replies must not poison simulator memory");
+    }
+}
+
+#[test]
+fn skipped_turns_keep_original_alignment_in_pairs_and_exports() {
+    setup_env();
+    let mut original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    original.events.push(Event::text(3, "2026-09-21T10:10:00Z", EventKind::User, "third original request"));
+    let repo = tmp_repo();
+    let output = tmp("skip-alignment");
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(output.clone()), user_mode: "simulate".into(), sim_llm: fake_llm("sim-skip2"), judge_llm: fake_llm("brief"), quiet: true, ..Default::default() };
+    let result = rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let s = result.session.unwrap();
+    let adapted = s.events.iter().find(|e| e.kind == EventKind::User && e.turn == 2).unwrap();
+    assert_eq!(adapted.source_turn, Some(3));
+    assert_eq!(adapted.text_str(), "adapted third request");
+    let pairs = export_pairs(std::slice::from_ref(&output), &tmp("skip-pairs")).unwrap();
+    let row: serde_json::Value = serde_json::from_str(std::fs::read_to_string(pairs.pairs_path).unwrap().trim()).unwrap();
+    assert!(row["candidates"].as_array().unwrap().iter().any(|c| c["message"] == "third original request"));
+    let loaded = load_session_file(&output).unwrap();
+    assert!(loaded.events.iter().any(|e| e.source_turn == Some(3)));
+}
+
+#[test]
+fn simulator_transport_failures_save_reports_and_failed_execution() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let output = tmp("sim-failure");
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(output.clone()), user_mode: "simulate".into(), sim_llm: fake_llm("sim-fail"), judge_llm: fake_llm("brief"), quiet: true, ..Default::default() };
+    let result = rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let execution = result.session.unwrap().execution.unwrap();
+    assert_eq!(execution.completed_turns, 1);
+    assert_eq!(execution.failed_turns, 1);
+    assert_eq!(execution.stop_reason.as_deref(), Some("simulator_error"));
+    for name in ["session.json", "record.jsonl", "report.json", "diff.patch"] { assert!(output.join(name).exists()); }
+}
+
+#[test]
+fn fork_uses_native_log_from_saved_run_and_rejects_nonexistent_turn() {
+    setup_env();
+    let repo = tmp_repo();
+    for (fixture, harness) in [("claude-code.jsonl", Harness::ClaudeCode), ("codex.jsonl", Harness::Codex)] {
+        let mut original = casimir::adapters::parse_file(harness, &fx(fixture)).unwrap();
+        original.harness_log_path = original.path.take();
+        original.path = Some(repo.join("normalized-session.json").display().to_string());
+        let id = uuid::Uuid::new_v4().to_string();
+        let fork = casimir::adapters::prepare_fork(harness, &original, 2, &id, &repo).unwrap();
+        assert_eq!(user_turns(&casimir::adapters::parse_file(harness, &fork).unwrap()).len(), 1);
+        assert!(casimir::adapters::prepare_fork(harness, &original, 3, &uuid::Uuid::new_v4().to_string(), &repo).is_err());
+    }
+}
+
+#[test]
+fn codex_live_usage_accumulates_across_resumed_turns() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let opts = RerunOpts { harness: Some(Harness::Codex), workspace: repo.display().to_string(), out_dir: Some(tmp("codex-usage")), quiet: true, ..Default::default() };
+    let result = rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let usage = result.session.unwrap().usage_total.unwrap();
+    assert_eq!(usage.output, 60);
+    assert_eq!(usage.input, 200);
+}
 
 #[test]
 fn rerun_retains_commits_and_reports_failed_execution() {
@@ -171,6 +260,52 @@ fn cli_accepts_standalone_patches_and_returns_failure_for_harness_errors() {
     assert_eq!(result.status.code(), Some(1));
     assert_eq!(std::fs::read(output.join("run/original.patch")).unwrap(), std::fs::read(patch).unwrap());
     assert!(output.join("run/report.json").exists(), "a failed CLI run still saves its report");
+}
+
+#[test]
+fn cli_rerun_uses_saved_reference_patch_after_workspace_changes() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    let repo = tmp_repo();
+    let saved = tmp("saved-reference");
+    let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(saved.clone()), quiet: true, ..Default::default() };
+    rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
+    let expected = std::fs::read(saved.join("diff.patch")).unwrap();
+    std::fs::write(repo.join("out.txt"), "later unrelated edit\n").unwrap();
+    let output = tmp("frozen-reference");
+    let result = Command::new(env!("CARGO_BIN_EXE_casimir"))
+        .args(["rerun", saved.to_str().unwrap(), "--workspace", repo.to_str().unwrap(), "--quiet", "-o", output.to_str().unwrap()])
+        .output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(std::fs::read(output.join("original.patch")).unwrap(), expected);
+}
+
+#[test]
+fn judge_receives_tool_inputs_and_results_in_both_orders() {
+    setup_env();
+    let mut a = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    a.events.push(Event::tool_call(2, "", "verify", "Bash", json!({"command": "verification_evidence_marker"})));
+    a.events.push(Event::tool_result(2, "", "verify", Some("Bash".into()), "verified content from actual tool result", false));
+    let judgement = judge_sessions(&a, &a, None, None, &fake_llm("judge-evidence")).unwrap();
+    assert_eq!(judgement.passes.len(), 2);
+    assert_eq!(judgement.score_b, 9.0);
+}
+
+#[test]
+fn attribution_returns_nonzero_and_keeps_reports_for_harness_failures() {
+    setup_env();
+    let repo = tmp_repo();
+    let output = tmp("attribute-failure");
+    let result = Command::new(env!("CARGO_BIN_EXE_casimir"))
+        .args(["attribute", fx("claude-code.jsonl").to_str().unwrap(), "--workspace", repo.to_str().unwrap(),
+            "--turns-at", "2", "--replicates", "1", "--judge", "--judge-llm", "cmd", "--judge-model", "fake:judge",
+            "--quiet", "-o", output.to_str().unwrap(), "--", "--fake-error"])
+        .output().unwrap();
+    assert_eq!(result.status.code(), Some(1), "{}", String::from_utf8_lossy(&result.stderr));
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(output.join("attribution.json")).unwrap()).unwrap();
+    assert_eq!(saved["executionFailed"], true);
+    assert!(saved["pointOfCommitment"].is_null());
+    assert!(output.join("turn2/report.json").exists());
 }
 
 #[test]
@@ -760,6 +895,11 @@ fn divergence_recall_verdict_and_wilson() {
     let mut c = a.clone();
     c.events.retain(|e| e.turn < 2);
     assert_eq!(first_divergent_turn(&a, &c), Some(2), "missing turn counts as divergence");
+    let mut suffix_a = a.clone();
+    let mut suffix_b = b.clone();
+    suffix_a.events.retain(|e| e.turn >= 2);
+    suffix_b.events.retain(|e| e.turn >= 2);
+    assert_eq!(first_divergent_turn(&suffix_a, &suffix_b), Some(2), "fork suffixes retain original turn numbers");
     // recall: B reproduces half of A's lines plus extra lines of its own
     let pa = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@\n+one\n+two\n";
     let pb = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@\n+one\n+extra\n+more\n";
@@ -774,6 +914,55 @@ fn divergence_recall_verdict_and_wilson() {
     let (lo, hi) = wilson(1, 3);
     assert!(lo > 0.0 && lo < 0.1 && hi > 0.7);
     assert_eq!(wilson(0, 3).0, 0.0);
+}
+
+#[test]
+fn every_adapter_rejects_empty_truncated_and_failed_streams() {
+    for harness in Harness::all() {
+        for mode in ["empty", "truncated", "failed", "bare-result"] {
+            let opts = casimir::adapters::RunOpts {
+                prompt: "hello".into(), bin: Some(fx("fake-stream.py").display().to_string()),
+                extra_args: vec!["--fake-mode".into(), mode.into()], ..Default::default()
+            };
+            let result = casimir::adapters::run_turn(harness, &opts, &mut |_| {});
+            assert!(result.as_ref().map_or(true, |r| r.is_error), "{harness}/{mode} must fail");
+            if let Ok(res) = result {
+                assert!(res.events.iter().any(|e| e.kind == EventKind::Error), "failure must be visible in the transcript");
+                if mode != "empty" { assert!(!res.raw.is_empty(), "partial raw output must be saved"); }
+            }
+        }
+    }
+}
+
+#[test]
+fn copilot_and_gemini_reruns_resume_and_save_artifacts() {
+    setup_env();
+    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    for harness in [Harness::Copilot, Harness::Gemini] {
+        let out = tmp("stream-run");
+        let opts = RerunOpts { harness: Some(harness), workspace: tmp_repo().display().to_string(), out_dir: Some(out.clone()), quiet: true, ..Default::default() };
+        let result = rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
+        let session = result.session.unwrap();
+        let execution = session.execution.as_ref().unwrap();
+        assert_eq!(execution.completed_turns, 2, "{harness}");
+        assert_eq!(execution.failed_turns, 0, "{harness}");
+        assert_eq!(stats(&session).assistant_messages, 2);
+        assert!(out.join("session.json").exists() && out.join("report.md").exists() && out.join("raw.jsonl").exists());
+        assert!(std::fs::read_to_string(out.join("diff.patch")).unwrap().contains("out.txt"));
+        if harness == Harness::Gemini { assert_eq!(stats(&session).usage.output, 60); }
+    }
+}
+
+#[test]
+fn gemini_result_error_without_error_event_is_visible() {
+    let opts = casimir::adapters::RunOpts {
+        cwd: Some(tmp("gemini-error")), prompt: "hello".into(), bin: Some(fx("fake-stream.py").display().to_string()),
+        extra_args: vec!["--fake-mode".into(), "result-error".into()], ..Default::default()
+    };
+    let result = gemini::run_turn(&opts, &mut |_| {}).unwrap();
+    assert!(result.is_error);
+    assert!(result.events.iter().any(|e| e.kind == EventKind::Error));
+    assert_eq!(result.raw.len(), 3);
 }
 
 #[test]

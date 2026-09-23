@@ -327,16 +327,15 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     }
     let status = child.wait()?;
     res.stderr = err_thread.join().unwrap_or_default();
-    if !status.success() && res.raw.is_empty() {
-        bail!("copilot exited with {status}: {}", truncate(res.stderr.trim(), 2000));
-    }
     if st.model.is_some() {
         res.model = st.model;
     }
     res.usage = st.usage;
-    res.is_error = !status.success() || res.events.iter().any(|e| e.kind == EventKind::Error);
-    if !status.success() && !res.events.iter().any(|e| e.kind == EventKind::Error) {
-        let ev = Event::text(opts.turn.max(1), now_iso(), EventKind::Error, crate::util::stderr_error_line(&res.stderr, "copilot failed"));
+    let completed = res.raw.iter().any(|r| matches!(s(r, "type"), Some("session.shutdown" | "session.idle" | "assistant.turn_end")))
+        && res.events.iter().any(|e| e.kind == EventKind::Assistant || e.kind == EventKind::ToolResult);
+    res.is_error = !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error);
+    if res.is_error && !res.events.iter().any(|e| e.kind == EventKind::Error) {
+        let ev = Event::text(opts.turn.max(1), now_iso(), EventKind::Error, crate::util::stderr_error_line(&res.stderr, "copilot ended without a completed session"));
         on_event(&ev);
         res.events.push(ev);
     }

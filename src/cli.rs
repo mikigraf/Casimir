@@ -406,6 +406,7 @@ pub fn run() -> Result<i32> {
         Cmd::Attribute { session, turns_at, run } => {
             let original = resolve_session(&session)?;
             let mut opts = run.opts(true)?;
+            if opts.original_diff.is_none() { opts.original_diff = load_diff(&session); }
             opts.judge = run.judge;
             let n = user_turns(&original).len() as u32;
             let turns: Vec<u32> = if turns_at.is_empty() { (2..=n).collect() } else { turns_at };
@@ -416,6 +417,7 @@ pub fn run() -> Result<i32> {
             println!();
             println!("{}", render_attribution_text(&att));
             if !att.dry_run { println!("{}saved under:{} {}", c.bold, c.reset, att.run_dir.display()); }
+            if att.execution_failed { return Ok(1); }
         }
         Cmd::Rerun { session, run } | Cmd::Fork { session, run, .. } => {
             let original = resolve_session(&session)?;
@@ -424,6 +426,7 @@ pub fn run() -> Result<i32> {
                 None => (None, None),
             };
             let mut opts = run.opts(from_turn.is_some())?;
+            if opts.original_diff.is_none() { opts.original_diff = load_diff(&session); }
             opts.from_turn = from_turn;
             opts.intervention = intervention;
             let (single, matrix) = rerun_matrix(&original, &opts, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
@@ -476,7 +479,10 @@ pub fn run() -> Result<i32> {
         }
         Cmd::Brief { session, output, original_diff, llm } => {
             let s = resolve_session(&session)?;
-            let diff = original_diff.as_deref().and_then(|p| load_diff(&p.display().to_string())).or_else(|| reconstruct_original_diff(&s));
+            let diff = match original_diff {
+                Some(p) => Some(load_diff(&p.display().to_string()).ok_or_else(|| anyhow::anyhow!("cannot read original diff from {}", p.display()))?),
+                None => load_diff(&session).or_else(|| reconstruct_original_diff(&s)),
+            };
             let b = draft_brief(&s, diff.as_ref(), &llm.judge_opts())?;
             let out = output.unwrap_or_else(|| PathBuf::from(format!("brief-{}.json", s.id.chars().take(8).collect::<String>())));
             b.save(&out)?;

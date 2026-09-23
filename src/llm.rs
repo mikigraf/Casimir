@@ -30,7 +30,7 @@ impl Default for LlmOpts {
     }
 }
 
-enum Auth {
+enum Credential {
     ApiKey(String),
     Bearer(String),
     OAuth(String),
@@ -51,22 +51,22 @@ pub fn pick_backend(requested: &str) -> String {
     }
 }
 
-fn resolve_auth() -> Result<Auth> {
+fn resolve_auth() -> Result<Credential> {
     if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
         if !k.is_empty() {
-            return Ok(Auth::ApiKey(k));
+            return Ok(Credential::ApiKey(k));
         }
     }
     if let Ok(t) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
         if !t.is_empty() {
-            return Ok(Auth::Bearer(t));
+            return Ok(Credential::Bearer(t));
         }
     }
     // `ant auth login` profile: short-lived token, sent as Bearer with the oauth beta header
     if let Ok(out) = Command::new("ant").args(["auth", "print-credentials", "--access-token"]).output() {
         let tok = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if out.status.success() && !tok.is_empty() {
-            return Ok(Auth::OAuth(tok));
+            return Ok(Credential::OAuth(tok));
         }
     }
     bail!("no Anthropic credentials: set ANTHROPIC_API_KEY, run `ant auth login`, or use --llm claude-cli")
@@ -85,13 +85,13 @@ fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64) -> Res
     let mut cmd = Command::new("curl");
     cmd.args(["-sS", "--max-time", "600", "-X", "POST", API_URL, "-H", "content-type: application/json", "-H", "anthropic-version: 2023-06-01"]);
     match &auth {
-        Auth::ApiKey(k) => {
+        Credential::ApiKey(k) => {
             cmd.args(["-H", &format!("x-api-key: {k}")]);
         }
-        Auth::Bearer(t) => {
+        Credential::Bearer(t) => {
             cmd.args(["-H", &format!("Authorization: Bearer {t}")]);
         }
-        Auth::OAuth(t) => {
+        Credential::OAuth(t) => {
             betas.push("oauth-2025-04-20");
             cmd.args(["-H", &format!("Authorization: Bearer {t}")]);
         }
@@ -131,6 +131,9 @@ fn complete_cli(system: &str, prompt: &str, model: &str) -> Result<String> {
     child.stdin.take().context("stdin")?.write_all(prompt.as_bytes())?;
     let out = child.wait_with_output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        bail!("claude -p exited with {}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim());
+    }
     let last = stdout.trim().lines().last().unwrap_or("");
     let parsed: Value = serde_json::from_str(last).with_context(|| format!("claude -p returned no JSON ({}): {}", out.status, String::from_utf8_lossy(&out.stderr).trim()))?;
     if parsed.get("is_error").and_then(Value::as_bool).unwrap_or(false) {

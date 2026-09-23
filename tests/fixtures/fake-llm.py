@@ -18,7 +18,13 @@ if "# Agent's final message in the original session" in prompt:  # brief draftin
 elif "# Original intents" in prompt:  # intent coverage
     out({"covered": ["I3"], "in_scope": [0]})
 elif "# User requests" in prompt:  # judge
-    if mode == "judge-malformed":
+    if mode == "judge-evidence":
+        for label in ["## Run A", "## Run B"]:
+            block = prompt.split(label)[1].split("## Run ")[0]
+            assert "verification_evidence_marker" in block
+            assert "verified content from actual tool result" in block
+        out({"winner": "tie", "scoreA": 9, "scoreB": 9, "summary": "tool evidence present in both orders"})
+    elif mode == "judge-malformed":
         out({"winner": "invalid", "scoreA": 99, "scoreB": 99})
     elif mode == "judge-both-pass":
         out({"winner": "tie", "scoreA": 9, "scoreB": 9, "summary": "both pass"})
@@ -33,7 +39,19 @@ elif "# User requests" in prompt:  # judge
 elif "# Task" in prompt:  # user simulator
     m = re.search(r"Original text of that message:\n(.*?)(?:\n\n# Correction|$)", prompt, re.S)
     original = m.group(1).strip() if m else ""
-    if mode == "sim-noop":
+    if mode == "sim-fail":
+        print("deliberate simulator failure", file=sys.stderr)
+        sys.exit(17)
+    elif mode == "sim-malformed":
+        out({})
+    elif mode == "sim-false-verbatim":
+        out({"action": "send", "message": "invented requirement", "verbatim": True, "grounded_in": [], "memory": "untrusted note"})
+    elif mode == "sim-skip2":
+        if "Produce the user's message for turn 2" in prompt:
+            out({"action": "no_op", "reason": "already satisfied"})
+        else:
+            out({"action": "send", "message": "adapted third request", "grounded_in": [3], "verbatim": False, "kind": "redirect"})
+    elif mode == "sim-noop":
         out({"action": "no_op", "kind": None, "message": "", "verbatim": False, "grounded_in": [], "reason": "already satisfied", "stop_reason": None, "memory": "skipped"})
     elif mode == "sim-adapt":
         out({"action": "send", "kind": "redirect", "message": "please use World as the default (see turn 2)", "verbatim": False, "grounded_in": [2], "reason": "adapted", "stop_reason": None, "memory": "asked for default"})

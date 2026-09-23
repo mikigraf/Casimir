@@ -44,8 +44,9 @@ tasks, models, and serving configurations; their numerical results are not Casim
 `cargo test` exercises the parsers, live subprocess protocol through controlled harness fixtures,
 worktree isolation, rubric reuse, commit capture, failed execution, judging, simulation, forks,
 attribution, and record serialization. Fixtures verify orchestration and error handling; they do
-not validate task-success judgments or research-level effect estimates. Live smoke tests check
-the installed harness versions separately; inspect `.context/live-smoke/` for local artifacts.
+not validate task-success judgments or research-level effect estimates. The
+[validation report](validation.md) records live provider coverage and its limits;
+`scripts/smoke-claude.py` reproduces the Claude workflow and retains local artifacts.
 
 Unresolved research extensions include task-specific executable outcome oracles, full environment
 snapshots, paired effect estimation over many tasks, and calibration against human-rated outcomes.

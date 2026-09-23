@@ -449,9 +449,12 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     if res.model.is_none() {
         res.model = res.events.iter().find_map(|e| e.model.clone());
     }
-    if !status.success() || result_rec.is_none() {
-        res.is_error = true;
-        let ev = Event::text(turn, now_iso(), EventKind::Error, format!("claude exited with {status}{}: {}", if result_rec.is_none() { " without a result record" } else { "" }, truncate(res.stderr.trim(), 2000)));
+    let completed = result_rec.as_ref().is_some_and(|r| r.get("subtype").and_then(Value::as_str) == Some("success")
+        && r.get("is_error").and_then(Value::as_bool) == Some(false))
+        && res.session_id.as_deref().is_some_and(|s| !s.is_empty());
+    res.is_error |= !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error);
+    if res.is_error && !res.events.iter().any(|e| e.kind == EventKind::Error) {
+        let ev = Event::text(turn, now_iso(), EventKind::Error, format!("claude exited with {status}{}: {}", if !completed { " without a successful result and session ID" } else { "" }, truncate(res.stderr.trim(), 2000)));
         on_event(&ev);
         res.events.push(ev);
     }
@@ -471,7 +474,7 @@ pub fn project_slug(cwd: &Path) -> String {
 /// message that starts that turn, under a new session id and the given working directory, where
 /// `claude --resume <new_id>` will find it. Returns the new transcript path.
 pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Path) -> Result<PathBuf> {
-    let src = original.path.as_deref().context("original session has no on-disk path to fork from")?;
+    let src = original.harness_log_path.as_deref().or(original.path.as_deref()).context("original session has no native on-disk transcript to fork from")?;
     let records = read_jsonl(Path::new(src))?;
     let mut kept: Vec<Value> = Vec::new();
     let mut turn = 0u32;
@@ -501,7 +504,7 @@ pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Pat
         }
         kept.push(rec);
     }
-    if turn + 1 < up_to_turn {
+    if turn < up_to_turn {
         bail!("session has only {turn} turn(s) before turn {up_to_turn}");
     }
     let dir = config_dir().join("projects").join(project_slug(cwd));
