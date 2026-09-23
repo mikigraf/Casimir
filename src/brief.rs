@@ -12,7 +12,12 @@ use crate::model::{final_assistant_text, user_turns, Session};
 use crate::util::{now_iso, read_json, write_json};
 use crate::workspace::Diff;
 
-pub const INVALID_REASONS: &[&str] = &["requirement_violation", "root_cause_not_addressed", "incomplete_implementation", "new_issues_introduced"];
+pub const INVALID_REASONS: &[&str] = &[
+    "requirement_violation",
+    "root_cause_not_addressed",
+    "incomplete_implementation",
+    "new_issues_introduced",
+];
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -36,7 +41,8 @@ pub struct Intent {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Brief {
-    #[serde(default)] pub schema_version: u32,
+    #[serde(default)]
+    pub schema_version: u32,
     pub session_id: String,
     pub drafted_by: String,
     pub drafted_at: String,
@@ -64,7 +70,8 @@ impl Brief {
         read_json(path).with_context(|| format!("loading brief {}", path.display()))
     }
     pub fn save(&self, path: &Path) -> Result<()> {
-        let mut brief = self.clone(); brief.schema_version = 1;
+        let mut brief = self.clone();
+        brief.schema_version = 1;
         write_json(path, &brief)
     }
     /// Rubric text for the judge prompt.
@@ -75,8 +82,18 @@ impl Brief {
             out.extend(self.constraints.iter().map(|c| format!("- {c}")));
         }
         if !self.criteria.is_empty() {
-            out.push("Criteria (score against these; MUST items make a result invalid when violated):".into());
-            out.extend(self.criteria.iter().map(|c| format!("- [{}]{} {}", c.id, if c.must { " MUST" } else { "" }, c.text)));
+            out.push(
+                "Criteria (score against these; MUST items make a result invalid when violated):"
+                    .into(),
+            );
+            out.extend(self.criteria.iter().map(|c| {
+                format!(
+                    "- [{}]{} {}",
+                    c.id,
+                    if c.must { " MUST" } else { "" },
+                    c.text
+                )
+            }));
         }
         out.join("\n")
     }
@@ -89,7 +106,11 @@ impl Brief {
         }
         if !self.intervention_conditions.is_empty() {
             out.push("When and why the original user intervened:".into());
-            out.extend(self.intervention_conditions.iter().map(|c| format!("- {c}")));
+            out.extend(
+                self.intervention_conditions
+                    .iter()
+                    .map(|c| format!("- {c}")),
+            );
         }
         out.join("\n")
     }
@@ -113,7 +134,11 @@ Intents are atomic: split compound requests, keep each tied to the turn it was e
 fn clip(s: &str, n: usize) -> String {
     let c = s.chars().count();
     if c > n {
-        format!("{}\n… [truncated {} chars]", s.chars().take(n).collect::<String>(), c - n)
+        format!(
+            "{}\n… [truncated {} chars]",
+            s.chars().take(n).collect::<String>(),
+            c - n
+        )
     } else {
         s.to_string()
     }
@@ -134,7 +159,17 @@ pub fn draft_brief(original: &Session, diff: Option<&Diff>, llm: &LlmOpts) -> Re
         p.push(clip(&d.patch, 20000));
     }
     let obj = complete_json(BRIEF_SYSTEM, &p.join("\n"), llm)?;
-    let arr = |k: &str| obj.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>()).unwrap_or_default();
+    let arr = |k: &str| {
+        obj.get(k)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
     let criteria = obj
         .get("criteria")
         .and_then(Value::as_array)
@@ -143,7 +178,15 @@ pub fn draft_brief(original: &Session, diff: Option<&Diff>, llm: &LlmOpts) -> Re
                 .enumerate()
                 .filter_map(|(i, c)| {
                     let text = c.get("text").and_then(Value::as_str)?.to_string();
-                    Some(Criterion { id: c.get("id").and_then(Value::as_str).map(String::from).unwrap_or_else(|| format!("C{}", i + 1)), text, must: c.get("must").and_then(Value::as_bool).unwrap_or(false) })
+                    Some(Criterion {
+                        id: c
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(String::from)
+                            .unwrap_or_else(|| format!("C{}", i + 1)),
+                        text,
+                        must: c.get("must").and_then(Value::as_bool).unwrap_or(false),
+                    })
                 })
                 .collect()
         })
@@ -156,7 +199,15 @@ pub fn draft_brief(original: &Session, diff: Option<&Diff>, llm: &LlmOpts) -> Re
                 .enumerate()
                 .filter_map(|(i, c)| {
                     let text = c.get("text").and_then(Value::as_str)?.to_string();
-                    Some(Intent { id: c.get("id").and_then(Value::as_str).map(String::from).unwrap_or_else(|| format!("I{}", i + 1)), text, turn: c.get("turn").and_then(Value::as_u64).unwrap_or(1) as u32 })
+                    Some(Intent {
+                        id: c
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(String::from)
+                            .unwrap_or_else(|| format!("I{}", i + 1)),
+                        text,
+                        turn: c.get("turn").and_then(Value::as_u64).unwrap_or(1) as u32,
+                    })
                 })
                 .collect()
         })
@@ -167,7 +218,11 @@ pub fn draft_brief(original: &Session, diff: Option<&Diff>, llm: &LlmOpts) -> Re
         drafted_by: effective_model(llm),
         drafted_at: now_iso(),
         human_reviewed: false,
-        objective: obj.get("objective").and_then(Value::as_str).unwrap_or("").to_string(),
+        objective: obj
+            .get("objective")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         constraints: arr("constraints"),
         intervention_conditions: arr("intervention_conditions"),
         criteria,
@@ -176,18 +231,46 @@ pub fn draft_brief(original: &Session, diff: Option<&Diff>, llm: &LlmOpts) -> Re
 }
 
 pub fn render_brief_markdown(b: &Brief) -> String {
-    let mut md = vec![format!("# Brief for session {}", b.session_id), String::new(), format!("_drafted by {} at {}; human reviewed: {}_", b.drafted_by, b.drafted_at, if b.human_reviewed { "yes" } else { "no — edit brief.json and set humanReviewed to true" }), String::new()];
+    let mut md = vec![
+        format!("# Brief for session {}", b.session_id),
+        String::new(),
+        format!(
+            "_drafted by {} at {}; human reviewed: {}_",
+            b.drafted_by,
+            b.drafted_at,
+            if b.human_reviewed {
+                "yes"
+            } else {
+                "no — edit brief.json and set humanReviewed to true"
+            }
+        ),
+        String::new(),
+    ];
     md.push(format!("## Objective\n\n{}", b.objective));
     md.push("\n## Constraints\n".into());
     md.extend(b.constraints.iter().map(|c| format!("- {c}")));
     md.push("\n## Intervention conditions\n".into());
     md.extend(b.intervention_conditions.iter().map(|c| format!("- {c}")));
     md.push("\n## Rubric\n".into());
-    md.extend(b.criteria.iter().map(|c| format!("- **{}**{}: {}", c.id, if c.must { " (must)" } else { "" }, c.text)));
+    md.extend(b.criteria.iter().map(|c| {
+        format!(
+            "- **{}**{}: {}",
+            c.id,
+            if c.must { " (must)" } else { "" },
+            c.text
+        )
+    }));
     md.push("\n## Intents\n".into());
-    md.extend(b.intents.iter().map(|i| format!("- **{}** (turn {}): {}", i.id, i.turn, i.text)));
+    md.extend(
+        b.intents
+            .iter()
+            .map(|i| format!("- **{}** (turn {}): {}", i.id, i.turn, i.text)),
+    );
     md.push(String::new());
-    md.push(format!("Invalid-reason taxonomy used by the judge: {}", INVALID_REASONS.join(", ")));
+    md.push(format!(
+        "Invalid-reason taxonomy used by the judge: {}",
+        INVALID_REASONS.join(", ")
+    ));
     md.join("\n")
 }
 
@@ -216,7 +299,11 @@ simulated messages stay within the scope of the original intents. Reply with a J
 
 /// Compute intent coverage for a rerun. Verbatim turns cover their own turn's intents by construction;
 /// adapted messages are matched by the LLM.
-pub fn intent_coverage(brief: &Brief, rerun: &Session, llm: &LlmOpts) -> Result<Option<IntentCoverage>> {
+pub fn intent_coverage(
+    brief: &Brief,
+    rerun: &Session,
+    llm: &LlmOpts,
+) -> Result<Option<IntentCoverage>> {
     if brief.intents.is_empty() {
         return Ok(None);
     }
@@ -224,39 +311,83 @@ pub fn intent_coverage(brief: &Brief, rerun: &Session, llm: &LlmOpts) -> Result<
         .events
         .iter()
         .filter(|e| e.kind == crate::model::EventKind::User && !e.sidechain)
-        .filter_map(|e| e.simulated.as_ref().map(|s| (e.source_turn.unwrap_or(e.turn), s.verbatim, e.text_str().to_string())))
+        .filter_map(|e| {
+            e.simulated.as_ref().map(|s| {
+                (
+                    e.source_turn.unwrap_or(e.turn),
+                    s.verbatim,
+                    e.text_str().to_string(),
+                )
+            })
+        })
         .collect();
     if sim_msgs.is_empty() {
         return Ok(None);
     }
     let mut covered: Vec<String> = Vec::new();
     // turns sent verbatim (and the never-simulated turn 1) cover their intents
-    let verbatim_turns: Vec<u32> = std::iter::once(1u32).chain(sim_msgs.iter().filter(|(_, v, _)| *v).map(|(t, _, _)| *t)).collect();
+    let verbatim_turns: Vec<u32> = std::iter::once(1u32)
+        .chain(sim_msgs.iter().filter(|(_, v, _)| *v).map(|(t, _, _)| *t))
+        .collect();
     for i in &brief.intents {
         if verbatim_turns.contains(&i.turn) {
             covered.push(i.id.clone());
         }
     }
-    let adapted: Vec<(usize, &(u32, bool, String))> = sim_msgs.iter().enumerate().filter(|(_, (_, v, _))| !*v).collect();
+    let adapted: Vec<(usize, &(u32, bool, String))> = sim_msgs
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, v, _))| !*v)
+        .collect();
     let mut in_scope = sim_msgs.iter().filter(|(_, v, _)| *v).count();
     if !adapted.is_empty() {
         let mut p: Vec<String> = vec!["# Original intents".into()];
-        p.extend(brief.intents.iter().map(|i| format!("{} (turn {}): {}", i.id, i.turn, i.text)));
+        p.extend(
+            brief
+                .intents
+                .iter()
+                .map(|i| format!("{} (turn {}): {}", i.id, i.turn, i.text)),
+        );
         p.push(String::new());
         p.push("# Simulated messages (index: text)".into());
         for (idx, (_, _, text)) in &adapted {
             p.push(format!("{idx}: {}", clip(text, 2000)));
         }
         let obj = complete_json(INTENT_SYSTEM, &p.join("\n"), llm)?;
-        for id in obj.get("covered").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        for id in obj
+            .get("covered")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
             if brief.intents.iter().any(|i| i.id == id) && !covered.iter().any(|c| c == id) {
                 covered.push(id.to_string());
             }
         }
-        let scoped: Vec<usize> = obj.get("in_scope").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).map(|n| n as usize).collect();
-        in_scope += adapted.iter().filter(|(idx, _)| scoped.contains(idx)).count();
+        let scoped: Vec<usize> = obj
+            .get("in_scope")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .map(|n| n as usize)
+            .collect();
+        in_scope += adapted
+            .iter()
+            .filter(|(idx, _)| scoped.contains(idx))
+            .count();
     }
     let recall = covered.len() as f64 / brief.intents.len() as f64;
     let precision = in_scope as f64 / sim_msgs.len() as f64;
-    Ok(Some(IntentCoverage { recall, precision, score: ((0.70 * recall + 0.30 * precision) * 100.0).round() / 100.0, intents: brief.intents.len(), covered, simulated_messages: sim_msgs.len(), in_scope, model: effective_model(llm) }))
+    Ok(Some(IntentCoverage {
+        recall,
+        precision,
+        score: ((0.70 * recall + 0.30 * precision) * 100.0).round() / 100.0,
+        intents: brief.intents.len(),
+        covered,
+        simulated_messages: sim_msgs.len(),
+        in_scope,
+        model: effective_model(llm),
+    }))
 }

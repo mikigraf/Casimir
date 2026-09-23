@@ -6,13 +6,19 @@ use std::path::{Path, PathBuf};
 
 use crate::adapters::{list_all_sessions, resolve_session};
 use crate::brief::{draft_brief, render_brief_markdown, Brief};
-use crate::compare::{compare_sessions, judge_sessions_with, render_compare_markdown, render_compare_text, JudgeOpts};
-use crate::pairs::{export_pairs, score_pairs};
+use crate::compare::{
+    compare_sessions, judge_sessions_with, render_compare_markdown, render_compare_text, JudgeOpts,
+};
 use crate::llm::LlmOpts;
 use crate::model::{stats, user_turns, Harness};
+use crate::pairs::{export_pairs, score_pairs};
 use crate::play::{play, PlayOpts};
-use crate::render::{render_markdown, render_session_list, render_stats, render_transcript, RenderOpts};
-use crate::rerun::{attribute, render_attribution_text, render_matrix_text, rerun_matrix, RerunOpts};
+use crate::render::{
+    render_markdown, render_session_list, render_stats, render_transcript, RenderOpts,
+};
+use crate::rerun::{
+    attribute, render_attribution_text, render_matrix_text, rerun_matrix, RerunOpts,
+};
 use crate::util::{casimir_home, colors, read_json};
 use crate::workspace::{reconstruct_original_diff, Diff};
 
@@ -56,7 +62,14 @@ pub struct ShowArgs {
 
 impl ShowArgs {
     fn render(&self) -> RenderOpts {
-        RenderOpts { thinking: self.thinking, full: self.full, sidechains: self.sidechains, turn: self.turn, max_lines: self.max_lines, ..Default::default() }
+        RenderOpts {
+            thinking: self.thinking,
+            full: self.full,
+            sidechains: self.sidechains,
+            turn: self.turn,
+            max_lines: self.max_lines,
+            ..Default::default()
+        }
     }
 }
 
@@ -81,10 +94,20 @@ pub struct LlmArgs {
 
 impl LlmArgs {
     fn opts(&self) -> LlmOpts {
-        LlmOpts { timeout_secs: self.llm_timeout, model: self.llm_model.clone(), backend: crate::llm::pick_backend(&self.llm), ..Default::default() }
+        LlmOpts {
+            timeout_secs: self.llm_timeout,
+            model: self.llm_model.clone(),
+            backend: crate::llm::pick_backend(&self.llm),
+            ..Default::default()
+        }
     }
     fn judge_opts(&self) -> LlmOpts {
-        LlmOpts { timeout_secs: self.llm_timeout, model: self.judge_model.clone().or_else(|| self.llm_model.clone()), backend: crate::llm::pick_backend(self.judge_llm.as_deref().unwrap_or(&self.llm)), ..Default::default() }
+        LlmOpts {
+            timeout_secs: self.llm_timeout,
+            model: self.judge_model.clone().or_else(|| self.llm_model.clone()),
+            backend: crate::llm::pick_backend(self.judge_llm.as_deref().unwrap_or(&self.llm)),
+            ..Default::default()
+        }
     }
 }
 
@@ -158,6 +181,7 @@ pub struct RunArgs {
     /// Run directory (default ~/.casimir/runs/<id>)
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Do not stream harness events to stdout while running
     #[arg(short, long)]
     pub quiet: bool,
     /// Keep replaying turns after a harness error
@@ -199,11 +223,19 @@ impl RunArgs {
             continue_on_error: self.continue_on_error,
             extra_args: self.extra.clone(),
             run_id: None,
-            replicates: self.replicates.unwrap_or(if self.judge || self.control || forcing_replicates { 3 } else { 1 }),
+            replicates: self.replicates.unwrap_or(
+                if self.judge || self.control || forcing_replicates {
+                    3
+                } else {
+                    1
+                },
+            ),
             sim_models: self.sim_model.clone(),
             pass_threshold: self.pass_threshold,
             original_diff: match &self.original_diff {
-                Some(p) => Some(load_diff(&p.display().to_string()).ok_or_else(|| anyhow::anyhow!("cannot read original diff from {}", p.display()))?),
+                Some(p) => Some(load_diff(&p.display().to_string()).ok_or_else(|| {
+                    anyhow::anyhow!("cannot read original diff from {}", p.display())
+                })?),
                 None => None,
             },
             control: self.control,
@@ -222,41 +254,80 @@ pub enum Cmd {
     /// Generate AB/BA judge predictions for the frozen 40-pair corpus (makes model calls)
     PredictEvaluation {
         /// First N pairs for smoke testing; release calibration requires all 40
-        #[arg(long, default_value_t = 40)] limit: usize,
-        #[arg(long)] corpus: PathBuf,
-        #[arg(short, long)] output: PathBuf,
-        #[command(flatten)] llm: LlmArgs,
+        #[arg(long, default_value_t = 40)]
+        limit: usize,
+        /// Frozen evaluation corpus JSON (acceptance/evaluation/corpus.json)
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Where to write the predictions JSON
+        #[arg(short, long)]
+        output: PathBuf,
+        #[command(flatten)]
+        llm: LlmArgs,
     },
     /// Score frozen evaluation predictions against independent reviews and adjudication
     Calibrate {
-        #[arg(long)] corpus: PathBuf,
-        #[arg(long)] predictions: PathBuf,
-        #[arg(long)] reviewer_a: PathBuf,
-        #[arg(long)] reviewer_b: PathBuf,
-        #[arg(long)] adjudication: PathBuf,
-        #[arg(short, long)] output: Option<PathBuf>,
+        /// Frozen evaluation corpus JSON (acceptance/evaluation/corpus.json)
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Predictions JSON produced by predict-evaluation
+        #[arg(long)]
+        predictions: PathBuf,
+        /// Independent review file from the first human reviewer
+        #[arg(long)]
+        reviewer_a: PathBuf,
+        /// Independent review file from the second human reviewer
+        #[arg(long)]
+        reviewer_b: PathBuf,
+        /// Adjudication file resolving reviewer disagreements
+        #[arg(long)]
+        adjudication: PathBuf,
+        /// Where to write the calibration report JSON
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// Preview removal of manifest-owned run artifacts and worktrees
-    Cleanup { run: PathBuf, #[arg(long)] apply: bool, #[arg(long)] checkpoints: bool },
+    Cleanup {
+        run: PathBuf,
+        /// Delete the previewed artifacts instead of only listing them
+        #[arg(long)]
+        apply: bool,
+        /// Also reclaim this run's registered checkpoints when no other run references them
+        #[arg(long)]
+        checkpoints: bool,
+    },
     /// Continue a durable run; ambiguous prompts require an explicit new attempt
-    Resume { run: PathBuf, #[arg(long)] retry_interrupted: bool },
+    Resume {
+        run: PathBuf,
+        /// Retry a turn that may already have executed; without it, resume stops and asks for an explicit new attempt
+        #[arg(long)]
+        retry_interrupted: bool,
+    },
     /// Diagnose local installation and login status without paid model calls
-    Doctor { #[arg(long)] json: bool },
+    Doctor {
+        /// Print machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// List recorded sessions from all harnesses
     List {
+        /// Only sessions from this harness (claude-code, codex, copilot, gemini)
         #[arg(long, value_parser = Harness::parse)]
         harness: Option<Harness>,
         /// Only sessions recorded in this directory
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Maximum number of sessions to list
         #[arg(long, default_value_t = 30)]
         limit: usize,
+        /// Print machine-readable JSON
         #[arg(long)]
         json: bool,
     },
     /// Print a transcript
     Show {
         session: String,
+        /// Output format
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
         #[command(flatten)]
@@ -277,6 +348,7 @@ pub enum Cmd {
     /// Aggregate numbers for a session
     Stats {
         session: String,
+        /// Print machine-readable JSON
         #[arg(long)]
         json: bool,
     },
@@ -286,8 +358,10 @@ pub enum Cmd {
         /// Produce a redacted sharing export with an explicit redaction marker
         #[arg(long)]
         share: bool,
+        /// Destination file (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Output format (default: from the file extension, else json)
         #[arg(long, value_enum)]
         format: Option<Format>,
         #[command(flatten)]
@@ -324,6 +398,7 @@ pub enum Cmd {
     Compare {
         a: String,
         b: String,
+        /// Ask an LLM to score A vs B (runs in both candidate orders)
         #[arg(long)]
         judge: bool,
         #[command(flatten)]
@@ -334,6 +409,7 @@ pub enum Cmd {
         /// Per-session brief whose rubric the judge scores against
         #[arg(long)]
         brief: Option<PathBuf>,
+        /// Output format
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
@@ -358,10 +434,7 @@ pub enum Cmd {
         output: PathBuf,
     },
     /// Score 2AFC answers ({pair_id: "X"|"Y"} = the message believed to be the real human's) against the key
-    PairsScore {
-        key: PathBuf,
-        answers: PathBuf,
-    },
+    PairsScore { key: PathBuf, answers: PathBuf },
     /// List rerun directories under ~/.casimir/runs
     Runs,
 }
@@ -373,10 +446,25 @@ fn load_diff(reference: &str) -> Option<Diff> {
     }
     if p.is_file() && p.extension().is_some_and(|e| e == "patch" || e == "diff") {
         let patch = fs::read_to_string(p).ok()?;
-        let files = crate::workspace::parse_patch(&patch).keys().map(|p| crate::workspace::ChangedFile { status: "M".into(), path: p.clone() }).collect();
-        return Some(Diff { patch, files, source: Some(format!("patch file {}", p.display())), ..Default::default() });
+        let files = crate::workspace::parse_patch(&patch)
+            .keys()
+            .map(|p| crate::workspace::ChangedFile {
+                status: "M".into(),
+                path: p.clone(),
+            })
+            .collect();
+        return Some(Diff {
+            patch,
+            files,
+            source: Some(format!("patch file {}", p.display())),
+            ..Default::default()
+        });
     }
-    let dir = if p.is_dir() { p.to_path_buf() } else { p.parent()?.to_path_buf() };
+    let dir = if p.is_dir() {
+        p.to_path_buf()
+    } else {
+        p.parent()?.to_path_buf()
+    };
     let dj = dir.join("diff.json");
     if !dj.exists() {
         return None;
@@ -395,43 +483,125 @@ pub fn run() -> Result<i32> {
     let cli = Cli::parse();
     let c = colors();
     let cli_fork_args: Option<(u32, Option<String>)> = match &cli.command {
-        Cmd::Fork { at_turn, message, .. } => Some((*at_turn, message.clone())),
+        Cmd::Fork {
+            at_turn, message, ..
+        } => Some((*at_turn, message.clone())),
         _ => None,
     };
     match cli.command {
-        Cmd::PredictEvaluation { corpus, output, llm, limit } => {
+        Cmd::PredictEvaluation {
+            corpus,
+            output,
+            llm,
+            limit,
+        } => {
             eprintln!("Preflight: {limit} trace pairs, {} ordered judge calls (up to {} with JSON repair); no human labels are generated.", limit.saturating_mul(2), limit.saturating_mul(4));
-            let result = crate::calibration::predict_limit(&corpus, &output, &llm.judge_opts(), limit)?;
-            println!("Predictions saved to {}", output.join("predictions.json").display());
-            if result["failures"].as_object().is_some_and(|failures| !failures.is_empty()) { return Ok(1); }
-        },
-        Cmd::Calibrate { corpus, predictions, reviewer_a, reviewer_b, adjudication, output } => {
-            let result = crate::calibration::score(&corpus, &predictions, &reviewer_a, &reviewer_b, &adjudication)?;
-            if let Some(path) = output { crate::util::write_json(&path, &result)?; }
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            if result["passed"] != true { return Ok(1); }
-        },
-        Cmd::Cleanup { run, apply, checkpoints } => println!("{}", serde_json::to_string_pretty(&crate::artifacts::cleanup_with_checkpoints(&run, apply, checkpoints)?)?),
-        Cmd::Resume { run, retry_interrupted } => {
-            let result = crate::recovery::resume(&run, retry_interrupted, &mut |s| eprintln!("{}", crate::privacy::redact(s)), &mut |s| println!("{s}"))?;
-            if let Some(result) = result { println!("Recovery attempt: {}", result.run_dir.display());
-                if result.session.as_ref().and_then(|s| s.execution.as_ref()).is_some_and(|e| e.failed_turns > 0) { return Ok(1); }
+            let result =
+                crate::calibration::predict_limit(&corpus, &output, &llm.judge_opts(), limit)?;
+            println!(
+                "Predictions saved to {}",
+                output.join("predictions.json").display()
+            );
+            if result["failures"]
+                .as_object()
+                .is_some_and(|failures| !failures.is_empty())
+            {
+                return Ok(1);
             }
-        },
+        }
+        Cmd::Calibrate {
+            corpus,
+            predictions,
+            reviewer_a,
+            reviewer_b,
+            adjudication,
+            output,
+        } => {
+            let result = crate::calibration::score(
+                &corpus,
+                &predictions,
+                &reviewer_a,
+                &reviewer_b,
+                &adjudication,
+            )?;
+            if let Some(path) = output {
+                crate::util::write_json(&path, &result)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            if result["passed"] != true {
+                return Ok(1);
+            }
+        }
+        Cmd::Cleanup {
+            run,
+            apply,
+            checkpoints,
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::artifacts::cleanup_with_checkpoints(
+                &run,
+                apply,
+                checkpoints
+            )?)?
+        ),
+        Cmd::Resume {
+            run,
+            retry_interrupted,
+        } => {
+            let result = crate::recovery::resume(
+                &run,
+                retry_interrupted,
+                &mut |s| eprintln!("{}", crate::privacy::redact(s)),
+                &mut |s| println!("{s}"),
+            )?;
+            if let Some(result) = result {
+                println!("Recovery attempt: {}", result.run_dir.display());
+                if result
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.execution.as_ref())
+                    .is_some_and(|e| e.failed_turns > 0)
+                {
+                    return Ok(1);
+                }
+            }
+        }
         Cmd::Doctor { json: as_json } => {
             let report = crate::doctor::report();
-            if as_json { println!("{}", serde_json::to_string_pretty(&report)?); } else {
-                println!("Casimir setup: {} {}", std::env::consts::OS, std::env::consts::ARCH);
-                for harness in report["harnesses"].as_array().unwrap() { println!("{}: version={} auth={} method={} subscriptionReady={} runtimeReady={} executable={}", harness["id"], harness["version"], harness["authentication"], harness["authenticationMethod"], harness["subscriptionReady"], harness["runtimeReady"], harness["executable"]); }
-                println!("Storage writable: {}. Git: {}", report["storage"]["writable"], report["git"]);
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "Casimir setup: {} {}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                );
+                for harness in report["harnesses"].as_array().unwrap() {
+                    println!("{}: version={} auth={} method={} subscriptionReady={} runtimeReady={} executable={}", harness["id"], harness["version"], harness["authentication"], harness["authenticationMethod"], harness["subscriptionReady"], harness["runtimeReady"], harness["executable"]);
+                }
+                println!(
+                    "Storage writable: {}. Git: {}",
+                    report["storage"]["writable"], report["git"]
+                );
                 println!("Worktrees do not provide process isolation. No paid model calls made.");
             }
-        },
-        Cmd::List { harness, cwd, limit, json } => {
+        }
+        Cmd::List {
+            harness,
+            cwd,
+            limit,
+            json,
+        } => {
             let mut items = list_all_sessions(harness);
             if let Some(want) = cwd {
                 let want = fs::canonicalize(&want).unwrap_or(want);
-                items.retain(|s| s.cwd.as_deref().map(Path::new).and_then(|p| fs::canonicalize(p).ok()).is_some_and(|p| p == want));
+                items.retain(|s| {
+                    s.cwd
+                        .as_deref()
+                        .map(Path::new)
+                        .and_then(|p| fs::canonicalize(p).ok())
+                        .is_some_and(|p| p == want)
+                });
             }
             items.truncate(limit);
             if json {
@@ -440,7 +610,11 @@ pub fn run() -> Result<i32> {
                 println!("{}", render_session_list(&items));
             }
         }
-        Cmd::Show { session, format, show } => {
+        Cmd::Show {
+            session,
+            format,
+            show,
+        } => {
             let s = resolve_session(&session)?;
             match format {
                 Format::Json => println!("{}", serde_json::to_string_pretty(&s)?),
@@ -448,10 +622,23 @@ pub fn run() -> Result<i32> {
                 Format::Text => println!("{}", render_transcript(&s, &show.render())),
             }
         }
-        Cmd::Play { session, speed, max_delay, show } => {
+        Cmd::Play {
+            session,
+            speed,
+            max_delay,
+            show,
+        } => {
             let s = resolve_session(&session)?;
             let mut stdout = std::io::stdout().lock();
-            play(&s, &PlayOpts { speed, max_delay_ms: max_delay, render: show.render() }, &mut stdout)?;
+            play(
+                &s,
+                &PlayOpts {
+                    speed,
+                    max_delay_ms: max_delay,
+                    render: show.render(),
+                },
+                &mut stdout,
+            )?;
         }
         Cmd::Stats { session, json } => {
             let s = resolve_session(&session)?;
@@ -461,19 +648,47 @@ pub fn run() -> Result<i32> {
                 println!("{}", render_stats(&s));
             }
         }
-        Cmd::Export { session, output, format, show, share } => {
+        Cmd::Export {
+            session,
+            output,
+            format,
+            show,
+            share,
+        } => {
             let s = resolve_session(&session)?;
-            let fmt = format.unwrap_or(if output.as_ref().is_some_and(|o| o.extension().is_some_and(|e| e == "md")) { Format::Md } else { Format::Json });
+            let fmt = format.unwrap_or(
+                if output
+                    .as_ref()
+                    .is_some_and(|o| o.extension().is_some_and(|e| e == "md"))
+                {
+                    Format::Md
+                } else {
+                    Format::Json
+                },
+            );
             let body = match fmt {
-                Format::Md => render_markdown(&s, &RenderOpts { thinking: true, ..show.render() }),
+                Format::Md => render_markdown(
+                    &s,
+                    &RenderOpts {
+                        thinking: true,
+                        ..show.render()
+                    },
+                ),
                 _ => serde_json::to_string_pretty(&s)?,
             };
             let body = if share {
                 match fmt {
-                    Format::Md => format!("<!-- Casimir schemaVersion: 1; redacted: true -->\n\n{}", crate::privacy::redact(&body)),
-                    _ => serde_json::to_string_pretty(&crate::privacy::share(&serde_json::to_value(&s)?))?,
+                    Format::Md => format!(
+                        "<!-- Casimir schemaVersion: 1; redacted: true -->\n\n{}",
+                        crate::privacy::redact(&body)
+                    ),
+                    _ => serde_json::to_string_pretty(&crate::privacy::share(
+                        &serde_json::to_value(&s)?,
+                    ))?,
                 }
-            } else { body };
+            } else {
+                body
+            };
             match output {
                 Some(o) => {
                     crate::util::atomic_write(&o, body.as_bytes())?;
@@ -482,21 +697,46 @@ pub fn run() -> Result<i32> {
                 None => println!("{body}"),
             }
         }
-        Cmd::Attribute { session, turns_at, run } => {
+        Cmd::Attribute {
+            session,
+            turns_at,
+            run,
+        } => {
             let original = resolve_session(&session)?;
             let mut opts = run.opts(true)?;
-            if opts.original_diff.is_none() { opts.original_diff = load_diff(&session); }
+            if opts.original_diff.is_none() {
+                opts.original_diff = load_diff(&session);
+            }
             opts.judge = run.judge;
             let n = user_turns(&original).len() as u32;
-            let turns: Vec<u32> = if turns_at.is_empty() { (2..=n).collect() } else { turns_at };
+            let turns: Vec<u32> = if turns_at.is_empty() {
+                (2..=n).collect()
+            } else {
+                turns_at
+            };
             if turns.is_empty() {
                 anyhow::bail!("nothing to attribute: the session has a single turn (attribution resamples turns >= 2)");
             }
-            let att = attribute(&original, &opts, &turns, &mut |s| eprintln!("{}", crate::privacy::redact(s)), &mut |s| println!("{s}"))?;
+            let att = attribute(
+                &original,
+                &opts,
+                &turns,
+                &mut |s| eprintln!("{}", crate::privacy::redact(s)),
+                &mut |s| println!("{s}"),
+            )?;
             println!();
             println!("{}", render_attribution_text(&att));
-            if !att.dry_run { println!("{}saved under:{} {}", c.bold, c.reset, att.run_dir.display()); }
-            if att.execution_failed { return Ok(1); }
+            if !att.dry_run {
+                println!(
+                    "{}saved under:{} {}",
+                    c.bold,
+                    c.reset,
+                    att.run_dir.display()
+                );
+            }
+            if att.execution_failed {
+                return Ok(1);
+            }
         }
         Cmd::Rerun { session, run } | Cmd::Fork { session, run, .. } => {
             let original = resolve_session(&session)?;
@@ -505,35 +745,88 @@ pub fn run() -> Result<i32> {
                 None => (None, None),
             };
             let mut opts = run.opts(from_turn.is_some())?;
-            if opts.original_diff.is_none() { opts.original_diff = load_diff(&session); }
+            if opts.original_diff.is_none() {
+                opts.original_diff = load_diff(&session);
+            }
             opts.from_turn = from_turn;
             opts.intervention = intervention;
-            let (single, matrix) = rerun_matrix(&original, &opts, &mut |s| eprintln!("{}", crate::privacy::redact(s)), &mut |s| println!("{s}"))?;
+            let (single, matrix) = rerun_matrix(
+                &original,
+                &opts,
+                &mut |s| eprintln!("{}", crate::privacy::redact(s)),
+                &mut |s| println!("{s}"),
+            )?;
             if let Some(res) = single {
                 if res.dry_run {
                     return Ok(0);
                 }
                 println!();
-                println!("{}", render_compare_text(res.report.as_ref().unwrap(), "original", "rerun"));
+                println!(
+                    "{}",
+                    render_compare_text(res.report.as_ref().unwrap(), "original", "rerun")
+                );
                 println!();
                 println!("{}run saved:{} {}", c.bold, c.reset, res.run_dir.display());
                 if res.workspace.mode == "worktree" {
                     let root = res.workspace.root.as_ref().unwrap().display();
-                    println!("{}worktree kept at {root} (preview removal with: casimir cleanup RUN){}", c.dim, c.reset);
+                    println!(
+                        "{}worktree kept at {root} (preview removal with: casimir cleanup RUN){}",
+                        c.dim, c.reset
+                    );
                 }
-                println!("{}casimir show {}   |   casimir compare {} {}{}", c.dim, res.run_dir.display(), original.path.clone().unwrap_or(original.id.clone()), res.run_dir.display(), c.reset);
-                if res.session.as_ref().unwrap().execution.as_ref().is_some_and(|e| e.failed_turns > 0) || (opts.judge && res.report.as_ref().unwrap().judge.is_none()) { return Ok(1); }
+                println!(
+                    "{}casimir show {}   |   casimir compare {} {}{}",
+                    c.dim,
+                    res.run_dir.display(),
+                    original.path.clone().unwrap_or(original.id.clone()),
+                    res.run_dir.display(),
+                    c.reset
+                );
+                if res
+                    .session
+                    .as_ref()
+                    .unwrap()
+                    .execution
+                    .as_ref()
+                    .is_some_and(|e| e.failed_turns > 0)
+                    || (opts.judge && res.report.as_ref().unwrap().judge.is_none())
+                {
+                    return Ok(1);
+                }
             }
             if let Some(m) = matrix {
                 println!();
                 println!("{}", render_matrix_text(&m));
                 println!();
-                println!("{}runs saved under:{} {}", c.bold, c.reset, m.run_dir.display());
-                println!("{}worktrees are kept under {} (preview each run with: casimir cleanup RUN){}", c.dim, casimir_home().join("worktrees").display(), c.reset);
-                if m.entries.iter().any(|e| e.errors > 0 || (m.judged && e.judge_score.is_none())) { return Ok(1); }
+                println!(
+                    "{}runs saved under:{} {}",
+                    c.bold,
+                    c.reset,
+                    m.run_dir.display()
+                );
+                println!(
+                    "{}worktrees are kept under {} (preview each run with: casimir cleanup RUN){}",
+                    c.dim,
+                    casimir_home().join("worktrees").display(),
+                    c.reset
+                );
+                if m.entries
+                    .iter()
+                    .any(|e| e.errors > 0 || (m.judged && e.judge_score.is_none()))
+                {
+                    return Ok(1);
+                }
             }
         }
-        Cmd::Compare { a, b, judge, llm, judge_repeats, brief, format } => {
+        Cmd::Compare {
+            a,
+            b,
+            judge,
+            llm,
+            judge_repeats,
+            brief,
+            format,
+        } => {
             let sa = resolve_session(&a)?;
             let sb = resolve_session(&b)?;
             // run dirs carry a captured diff; for raw logs fall back to reconstructing from git history
@@ -542,10 +835,26 @@ pub fn run() -> Result<i32> {
             let j = if judge {
                 let b = match brief {
                     Some(p) => Some(Brief::load(&p)?),
-                    None => Path::new(&b).join("brief.json").exists().then(|| Brief::load(&Path::new(&b).join("brief.json"))).transpose()?,
+                    None => Path::new(&b)
+                        .join("brief.json")
+                        .exists()
+                        .then(|| Brief::load(&Path::new(&b).join("brief.json")))
+                        .transpose()?,
                 };
-                let jo = JudgeOpts { llm: llm.judge_opts(), repeats: judge_repeats.max(1), brief: b, model_a: sa.model.clone(), model_b: sb.model.clone() };
-                Some(judge_sessions_with(&sa, &sb, da.as_ref(), db.as_ref(), &jo)?)
+                let jo = JudgeOpts {
+                    llm: llm.judge_opts(),
+                    repeats: judge_repeats.max(1),
+                    brief: b,
+                    model_a: sa.model.clone(),
+                    model_b: sb.model.clone(),
+                };
+                Some(judge_sessions_with(
+                    &sa,
+                    &sb,
+                    da.as_ref(),
+                    db.as_ref(),
+                    &jo,
+                )?)
             } else {
                 None
             };
@@ -553,27 +862,54 @@ pub fn run() -> Result<i32> {
             match format {
                 Format::Json => println!("{}", serde_json::to_string_pretty(&report)?),
                 Format::Md => println!("{}", render_compare_markdown(&report, "A", "B")),
-                Format::Text => println!("{}", render_compare_text(&report, &format!("A: {}", sa.harness()), &format!("B: {}", sb.harness()))),
+                Format::Text => println!(
+                    "{}",
+                    render_compare_text(
+                        &report,
+                        &format!("A: {}", sa.harness()),
+                        &format!("B: {}", sb.harness())
+                    )
+                ),
             }
         }
-        Cmd::Brief { session, output, original_diff, llm } => {
+        Cmd::Brief {
+            session,
+            output,
+            original_diff,
+            llm,
+        } => {
             let s = resolve_session(&session)?;
             let diff = match original_diff {
-                Some(p) => Some(load_diff(&p.display().to_string()).ok_or_else(|| anyhow::anyhow!("cannot read original diff from {}", p.display()))?),
+                Some(p) => Some(load_diff(&p.display().to_string()).ok_or_else(|| {
+                    anyhow::anyhow!("cannot read original diff from {}", p.display())
+                })?),
                 None => load_diff(&session).or_else(|| reconstruct_original_diff(&s)),
             };
             let b = draft_brief(&s, diff.as_ref(), &llm.judge_opts())?;
-            let out = output.unwrap_or_else(|| PathBuf::from(format!("brief-{}.json", s.id.chars().take(8).collect::<String>())));
+            let out = output.unwrap_or_else(|| {
+                PathBuf::from(format!(
+                    "brief-{}.json",
+                    s.id.chars().take(8).collect::<String>()
+                ))
+            });
             b.save(&out)?;
             let md = out.with_extension("md");
             fs::write(&md, render_brief_markdown(&b))?;
             println!("{}", render_brief_markdown(&b));
-            eprintln!("wrote {} and {} — review, edit, set humanReviewed to true, then pass --brief {}", out.display(), md.display(), out.display());
+            eprintln!(
+                "wrote {} and {} — review, edit, set humanReviewed to true, then pass --brief {}",
+                out.display(),
+                md.display(),
+                out.display()
+            );
         }
         Cmd::Pairs { runs, output } => {
             let exp = export_pairs(&runs, &output)?;
             println!("{} pair(s) written to {}", exp.n, exp.pairs_path.display());
-            println!("key (keep it away from annotators): {}", exp.key_path.display());
+            println!(
+                "key (keep it away from annotators): {}",
+                exp.key_path.display()
+            );
             println!("fill answers.template.json with X or Y per pair, then: casimir pairs-score {} <answers.json>", exp.key_path.display());
         }
         Cmd::PairsScore { key, answers } => {
@@ -587,7 +923,11 @@ pub fn run() -> Result<i32> {
                 println!("(no runs yet)");
                 return Ok(0);
             }
-            let mut dirs: Vec<PathBuf> = fs::read_dir(&root)?.flatten().map(|e| e.path()).filter(|p| p.join("meta.json").exists()).collect();
+            let mut dirs: Vec<PathBuf> = fs::read_dir(&root)?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.join("meta.json").exists())
+                .collect();
             dirs.sort();
             dirs.reverse();
             if dirs.is_empty() {
@@ -596,9 +936,18 @@ pub fn run() -> Result<i32> {
             for d in dirs {
                 let meta: serde_json::Value = read_json(&d.join("meta.json"))?;
                 let name = d.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let model = meta.get("model").and_then(|m| m.as_str()).map(|m| format!("/{m}")).unwrap_or_default();
+                let model = meta
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .map(|m| format!("/{m}"))
+                    .unwrap_or_default();
                 let orig = meta.get("original").cloned().unwrap_or_default();
-                println!("{name}  {}{model}  ← {}:{}", meta.get("harness").and_then(|h| h.as_str()).unwrap_or("?"), orig.get("harness").and_then(|h| h.as_str()).unwrap_or("?"), orig.get("id").and_then(|h| h.as_str()).unwrap_or("?"));
+                println!(
+                    "{name}  {}{model}  ← {}:{}",
+                    meta.get("harness").and_then(|h| h.as_str()).unwrap_or("?"),
+                    orig.get("harness").and_then(|h| h.as_str()).unwrap_or("?"),
+                    orig.get("id").and_then(|h| h.as_str()).unwrap_or("?")
+                );
             }
         }
     }

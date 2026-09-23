@@ -77,23 +77,45 @@ pub fn find_log_by_id(h: Harness, id: &str) -> Option<PathBuf> {
 
 /// Prepare a harness-native fork of `original` at `up_to_turn` (the forked session then resumes
 /// with the turn-`up_to_turn` message). Returns the path of the transcript written for the harness.
-pub fn prepare_fork(h: Harness, original: &Session, up_to_turn: u32, new_id: &str, cwd: &Path) -> Result<PathBuf> {
+pub fn prepare_fork(
+    h: Harness,
+    original: &Session,
+    up_to_turn: u32,
+    new_id: &str,
+    cwd: &Path,
+) -> Result<PathBuf> {
     match h {
         Harness::ClaudeCode => claude_code::prepare_fork(original, up_to_turn, new_id, cwd),
         Harness::Codex => codex::prepare_fork(original, up_to_turn, new_id, cwd),
-        Harness::Copilot | Harness::Gemini => bail!("fork-at-turn is not supported for {h}: its CLI cannot resume a truncated transcript"),
+        Harness::Copilot | Harness::Gemini => bail!(
+            "fork-at-turn is not supported for {h}: its CLI cannot resume a truncated transcript"
+        ),
     }
 }
 
 pub fn run_turn(h: Harness, opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunResult> {
     validate_permissions(opts)?;
-    if h == Harness::Codex && opts.extra_args.iter().any(|arg| {
-        let lower = arg.to_ascii_lowercase();
-        lower == "--oss" || lower == "--local-provider" || lower.contains("forced_login_method") || lower.contains("model_provider")
-    }) { bail!("Codex subscription runs cannot override the provider or login method through passthrough arguments"); }
+    if h == Harness::Codex
+        && opts.extra_args.iter().any(|arg| {
+            let lower = arg.to_ascii_lowercase();
+            lower == "--oss"
+                || lower == "--local-provider"
+                || lower.contains("forced_login_method")
+                || lower.contains("model_provider")
+        })
+    {
+        bail!("Codex subscription runs cannot override the provider or login method through passthrough arguments");
+    }
     if matches!(h, Harness::ClaudeCode | Harness::Codex) && !crate::doctor::subscription_ready(h) {
-        bail!("{} subscription login is required: run `{}` and check `casimir doctor --json`", h,
-            if h == Harness::Codex { "codex login" } else { "claude auth login" });
+        bail!(
+            "{} subscription login is required: run `{}` and check `casimir doctor --json`",
+            h,
+            if h == Harness::Codex {
+                "codex login"
+            } else {
+                "claude auth login"
+            }
+        );
     }
     match h {
         Harness::ClaudeCode => claude_code::run_turn(opts, on_event),
@@ -133,12 +155,16 @@ pub fn load_session_file(file: &Path) -> Result<Session> {
         if file.join("events.jsonl").exists() || file.join("workspace.yaml").exists() {
             return copilot::parse_dir(file);
         }
-        bail!("{} is not a casimir run directory (no session.json) or a Copilot session directory", file.display());
+        bail!(
+            "{} is not a casimir run directory (no session.json) or a Copilot session directory",
+            file.display()
+        );
     }
     if file.extension().is_some_and(|e| e == "json") {
         let v: Value = read_json(file).with_context(|| format!("parsing {}", file.display()))?;
         if v.get("harness").is_some() && v.get("events").is_some() {
-            return serde_json::from_value(v).with_context(|| format!("{} is not a casimir session export", file.display()));
+            return serde_json::from_value(v)
+                .with_context(|| format!("{} is not a casimir session export", file.display()));
         }
         if gemini::detect(&v) {
             return gemini::parse_file(file);
@@ -190,13 +216,23 @@ pub fn resolve_session(reference: &str) -> Result<Session> {
     let all = list_all_sessions(harness);
     if key == "last" || key == "latest" {
         let Some(first) = all.first() else {
-            bail!("no {} sessions found", harness.map(|h| h.to_string()).unwrap_or_default());
+            bail!(
+                "no {} sessions found",
+                harness.map(|h| h.to_string()).unwrap_or_default()
+            );
         };
         return load_session_file(&first.path);
     }
     let hits: Vec<&SessionSummary> = all
         .iter()
-        .filter(|s| s.id == key || s.id.starts_with(key) || s.path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(key)))
+        .filter(|s| {
+            s.id == key
+                || s.id.starts_with(key)
+                || s.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.contains(key))
+        })
         .collect();
     match hits.len() {
         1 => load_session_file(&hits[0].path),
@@ -206,29 +242,67 @@ pub fn resolve_session(reference: &str) -> Result<Session> {
             if exact.len() == 1 {
                 return load_session_file(&exact[0].path);
             }
-            bail!("ambiguous session \"{reference}\": {}", hits.iter().map(|h| format!("{}:{}", h.harness, h.id)).collect::<Vec<_>>().join(", "))
+            bail!(
+                "ambiguous session \"{reference}\": {}",
+                hits.iter()
+                    .map(|h| format!("{}:{}", h.harness, h.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
     }
 }
 
 /// Permission overrides never derive from the choice of working directory.
 pub fn validate_permissions(opts: &RunOpts) -> Result<()> {
-    let dangerous = ["bypass", "bypassPermissions", "danger-full-access", "yolo", "--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox", "--allow-all-tools", "--yolo"];
-    let explicit = opts.permission_mode.iter().chain(opts.sandbox.iter()).chain(opts.extra_args.iter())
-        .any(|v| dangerous.iter().any(|d| v == d || v.split(['=', ' ', '\"', '\'']).any(|p| p == *d)));
+    let dangerous = [
+        "bypass",
+        "bypassPermissions",
+        "danger-full-access",
+        "yolo",
+        "--dangerously-skip-permissions",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--allow-all-tools",
+        "--yolo",
+    ];
+    let explicit = opts
+        .permission_mode
+        .iter()
+        .chain(opts.sandbox.iter())
+        .chain(opts.extra_args.iter())
+        .any(|v| {
+            dangerous
+                .iter()
+                .any(|d| v == d || v.split(['=', ' ', '\"', '\'']).any(|p| p == *d))
+        });
     if explicit && !opts.allow_unrestricted {
         anyhow::bail!("unrestricted harness execution requires --allow-unrestricted (also for passthrough arguments)");
     }
     // Never persist or echo inline credentials supplied through passthrough arguments.
     if opts.extra_args.iter().any(|a| {
         let a = a.to_ascii_lowercase();
-        ["api_key", "api-key", "auth_token", "auth-token", "authorization", "bearer "].iter().any(|key| a.contains(key))
-    }) { anyhow::bail!("credentials must be supplied through the harness environment or credential store, not command-line arguments"); }
+        [
+            "api_key",
+            "api-key",
+            "auth_token",
+            "auth-token",
+            "authorization",
+            "bearer ",
+        ]
+        .iter()
+        .any(|key| a.contains(key))
+    }) {
+        anyhow::bail!("credentials must be supplied through the harness environment or credential store, not command-line arguments");
+    }
     Ok(())
 }
 
 /// Restore exactly the recorded native conversation; no inferred historical cutoff.
-pub fn restore_conversation(checkpoint: &crate::checkpoint::Checkpoint, new_id: &str, cwd: &Path) -> Result<PathBuf> {
+pub fn restore_conversation(
+    checkpoint: &crate::checkpoint::Checkpoint,
+    new_id: &str,
+    cwd: &Path,
+) -> Result<PathBuf> {
     crate::checkpoint::require_compatible(checkpoint)?;
     let temporary = tempfile::tempdir()?;
     let source = temporary.path().join("native.jsonl");
@@ -238,31 +312,54 @@ pub fn restore_conversation(checkpoint: &crate::checkpoint::Checkpoint, new_id: 
         match checkpoint.harness {
             Harness::ClaudeCode => {
                 if let Some(obj) = rec.as_object_mut() {
-                    if obj.contains_key("sessionId") { obj.insert("sessionId".into(), new_id.into()); }
-                    if obj.contains_key("cwd") { obj.insert("cwd".into(), cwd.display().to_string().into()); }
+                    if obj.contains_key("sessionId") {
+                        obj.insert("sessionId".into(), new_id.into());
+                    }
+                    if obj.contains_key("cwd") {
+                        obj.insert("cwd".into(), cwd.display().to_string().into());
+                    }
                 }
-            },
+            }
             Harness::Codex => {
                 let meta = rec.get("type").and_then(Value::as_str) == Some("session_meta");
                 if let Some(payload) = rec.get_mut("payload").and_then(Value::as_object_mut) {
-                    if meta { payload.insert("id".into(), new_id.into()); payload.insert("session_id".into(), new_id.into()); }
-                    if meta || payload.contains_key("cwd") { payload.insert("cwd".into(), cwd.display().to_string().into()); }
+                    if meta {
+                        payload.insert("id".into(), new_id.into());
+                        payload.insert("session_id".into(), new_id.into());
+                    }
+                    if meta || payload.contains_key("cwd") {
+                        payload.insert("cwd".into(), cwd.display().to_string().into());
+                    }
                 }
-            },
+            }
             _ => bail!("native checkpoint continuation is unsupported for experimental harnesses"),
         }
     }
     let destination = match checkpoint.harness {
-        Harness::ClaudeCode => claude_code::config_dir().join("projects").join(claude_code::project_slug(cwd)).join(format!("{new_id}.jsonl")),
+        Harness::ClaudeCode => claude_code::config_dir()
+            .join("projects")
+            .join(claude_code::project_slug(cwd))
+            .join(format!("{new_id}.jsonl")),
         Harness::Codex => {
             let now = chrono::Utc::now();
-            codex::codex_home().join("sessions").join(now.format("%Y/%m/%d").to_string()).join(format!("rollout-{}-{new_id}.jsonl", now.format("%Y-%m-%dT%H-%M-%S")))
-        },
+            codex::codex_home()
+                .join("sessions")
+                .join(now.format("%Y/%m/%d").to_string())
+                .join(format!(
+                    "rollout-{}-{new_id}.jsonl",
+                    now.format("%Y-%m-%dT%H-%M-%S")
+                ))
+        }
         _ => unreachable!(),
     };
     let mut bytes = Vec::new();
-    for record in records { serde_json::to_writer(&mut bytes, &record)?; bytes.push(b'\n'); }
-    if destination.exists() { bail!("refusing to overwrite an existing native conversation"); }
+    for record in records {
+        serde_json::to_writer(&mut bytes, &record)?;
+        bytes.push(b'\n');
+    }
+    if destination.exists() {
+        bail!("refusing to overwrite an existing native conversation");
+    }
     crate::util::atomic_write(&destination, &bytes)?;
     Ok(destination)
 }
@@ -270,7 +367,9 @@ pub fn restore_conversation(checkpoint: &crate::checkpoint::Checkpoint, new_id: 
 /// Bound the in-memory normalized turn; the supervisor retains the complete byte stream.
 pub fn retain_raw(result: &mut RunResult, record: &Value, bytes: &mut usize) -> Result<()> {
     *bytes = bytes.saturating_add(serde_json::to_vec(record)?.len());
-    if *bytes > 64 * 1024 * 1024 { bail!("turn exceeds 64 MiB normalization limit; raw stream retained on disk"); }
+    if *bytes > 64 * 1024 * 1024 {
+        bail!("turn exceeds 64 MiB normalization limit; raw stream retained on disk");
+    }
     result.raw.push(record.clone());
     Ok(())
 }

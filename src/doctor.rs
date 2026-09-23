@@ -1,27 +1,42 @@
 //! Local setup inspection. Version and login-status commands never request a completion.
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::{path::{Path, PathBuf}, process::Command, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
 
 pub fn executable(name: &std::ffi::OsStr) -> Option<PathBuf> {
     let path = Path::new(name);
     let candidates: Vec<PathBuf> = if path.components().count() > 1 || path.is_absolute() {
         vec![path.to_path_buf()]
     } else {
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).map(|p| p.join(path)).collect()
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|p| p.join(path))
+            .collect()
     };
     for candidate in candidates {
         #[cfg(windows)]
         let variants = std::iter::once(candidate.clone()).chain(
-            std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.COM;.CMD;.BAT".into()).split(';')
-                .map(|ext| PathBuf::from(format!("{}{ext}", candidate.display()))).collect::<Vec<_>>());
+            std::env::var("PATHEXT")
+                .unwrap_or_else(|_| ".EXE;.COM;.CMD;.BAT".into())
+                .split(';')
+                .map(|ext| PathBuf::from(format!("{}{ext}", candidate.display())))
+                .collect::<Vec<_>>(),
+        );
         #[cfg(not(windows))]
         let variants = std::iter::once(candidate);
         for variant in variants {
-            if !variant.is_file() { continue; }
-            #[cfg(unix)] {
+            if !variant.is_file() {
+                continue;
+            }
+            #[cfg(unix)]
+            {
                 use std::os::unix::fs::PermissionsExt;
-                if std::fs::metadata(&variant).ok()?.permissions().mode() & 0o111 == 0 { continue; }
+                if std::fs::metadata(&variant).ok()?.permissions().mode() & 0o111 == 0 {
+                    continue;
+                }
             }
             return std::fs::canonicalize(&variant).ok();
         }
@@ -31,33 +46,65 @@ pub fn executable(name: &std::ffi::OsStr) -> Option<PathBuf> {
 
 fn probe(bin: &Path, args: &[&str]) -> Result<crate::process::Output> {
     let temp = tempfile::tempdir()?;
-    crate::process::capture(Command::new(bin).args(args), b"", Duration::from_secs(15), Some(&temp.path().join("probe")))
+    crate::process::capture(
+        Command::new(bin).args(args),
+        b"",
+        Duration::from_secs(15),
+        Some(&temp.path().join("probe")),
+    )
 }
 
-fn probe_subscription(bin: &Path, args: &[&str], harness: crate::model::Harness) -> Result<crate::process::Output> {
+fn probe_subscription(
+    bin: &Path,
+    args: &[&str],
+    harness: crate::model::Harness,
+) -> Result<crate::process::Output> {
     let temp = tempfile::tempdir()?;
     let mut command = Command::new(bin);
     command.args(args);
     crate::util::subscription_command(&mut command, harness);
-    crate::process::capture(&mut command, b"", Duration::from_secs(15), Some(&temp.path().join("probe")))
+    crate::process::capture(
+        &mut command,
+        b"",
+        Duration::from_secs(15),
+        Some(&temp.path().join("probe")),
+    )
 }
 
 #[cfg(target_os = "linux")]
 fn codex_sandbox_probe(bin: &Path) -> bool {
-    let Ok(temp) = tempfile::tempdir() else { return false; };
+    let Ok(temp) = tempfile::tempdir() else {
+        return false;
+    };
     let mut command = Command::new(bin);
-    command.args(["sandbox", "--", "/usr/bin/true"]).current_dir(temp.path());
+    command
+        .args(["sandbox", "--", "/usr/bin/true"])
+        .current_dir(temp.path());
     crate::util::subscription_command(&mut command, crate::model::Harness::Codex);
-    crate::process::capture(&mut command, b"", Duration::from_secs(8), Some(&temp.path().join("sandbox")))
-        .is_ok_and(|output| output.status.success())
+    crate::process::capture(
+        &mut command,
+        b"",
+        Duration::from_secs(8),
+        Some(&temp.path().join("sandbox")),
+    )
+    .is_ok_and(|output| output.status.success())
 }
 
-fn subscription_method(harness: crate::model::Harness, output: &crate::process::Output) -> &'static str {
-    if !output.status.success() { return "not_authenticated"; }
+fn subscription_method(
+    harness: crate::model::Harness,
+    output: &crate::process::Output,
+) -> &'static str {
+    if !output.status.success() {
+        return "not_authenticated";
+    }
     match harness {
         crate::model::Harness::ClaudeCode => {
-            let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else { return "unknown"; };
-            if value.get("loggedIn").and_then(Value::as_bool) != Some(true) { return "not_authenticated"; }
+            let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else {
+                return "unknown";
+            };
+            if value.get("loggedIn").and_then(Value::as_bool) != Some(true) {
+                return "not_authenticated";
+            }
             match value.get("authMethod").and_then(Value::as_str) {
                 Some("oauth_token" | "oauth") => "subscription",
                 Some("api_key") => "api_key",
@@ -66,13 +113,22 @@ fn subscription_method(harness: crate::model::Harness, output: &crate::process::
         }
         crate::model::Harness::Codex => {
             // Codex currently writes `login status` to stderr even on success.
-            let status = format!("{} {}", String::from_utf8_lossy(&output.stdout), output.stderr).to_ascii_lowercase();
-            if status.contains("not logged in") || status.contains("signed out") { return "not_authenticated"; }
+            let status = format!(
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                output.stderr
+            )
+            .to_ascii_lowercase();
+            if status.contains("not logged in") || status.contains("signed out") {
+                return "not_authenticated";
+            }
             if status.contains("chatgpt") {
                 "subscription"
             } else if status.contains("api key") || status.contains("api-key") {
                 "api_key"
-            } else { "unknown" }
+            } else {
+                "unknown"
+            }
         }
         _ => "unknown",
     }
@@ -80,12 +136,17 @@ fn subscription_method(harness: crate::model::Harness, output: &crate::process::
 
 pub fn subscription_ready(harness: crate::model::Harness) -> bool {
     let (name, variable, args) = match harness {
-        crate::model::Harness::ClaudeCode => ("claude", "CASIMIR_CLAUDE_BIN", &["auth", "status", "--json"][..]),
+        crate::model::Harness::ClaudeCode => (
+            "claude",
+            "CASIMIR_CLAUDE_BIN",
+            &["auth", "status", "--json"][..],
+        ),
         crate::model::Harness::Codex => ("codex", "CASIMIR_CODEX_BIN", &["login", "status"][..]),
         _ => return false,
     };
     let name = std::env::var_os(variable).unwrap_or_else(|| name.into());
-    executable(&name).and_then(|bin| probe_subscription(&bin, args, harness).ok())
+    executable(&name)
+        .and_then(|bin| probe_subscription(&bin, args, harness).ok())
         .is_some_and(|output| subscription_method(harness, &output) == "subscription")
 }
 
@@ -123,7 +184,9 @@ pub fn report() -> Value {
             }}})
     }).collect();
     let storage = crate::util::casimir_home();
-    let writable = std::fs::create_dir_all(&storage).and_then(|_| tempfile::NamedTempFile::new_in(&storage).map(|_| ())).is_ok();
+    let writable = std::fs::create_dir_all(&storage)
+        .and_then(|_| tempfile::NamedTempFile::new_in(&storage).map(|_| ()))
+        .is_ok();
     let git = executable(std::ffi::OsStr::new("git"));
     json!({"schemaVersion":1,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,
         "harnesses":harnesses,"git":git,"storage":{"path":storage,"writable":writable},
@@ -141,8 +204,18 @@ pub fn harness_version(harness: crate::model::Harness) -> Option<String> {
     let name = std::env::var_os(variable).unwrap_or_else(|| bin.into());
     let path = executable(&name)?;
     let output = probe(&path, &["--version"]).ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let text = String::from_utf8(output.stdout).ok()?;
-    if text.contains("casimir-fixture") { Some("casimir-fixture 1.0.0".into()) }
-    else { text.split_whitespace().find(|s| s.starts_with(|c: char| c.is_ascii_digit())).map(|s| s.trim_matches(|c: char| !c.is_ascii_digit() && c != '.').to_string()) }
+    if text.contains("casimir-fixture") {
+        Some("casimir-fixture 1.0.0".into())
+    } else {
+        text.split_whitespace()
+            .find(|s| s.starts_with(|c: char| c.is_ascii_digit()))
+            .map(|s| {
+                s.trim_matches(|c: char| !c.is_ascii_digit() && c != '.')
+                    .to_string()
+            })
+    }
 }

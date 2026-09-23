@@ -8,7 +8,12 @@ use crate::model::Session;
 
 pub(crate) fn git_output(args: &[&str], cwd: &Path) -> Result<crate::process::Output> {
     let spool = tempfile::tempdir()?;
-    crate::process::capture(Command::new("git").args(args).current_dir(cwd), b"", std::time::Duration::from_secs(60), Some(&spool.path().join("git")))
+    crate::process::capture(
+        Command::new("git").args(args).current_dir(cwd),
+        b"",
+        std::time::Duration::from_secs(60),
+        Some(&spool.path().join("git")),
+    )
 }
 fn git(args: &[&str], cwd: &Path) -> Result<String> {
     let out = git_output(args, cwd)?;
@@ -19,15 +24,22 @@ fn git(args: &[&str], cwd: &Path) -> Result<String> {
 }
 
 fn git_lenient(args: &[&str], cwd: &Path) -> String {
-    git_output(args, cwd).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    git_output(args, cwd)
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
 }
 
 pub fn is_git_repo(dir: &Path) -> bool {
-    dir.exists() && git_output(&["rev-parse", "--is-inside-work-tree"], dir).is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+    dir.exists()
+        && git_output(&["rev-parse", "--is-inside-work-tree"], dir).is_ok_and(|o| {
+            o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true"
+        })
 }
 
 pub fn repo_root(dir: &Path) -> Result<PathBuf> {
-    Ok(PathBuf::from(git(&["rev-parse", "--show-toplevel"], dir)?.trim()))
+    Ok(PathBuf::from(
+        git(&["rev-parse", "--show-toplevel"], dir)?.trim(),
+    ))
 }
 
 pub fn head_commit(dir: &Path) -> Result<String> {
@@ -35,7 +47,8 @@ pub fn head_commit(dir: &Path) -> Result<String> {
 }
 
 pub fn commit_exists(sha: &str, dir: &Path) -> bool {
-    git_output(&["cat-file", "-e", &format!("{sha}^{{commit}}")], dir).is_ok_and(|o| o.status.success())
+    git_output(&["cat-file", "-e", &format!("{sha}^{{commit}}")], dir)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Best-effort commit the original session started from: the one recorded by the harness,
@@ -60,7 +73,10 @@ pub fn base_commit(session: &Session, dir: &Path) -> Result<(String, String)> {
             }
         }
     }
-    Ok((head_commit(dir)?, "current HEAD (no better information)".into()))
+    Ok((
+        head_commit(dir)?,
+        "current HEAD (no better information)".into(),
+    ))
 }
 
 /// Create a detached worktree at `commit` under `dest`.
@@ -68,7 +84,16 @@ pub fn create_worktree(repo: &Path, commit: &str, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    git(&["worktree", "add", "--detach", &dest.display().to_string(), commit], repo)?;
+    git(
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &dest.display().to_string(),
+            commit,
+        ],
+        repo,
+    )?;
     Ok(())
 }
 
@@ -108,10 +133,23 @@ pub fn parse_patch(patch: &str) -> std::collections::BTreeMap<String, FileChange
             out.entry(b).or_default();
             continue;
         }
-        if line.starts_with("+++ ") || line.starts_with("--- ") || line.starts_with("@@") || line.starts_with("index ") || line.starts_with("new file") || line.starts_with("deleted file") || line.starts_with("similarity") || line.starts_with("rename ") || line.starts_with("old mode") || line.starts_with("new mode") || line.starts_with("Binary files") {
+        if line.starts_with("+++ ")
+            || line.starts_with("--- ")
+            || line.starts_with("@@")
+            || line.starts_with("index ")
+            || line.starts_with("new file")
+            || line.starts_with("deleted file")
+            || line.starts_with("similarity")
+            || line.starts_with("rename ")
+            || line.starts_with("old mode")
+            || line.starts_with("new mode")
+            || line.starts_with("Binary files")
+        {
             continue;
         }
-        let Some(cur) = current.as_ref() else { continue };
+        let Some(cur) = current.as_ref() else {
+            continue;
+        };
         if let Some(a) = line.strip_prefix('+') {
             out.get_mut(cur).unwrap().added.push(a.to_string());
         } else if let Some(r) = line.strip_prefix('-') {
@@ -146,7 +184,8 @@ pub fn reconstruct_original_diff(session: &Session) -> Option<Diff> {
             refs.push(b);
         }
         refs.push("HEAD");
-        refs.into_iter().find_map(|r| last_commit_before(ts, r, dir))
+        refs.into_iter()
+            .find_map(|r| last_commit_before(ts, r, dir))
     });
     match end {
         Some(end) if end != base => {
@@ -157,14 +196,31 @@ pub fn reconstruct_original_diff(session: &Session) -> Option<Diff> {
                 .lines()
                 .filter_map(|l| {
                     let (st, p) = l.split_once('\t')?;
-                    Some(ChangedFile { status: st.trim().to_string(), path: p.trim().to_string() })
+                    Some(ChangedFile {
+                        status: st.trim().to_string(),
+                        path: p.trim().to_string(),
+                    })
                 })
                 .collect();
-            Some(Diff { files, stat: stat.trim().to_string(), patch, source: Some(format!("commits {}..{} in {}", &base[..base.len().min(8)], &end[..end.len().min(8)], dir.display())) })
+            Some(Diff {
+                files,
+                stat: stat.trim().to_string(),
+                patch,
+                source: Some(format!(
+                    "commits {}..{} in {}",
+                    &base[..base.len().min(8)],
+                    &end[..end.len().min(8)],
+                    dir.display()
+                )),
+            })
         }
         _ => {
             let mut d = capture_diff_against(dir, &base);
-            d.source = Some(format!("working tree of {} vs base {} (heuristic: no commits recorded after the session)", dir.display(), &base[..base.len().min(8)]));
+            d.source = Some(format!(
+                "working tree of {} vs base {} (heuristic: no commits recorded after the session)",
+                dir.display(),
+                &base[..base.len().min(8)]
+            ));
             Some(d)
         }
     }
@@ -172,26 +228,73 @@ pub fn reconstruct_original_diff(session: &Session) -> Option<Diff> {
 
 /// Like `capture_diff`, but relative to an arbitrary commit instead of HEAD.
 pub fn capture_diff_against(dir: &Path, commit: &str) -> Diff {
-    let Ok(root) = repo_root(dir) else { return Diff::default() };
+    let Ok(root) = repo_root(dir) else {
+        return Diff::default();
+    };
     let dir = root.as_path();
     // NUL-delimited names preserve whitespace and newlines. Disable rename detection so each
     // status record has exactly one path and both sides of a rename are included in the patch.
-    let names = git_lenient(&["diff", "--name-status", "-z", "--no-renames", commit, "--"], dir);
+    let names = git_lenient(
+        &["diff", "--name-status", "-z", "--no-renames", commit, "--"],
+        dir,
+    );
     let mut fields = names.split('\0').filter(|s| !s.is_empty());
     let mut files = Vec::new();
     while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
-        files.push(ChangedFile { status: status.to_string(), path: path.to_string() });
+        files.push(ChangedFile {
+            status: status.to_string(),
+            path: path.to_string(),
+        });
     }
-    let mut patch = git_lenient(&["diff", "--binary", "--no-ext-diff", "--no-renames", "--no-color", commit, "--"], dir);
+    let mut patch = git_lenient(
+        &[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-renames",
+            "--no-color",
+            commit,
+            "--",
+        ],
+        dir,
+    );
     let untracked_output = git_lenient(&["ls-files", "--others", "--exclude-standard", "-z"], dir);
-    let untracked: Vec<&str> = untracked_output.split('\0').filter(|f| !f.is_empty()).collect();
+    let untracked: Vec<&str> = untracked_output
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .collect();
     for f in &untracked {
-        files.push(ChangedFile { status: "??".into(), path: (*f).to_string() });
-        patch.push_str(&git_lenient(&["diff", "--no-index", "--binary", "--no-ext-diff", "--no-color", "--", "/dev/null", f], dir));
+        files.push(ChangedFile {
+            status: "??".into(),
+            path: (*f).to_string(),
+        });
+        patch.push_str(&git_lenient(
+            &[
+                "diff",
+                "--no-index",
+                "--binary",
+                "--no-ext-diff",
+                "--no-color",
+                "--",
+                "/dev/null",
+                f,
+            ],
+            dir,
+        ));
     }
-    let mut stat = git_lenient(&["diff", "--stat", "--no-renames", "--no-color", commit, "--"], dir);
-    for f in &untracked { stat.push_str(&format!(" {f} | (new file)\n")); }
-    Diff { files, stat: stat.trim().to_string(), patch, source: None }
+    let mut stat = git_lenient(
+        &["diff", "--stat", "--no-renames", "--no-color", commit, "--"],
+        dir,
+    );
+    for f in &untracked {
+        stat.push_str(&format!(" {f} | (new file)\n"));
+    }
+    Diff {
+        files,
+        stat: stat.trim().to_string(),
+        patch,
+        source: None,
+    }
 }
 
 /// Changed files and a unified patch, including untracked files.

@@ -17,14 +17,20 @@ pub fn play(session: &Session, o: &PlayOpts, out: &mut dyn Write) -> std::io::Re
     let c = colors();
     let speed = if o.speed > 0.0 { o.speed } else { 5.0 };
     writeln!(out, "{}", render_header(session))?;
-    writeln!(out, "{}replaying at {}x (max pause {}ms) — Ctrl-C to stop{}", c.dim, speed, o.max_delay_ms, c.reset)?;
+    writeln!(
+        out,
+        "{}replaying at {}x (max pause {}ms) — Ctrl-C to stop{}",
+        c.dim, speed, o.max_delay_ms, c.reset
+    )?;
     let start = session_start_ms(session);
     let mut prev: Option<i64> = None;
     for ev in &session.events {
         if o.render.turn.is_some_and(|t| ev.turn != t) {
             continue;
         }
-        let Some(line) = format_event(ev, &o.render, start) else { continue };
+        let Some(line) = format_event(ev, &o.render, start) else {
+            continue;
+        };
         let t = ts_ms(&ev.ts);
         if let (Some(p), Some(t)) = (prev, t) {
             let delay = (((t - p).max(0) as f64) / speed) as u64;

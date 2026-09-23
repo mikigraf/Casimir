@@ -25,6 +25,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo fmt --check --manifest-path tests/fixture/Cargo.toml
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked --release

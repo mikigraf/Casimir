@@ -3,7 +3,10 @@ use anyhow::{bail, Context, Result};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, OnceLock,
+};
 use std::time::{Duration, Instant};
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -12,12 +15,17 @@ const LIMIT: usize = 4 * 1024 * 1024;
 const TAIL: usize = 64 * 1024;
 
 pub fn install_signal_handler() -> Result<()> {
-    HANDLER.get_or_init(|| {
-        #[cfg(target_os = "linux")]
-        if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 { return Err(std::io::Error::last_os_error().to_string()); }
-        ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst)).map_err(|e| e.to_string())
-    })
-        .as_ref().map_err(|e| anyhow::anyhow!("installing cancellation handler: {e}"))?;
+    HANDLER
+        .get_or_init(|| {
+            #[cfg(target_os = "linux")]
+            if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst))
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| anyhow::anyhow!("installing cancellation handler: {e}"))?;
     Ok(())
 }
 
@@ -27,7 +35,11 @@ pub struct Output {
     pub stderr: String,
 }
 
-enum Message { Data(Vec<u8>), Error(std::io::Error), End }
+enum Message {
+    Data(Vec<u8>),
+    Error(std::io::Error),
+    End,
+}
 
 /// Readers spool bytes before delivering them. The channel, line buffer and stderr tail
 /// are bounded; oversized records fail explicitly, with the original bytes retained on disk.
@@ -45,36 +57,63 @@ pub struct Process {
 }
 
 impl Process {
-    pub fn spawn(cmd: &mut Command, input: &[u8], timeout: Duration, spool: Option<&Path>) -> Result<Self> {
+    pub fn spawn(
+        cmd: &mut Command,
+        input: &[u8],
+        timeout: Duration,
+        spool: Option<&Path>,
+    ) -> Result<Self> {
         install_signal_handler()?;
-        if CANCELLED.load(Ordering::SeqCst) { bail!("cancelled"); }
-        if timeout.is_zero() { bail!("subprocess timeout must be positive"); }
-        let spool = spool.map(Path::to_path_buf).unwrap_or_else(|| crate::util::casimir_home().join("processes").join(uuid::Uuid::new_v4().to_string()));
+        if CANCELLED.load(Ordering::SeqCst) {
+            bail!("cancelled");
+        }
+        if timeout.is_zero() {
+            bail!("subprocess timeout must be positive");
+        }
+        let spool = spool.map(Path::to_path_buf).unwrap_or_else(|| {
+            crate::util::casimir_home()
+                .join("processes")
+                .join(uuid::Uuid::new_v4().to_string())
+        });
         crate::util::private_dir(&spool)?;
         let mut stdout_file = crate::util::private_file(&spool.join("stdout.log"))?;
         let mut stderr_file = crate::util::private_file(&spool.join("stderr.log"))?;
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         Tree::configure(cmd);
         let spawn_started = Instant::now();
         let mut child = loop {
             match cmd.spawn() {
                 Ok(child) => break child,
-                Err(error) if (cfg!(unix) && error.raw_os_error() == Some(26)
-                    || cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33))) && spawn_started.elapsed() < Duration::from_secs(2) => {
+                Err(error)
+                    if (cfg!(unix) && error.raw_os_error() == Some(26)
+                        || cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)))
+                        && spawn_started.elapsed() < Duration::from_secs(2) =>
+                {
                     // No process was created and no prompt was sent. Retry a transient
                     // executable sharing conflict, never a completed/ambiguous invocation.
                     std::thread::sleep(Duration::from_millis(10));
-                },
-                Err(error) => return Err(error).context("starting subprocess (arguments omitted for privacy)"),
+                }
+                Err(error) => {
+                    return Err(error)
+                        .context("starting subprocess (arguments omitted for privacy)")
+                }
             }
         };
         let tree = match Tree::attach(&child) {
             Ok(tree) => tree,
-            Err(err) => { let _ = child.kill(); let _ = child.wait(); return Err(err); }
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(err);
+            }
         };
         let mut stdin = child.stdin.take().context("subprocess stdin")?;
         let input = input.to_vec();
-        std::thread::spawn(move || { let _ = stdin.write_all(&input); });
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
         let mut stdout = child.stdout.take().context("subprocess stdout")?;
         let mut stderr = child.stderr.take().context("subprocess stderr")?;
         let (tx, rx) = mpsc::sync_channel(8);
@@ -84,15 +123,21 @@ impl Process {
                 let mut buf = [0; 8192];
                 loop {
                     let n = stdout.read(&mut buf)?;
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     stdout_file.write_all(&buf[..n])?;
                     stdout_file.sync_data()?;
-                    if tx.send(Message::Data(buf[..n].to_vec())).is_err() { return Ok(()); }
+                    if tx.send(Message::Data(buf[..n].to_vec())).is_err() {
+                        return Ok(());
+                    }
                 }
                 stdout_file.sync_all()?;
                 Ok(())
             })();
-            if let Err(e) = result { let _ = tx.send(Message::Error(e)); }
+            if let Err(e) = result {
+                let _ = tx.send(Message::Error(e));
+            }
             let _ = tx.send(Message::End);
         });
         let err_thread = std::thread::spawn(move || {
@@ -101,50 +146,95 @@ impl Process {
                 let mut tail = Vec::new();
                 loop {
                     let n = stderr.read(&mut buf)?;
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     stderr_file.write_all(&buf[..n])?;
                     tail.extend_from_slice(&buf[..n]);
-                    if tail.len() > TAIL { tail.drain(..tail.len() - TAIL); }
+                    if tail.len() > TAIL {
+                        tail.drain(..tail.len() - TAIL);
+                    }
                 }
                 stderr_file.sync_all()?;
                 Ok(String::from_utf8_lossy(&tail).into_owned())
             })();
-            if result.is_err() { let _ = error_tx.send(Message::Error(std::io::Error::other("stderr capture failed"))); }
+            if result.is_err() {
+                let _ = error_tx.send(Message::Error(std::io::Error::other(
+                    "stderr capture failed",
+                )));
+            }
             result
         });
-        Ok(Self { child, tree, rx, stderr: Some(err_thread), started: Instant::now(), timeout, pending: Vec::new(), scanned: 0, ended: false, spool })
+        Ok(Self {
+            child,
+            tree,
+            rx,
+            stderr: Some(err_thread),
+            started: Instant::now(),
+            timeout,
+            pending: Vec::new(),
+            scanned: 0,
+            ended: false,
+            spool,
+        })
     }
 
     fn poll(&mut self) -> Result<()> {
-        if CANCELLED.load(Ordering::SeqCst) { bail!("subprocess cancelled; raw output: {}", self.spool.display()); }
-        if self.started.elapsed() >= self.timeout { bail!("subprocess timed out after {} seconds; raw output: {}", self.timeout.as_secs(), self.spool.display()); }
+        if CANCELLED.load(Ordering::SeqCst) {
+            bail!("subprocess cancelled; raw output: {}", self.spool.display());
+        }
+        if self.started.elapsed() >= self.timeout {
+            bail!(
+                "subprocess timed out after {} seconds; raw output: {}",
+                self.timeout.as_secs(),
+                self.spool.display()
+            );
+        }
         // A parent that exits while descendants retain pipe handles must not hang readers.
-        if self.child.try_wait()?.is_some() { self.tree.kill(); }
+        if self.child.try_wait()?.is_some() {
+            self.tree.kill();
+        }
         Ok(())
     }
 
     pub fn next_line(&mut self) -> Result<Option<String>> {
         loop {
             self.poll()?;
-            if let Some(end) = self.pending[self.scanned..].iter().position(|b| *b == b'\n').map(|i| self.scanned + i) {
+            if let Some(end) = self.pending[self.scanned..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .map(|i| self.scanned + i)
+            {
                 let line: Vec<_> = self.pending.drain(..=end).collect();
                 self.scanned = 0;
-                return Ok(Some(String::from_utf8(line).context("non-UTF-8 subprocess protocol")?));
+                return Ok(Some(
+                    String::from_utf8(line).context("non-UTF-8 subprocess protocol")?,
+                ));
             }
             self.scanned = self.pending.len();
             if self.ended {
-                if self.pending.is_empty() { return Ok(None); }
+                if self.pending.is_empty() {
+                    return Ok(None);
+                }
                 self.scanned = 0;
-                return Ok(Some(String::from_utf8(std::mem::take(&mut self.pending)).context("non-UTF-8 subprocess protocol")?));
+                return Ok(Some(
+                    String::from_utf8(std::mem::take(&mut self.pending))
+                        .context("non-UTF-8 subprocess protocol")?,
+                ));
             }
             match self.rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(Message::Data(bytes)) => {
                     self.pending.extend(bytes);
-                    if self.pending.len() > LIMIT { bail!("subprocess record exceeds 4 MiB; raw output: {}", self.spool.display()); }
+                    if self.pending.len() > LIMIT {
+                        bail!(
+                            "subprocess record exceeds 4 MiB; raw output: {}",
+                            self.spool.display()
+                        );
+                    }
                 }
                 Ok(Message::Error(err)) => return Err(err).context("persisting subprocess output"),
                 Ok(Message::End) => self.ended = true,
-                Err(mpsc::RecvTimeoutError::Timeout) => {},
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => self.ended = true,
             }
         }
@@ -155,33 +245,61 @@ impl Process {
         while !self.ended {
             self.poll()?;
             match self.rx.recv_timeout(Duration::from_millis(25)) {
-                Ok(Message::Data(_)) => {},
-                Ok(Message::Error(error)) => return Err(error).context("persisting subprocess output"),
+                Ok(Message::Data(_)) => {}
+                Ok(Message::Error(error)) => {
+                    return Err(error).context("persisting subprocess output")
+                }
                 Ok(Message::End) | Err(mpsc::RecvTimeoutError::Disconnected) => self.ended = true,
-                Err(mpsc::RecvTimeoutError::Timeout) => {},
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
         let status = loop {
             self.poll()?;
-            if let Some(status) = self.child.try_wait()? { break status; }
+            if let Some(status) = self.child.try_wait()? {
+                break status;
+            }
             std::thread::sleep(Duration::from_millis(10));
         };
         self.tree.kill();
         self.tree.reap()?;
-        let stderr = self.stderr.take().context("stderr reader missing")?.join().map_err(|_| anyhow::anyhow!("stderr reader panicked"))??;
-        Ok(Output { status, stdout: Vec::new(), stderr })
+        let stderr = self
+            .stderr
+            .take()
+            .context("stderr reader missing")?
+            .join()
+            .map_err(|_| anyhow::anyhow!("stderr reader panicked"))??;
+        Ok(Output {
+            status,
+            stdout: Vec::new(),
+            stderr,
+        })
     }
 }
 
 impl Drop for Process {
-    fn drop(&mut self) { self.tree.kill(); let _ = self.child.kill(); let _ = self.child.wait(); let _ = self.tree.reap(); }
+    fn drop(&mut self) {
+        self.tree.kill();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = self.tree.reap();
+    }
 }
 
-pub fn capture(cmd: &mut Command, input: &[u8], timeout: Duration, spool: Option<&Path>) -> Result<Output> {
+pub fn capture(
+    cmd: &mut Command,
+    input: &[u8],
+    timeout: Duration,
+    spool: Option<&Path>,
+) -> Result<Output> {
     let mut process = Process::spawn(cmd, input, timeout, spool)?;
     let mut bytes = Vec::new();
     while let Some(line) = process.next_line()? {
-        if bytes.len() + line.len() > LIMIT { bail!("subprocess response exceeds 4 MiB; raw output: {}", process.spool.display()); }
+        if bytes.len() + line.len() > LIMIT {
+            bail!(
+                "subprocess response exceeds 4 MiB; raw output: {}",
+                process.spool.display()
+            );
+        }
         bytes.extend_from_slice(line.as_bytes());
     }
     let mut output = process.finish()?;
@@ -190,28 +308,57 @@ pub fn capture(cmd: &mut Command, input: &[u8], timeout: Duration, spool: Option
 }
 
 #[cfg(unix)]
-struct Tree { pid: i32, descendants: std::cell::RefCell<Vec<i32>>, killed: std::cell::Cell<bool> }
+struct Tree {
+    pid: i32,
+    descendants: std::cell::RefCell<Vec<i32>>,
+    killed: std::cell::Cell<bool>,
+}
 #[cfg(unix)]
 impl Tree {
-    fn configure(cmd: &mut Command) { use std::os::unix::process::CommandExt; cmd.process_group(0); }
-    fn attach(child: &Child) -> Result<Self> { Ok(Self { pid: child.id() as i32, descendants: std::cell::RefCell::new(Vec::new()), killed: std::cell::Cell::new(false) }) }
+    fn configure(cmd: &mut Command) {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    fn attach(child: &Child) -> Result<Self> {
+        Ok(Self {
+            pid: child.id() as i32,
+            descendants: std::cell::RefCell::new(Vec::new()),
+            killed: std::cell::Cell::new(false),
+        })
+    }
     fn kill(&self) {
-        if self.killed.replace(true) { return; }
+        if self.killed.replace(true) {
+            return;
+        }
         // Tools can create their own groups. Freeze the root, then include descendants
         // outside its group before terminating the group and the discovered children.
-        unsafe { libc::kill(-self.pid, libc::SIGSTOP); }
+        unsafe {
+            libc::kill(-self.pid, libc::SIGSTOP);
+        }
         let processes = unix_processes();
         let mut descendants = std::collections::BTreeSet::new();
         loop {
             let previous = descendants.len();
             for &(pid, parent, group) in &processes {
-                if pid != self.pid && (parent == self.pid || group == self.pid || descendants.contains(&parent)) { descendants.insert(pid); }
+                if pid != self.pid
+                    && (parent == self.pid || group == self.pid || descendants.contains(&parent))
+                {
+                    descendants.insert(pid);
+                }
             }
-            if descendants.len() == previous { break; }
+            if descendants.len() == previous {
+                break;
+            }
         }
-        for &pid in &descendants { unsafe { libc::kill(pid, libc::SIGKILL); } }
+        for &pid in &descendants {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
         *self.descendants.borrow_mut() = descendants.into_iter().collect();
-        unsafe { libc::kill(-self.pid, libc::SIGKILL); }
+        unsafe {
+            libc::kill(-self.pid, libc::SIGKILL);
+        }
     }
     fn reap(&self) -> Result<()> {
         let start = Instant::now();
@@ -220,19 +367,34 @@ impl Tree {
             // behind in containers whose PID 1 does not reap. The direct child is already reaped.
             #[cfg(target_os = "linux")]
             {
-                while unsafe { libc::waitpid(-self.pid, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
-                for &pid in self.descendants.borrow().iter() { unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG); } }
+                while unsafe { libc::waitpid(-self.pid, std::ptr::null_mut(), libc::WNOHANG) } > 0 {
+                }
+                for &pid in self.descendants.borrow().iter() {
+                    unsafe {
+                        libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG);
+                    }
+                }
             }
-            let children_alive = self.descendants.borrow().iter().any(|pid| unsafe { libc::kill(*pid, 0) } == 0);
-            if !children_alive && unsafe { libc::kill(-self.pid, 0) } != 0 { return Ok(()); }
-            if start.elapsed() > Duration::from_secs(2) { bail!("subprocess group did not terminate within the cleanup deadline"); }
+            let children_alive = self
+                .descendants
+                .borrow()
+                .iter()
+                .any(|pid| unsafe { libc::kill(*pid, 0) } == 0);
+            if !children_alive && unsafe { libc::kill(-self.pid, 0) } != 0 {
+                return Ok(());
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                bail!("subprocess group did not terminate within the cleanup deadline");
+            }
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
 
 #[cfg(windows)]
-struct Tree { job: windows_sys::Win32::Foundation::HANDLE }
+struct Tree {
+    job: windows_sys::Win32::Foundation::HANDLE,
+}
 #[cfg(windows)]
 impl Tree {
     fn configure(cmd: &mut Command) {
@@ -241,17 +403,32 @@ impl Tree {
     }
     fn attach(child: &Child) -> Result<Self> {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::{Foundation::*, System::{JobObjects::*, Threading::*, Diagnostics::ToolHelp::*}};
+        use windows_sys::Win32::{
+            Foundation::*,
+            System::{Diagnostics::ToolHelp::*, JobObjects::*, Threading::*},
+        };
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() { return Err(std::io::Error::last_os_error().into()); }
+            if job.is_null() {
+                return Err(std::io::Error::last_os_error().into());
+            }
             let tree = Self { job };
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits as *const _ as _, std::mem::size_of_val(&limits) as u32) == 0
-                || AssignProcessToJobObject(job, child.as_raw_handle()) == 0 { return Err(std::io::Error::last_os_error().into()); }
+            if SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as _,
+                std::mem::size_of_val(&limits) as u32,
+            ) == 0
+                || AssignProcessToJobObject(job, child.as_raw_handle()) == 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            if snapshot == INVALID_HANDLE_VALUE { return Err(std::io::Error::last_os_error().into()); }
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Err(std::io::Error::last_os_error().into());
+            }
             let mut entry: THREADENTRY32 = std::mem::zeroed();
             entry.dwSize = std::mem::size_of_val(&entry) as u32;
             let mut more = Thread32First(snapshot, &mut entry);
@@ -259,43 +436,82 @@ impl Tree {
             while more != 0 {
                 if entry.th32OwnerProcessID == child.id() {
                     let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
-                    if !thread.is_null() { resumed |= ResumeThread(thread) != u32::MAX; CloseHandle(thread); }
+                    if !thread.is_null() {
+                        resumed |= ResumeThread(thread) != u32::MAX;
+                        CloseHandle(thread);
+                    }
                 }
                 more = Thread32Next(snapshot, &mut entry);
             }
             CloseHandle(snapshot);
-            if !resumed { bail!("could not resume subprocess in Windows Job Object"); }
+            if !resumed {
+                bail!("could not resume subprocess in Windows Job Object");
+            }
             Ok(tree)
         }
     }
-    fn kill(&self) { unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job, 1); } }
+    fn kill(&self) {
+        unsafe {
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job, 1);
+        }
+    }
     fn reap(&self) -> Result<()> {
         use windows_sys::Win32::System::JobObjects::*;
         let start = Instant::now();
         loop {
             let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
-            let ok = unsafe { QueryInformationJobObject(self.job, JobObjectBasicAccountingInformation, &mut info as *mut _ as _, std::mem::size_of_val(&info) as u32, std::ptr::null_mut()) };
-            if ok == 0 { return Err(std::io::Error::last_os_error().into()); }
-            if info.ActiveProcesses == 0 { return Ok(()); }
-            if start.elapsed() > Duration::from_secs(2) { bail!("Windows Job Object did not terminate within the cleanup deadline"); }
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    self.job,
+                    JobObjectBasicAccountingInformation,
+                    &mut info as *mut _ as _,
+                    std::mem::size_of_val(&info) as u32,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            if info.ActiveProcesses == 0 {
+                return Ok(());
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                bail!("Windows Job Object did not terminate within the cleanup deadline");
+            }
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
 #[cfg(windows)]
-impl Drop for Tree { fn drop(&mut self) { unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job); } } }
-
+impl Drop for Tree {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.job);
+        }
+    }
+}
 
 #[cfg(target_os = "linux")]
 fn unix_processes() -> Vec<(i32, i32, i32)> {
     let mut processes = Vec::new();
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
-            let Ok(pid) = entry.file_name().to_string_lossy().parse() else { continue };
-            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else { continue };
-            let Some((_, fields)) = stat.rsplit_once(')') else { continue };
+            let Ok(pid) = entry.file_name().to_string_lossy().parse() else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                continue;
+            };
+            let Some((_, fields)) = stat.rsplit_once(')') else {
+                continue;
+            };
             let mut fields = fields.split_whitespace().skip(1);
-            if let (Some(parent), Some(group)) = (fields.next().and_then(|s| s.parse().ok()), fields.next().and_then(|s| s.parse().ok())) { processes.push((pid, parent, group)); }
+            if let (Some(parent), Some(group)) = (
+                fields.next().and_then(|s| s.parse().ok()),
+                fields.next().and_then(|s| s.parse().ok()),
+            ) {
+                processes.push((pid, parent, group));
+            }
         }
     }
     processes
@@ -303,9 +519,21 @@ fn unix_processes() -> Vec<(i32, i32, i32)> {
 #[cfg(all(unix, not(target_os = "linux")))]
 fn unix_processes() -> Vec<(i32, i32, i32)> {
     // Kernel process metadata only; no user strings or shell interpretation.
-    let Ok(output) = Command::new("/bin/ps").args(["-axo", "pid=,ppid=,pgid="]).output() else { return Vec::new() };
-    String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| {
-        let mut fields = line.split_whitespace();
-        Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
-    }).collect()
+    let Ok(output) = Command::new("/bin/ps")
+        .args(["-axo", "pid=,ppid=,pgid="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+            ))
+        })
+        .collect()
 }

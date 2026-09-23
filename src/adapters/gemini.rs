@@ -16,13 +16,21 @@ use std::process::{Command, Stdio};
 
 use super::{RunOpts, RunResult, SessionSummary};
 use crate::model::{Event, EventKind, Harness, Session, Usage};
-use crate::util::{clean_command, first_line, home_dir, now_iso, read_jsonl, read_jsonl_head, truncate, walk};
+use crate::util::{
+    clean_command, first_line, home_dir, now_iso, read_jsonl, read_jsonl_head, truncate, walk,
+};
 
 pub fn gemini_home() -> PathBuf {
-    std::env::var_os("GEMINI_CLI_HOME").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".gemini"))
+    std::env::var_os("GEMINI_CLI_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".gemini"))
 }
 
-const INJECTED_PREFIXES: &[&str] = &["<session_context>", "<environment_context>", "<user_instructions>"];
+const INJECTED_PREFIXES: &[&str] = &[
+    "<session_context>",
+    "<environment_context>",
+    "<user_instructions>",
+];
 
 fn s<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
     v.get(k).and_then(Value::as_str)
@@ -73,7 +81,9 @@ fn project_cwd(project_dir: &Path, project_hash: Option<&str>) -> Option<String>
             return Some(root.to_string());
         }
     }
-    let projects: Value = std::fs::read_to_string(gemini_home().join("projects.json")).ok().and_then(|t| serde_json::from_str(&t).ok())?;
+    let projects: Value = std::fs::read_to_string(gemini_home().join("projects.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())?;
     let map = projects.get("projects").and_then(Value::as_object)?;
     let dir_name = project_dir.file_name()?.to_str()?;
     for (path, name) in map {
@@ -141,12 +151,24 @@ fn collect(records: &[Value]) -> (Value, Vec<Value>) {
             upsert(rec, &mut order, &mut msgs);
         }
     }
-    (Value::Object(meta), order.into_iter().filter_map(|id| msgs.remove(&id)).collect())
+    (
+        Value::Object(meta),
+        order
+            .into_iter()
+            .filter_map(|id| msgs.remove(&id))
+            .collect(),
+    )
 }
 
 fn map_usage(t: &Value) -> Usage {
     let n = |k: &str| t.get(k).and_then(Value::as_u64).unwrap_or(0);
-    Usage { input: n("input"), output: n("output"), cache_read: n("cached"), cache_write: 0, reasoning: n("thoughts") }
+    Usage {
+        input: n("input"),
+        output: n("output"),
+        cache_read: n("cached"),
+        cache_write: 0,
+        reasoning: n("thoughts"),
+    }
 }
 
 pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
@@ -160,7 +182,10 @@ pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
         session.cwd = dirs.first().and_then(Value::as_str).map(String::from);
     }
     if session.cwd.is_none() {
-        if let Some(project_dir) = file.and_then(|f| f.parent()).and_then(|chats| chats.parent()) {
+        if let Some(project_dir) = file
+            .and_then(|f| f.parent())
+            .and_then(|chats| chats.parent())
+        {
             session.cwd = project_cwd(project_dir, s(&meta, "projectHash"));
         }
     }
@@ -175,21 +200,39 @@ pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
                     continue;
                 }
                 if text.trim_start().starts_with('/') && !text.contains('\n') {
-                    session.events.push(Event::system(cur, ts, "command", text.trim()));
+                    session
+                        .events
+                        .push(Event::system(cur, ts, "command", text.trim()));
                     continue;
                 }
                 turn += 1;
-                session.events.push(Event::text(turn, ts, EventKind::User, text));
+                session
+                    .events
+                    .push(Event::text(turn, ts, EventKind::User, text));
             }
             "gemini" => {
                 if session.model.is_none() {
                     session.model = s(m, "model").map(String::from);
                 }
-                for th in m.get("thoughts").and_then(Value::as_array).into_iter().flatten() {
+                for th in m
+                    .get("thoughts")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     let subject = s(th, "subject").unwrap_or("");
                     let desc = s(th, "description").unwrap_or("");
-                    let text = if subject.is_empty() { desc.to_string() } else { format!("**{subject}** {desc}") };
-                    let mut e = Event::text(cur, s(th, "timestamp").unwrap_or(&ts).to_string(), EventKind::Thinking, text);
+                    let text = if subject.is_empty() {
+                        desc.to_string()
+                    } else {
+                        format!("**{subject}** {desc}")
+                    };
+                    let mut e = Event::text(
+                        cur,
+                        s(th, "timestamp").unwrap_or(&ts).to_string(),
+                        EventKind::Thinking,
+                        text,
+                    );
                     e.msg_id = s(m, "id").map(String::from);
                     session.events.push(e);
                 }
@@ -197,17 +240,32 @@ pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
                 let mut usage_attached = false;
                 if !text.trim().is_empty() {
                     let mut e = Event::text(cur, ts.clone(), EventKind::Assistant, text);
-                    e.model = s(m, "model").map(String::from).or_else(|| session.model.clone());
+                    e.model = s(m, "model")
+                        .map(String::from)
+                        .or_else(|| session.model.clone());
                     e.msg_id = s(m, "id").map(String::from);
                     e.usage = m.get("tokens").filter(|t| t.is_object()).map(map_usage);
                     usage_attached = e.usage.is_some();
                     session.events.push(e);
                 }
-                for tc in m.get("toolCalls").and_then(Value::as_array).into_iter().flatten() {
+                for tc in m
+                    .get("toolCalls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     let id = s(tc, "id").unwrap_or("").to_string();
                     let name = s(tc, "name").unwrap_or("tool").to_string();
                     let tts = s(tc, "timestamp").unwrap_or(&ts).to_string();
-                    let mut call = Event::tool_call(cur, tts.clone(), id.clone(), name.clone(), tc.get("args").cloned().unwrap_or_else(|| serde_json::json!({})));
+                    let mut call = Event::tool_call(
+                        cur,
+                        tts.clone(),
+                        id.clone(),
+                        name.clone(),
+                        tc.get("args")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({})),
+                    );
                     if !usage_attached {
                         call.usage = m.get("tokens").filter(|t| t.is_object()).map(map_usage);
                         call.msg_id = s(m, "id").map(String::from);
@@ -221,17 +279,38 @@ pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
                             out = d.to_string();
                         }
                     }
-                    session.events.push(Event::tool_result(cur, tts, id, Some(name), out, matches!(status, "error" | "cancelled" | "failed")));
+                    session.events.push(Event::tool_result(
+                        cur,
+                        tts,
+                        id,
+                        Some(name),
+                        out,
+                        matches!(status, "error" | "cancelled" | "failed"),
+                    ));
                 }
             }
-            "error" => session.events.push(Event::text(cur, ts, EventKind::Error, parts_text(m.get("content")))),
-            "info" | "warning" => session.events.push(Event::system(cur, ts, s(m, "type").unwrap_or("info"), parts_text(m.get("content")))),
+            "error" => session.events.push(Event::text(
+                cur,
+                ts,
+                EventKind::Error,
+                parts_text(m.get("content")),
+            )),
+            "info" | "warning" => session.events.push(Event::system(
+                cur,
+                ts,
+                s(m, "type").unwrap_or("info"),
+                parts_text(m.get("content")),
+            )),
             _ => {}
         }
     }
     if session.id.is_empty() {
         if let Some(f) = file {
-            session.id = f.file_stem().and_then(|x| x.to_str()).unwrap_or("").to_string();
+            session.id = f
+                .file_stem()
+                .and_then(|x| x.to_str())
+                .unwrap_or("")
+                .to_string();
         }
     }
     if let Some(u) = session.events.iter().find(|e| e.kind == EventKind::User) {
@@ -243,7 +322,8 @@ pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
 pub fn parse_file(file: &Path) -> Result<Session> {
     let records = if file.extension().is_some_and(|e| e == "json") {
         let text = std::fs::read_to_string(file)?;
-        vec![serde_json::from_str::<Value>(&text).with_context(|| format!("parsing {}", file.display()))?]
+        vec![serde_json::from_str::<Value>(&text)
+            .with_context(|| format!("parsing {}", file.display()))?]
     } else {
         read_jsonl(file)?
     };
@@ -258,7 +338,12 @@ fn session_files() -> Vec<PathBuf> {
         &root,
         &|p: &Path| {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            name.starts_with("session-") && (name.ends_with(".jsonl") || name.ends_with(".json")) && p.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str()) == Some("chats")
+            name.starts_with("session-")
+                && (name.ends_with(".jsonl") || name.ends_with(".json"))
+                && p.parent()
+                    .and_then(|d| d.file_name())
+                    .and_then(|n| n.to_str())
+                    == Some("chats")
         },
         &mut files,
     );
@@ -268,20 +353,34 @@ fn session_files() -> Vec<PathBuf> {
 pub fn list_sessions() -> Vec<SessionSummary> {
     let mut out = Vec::new();
     for file in session_files() {
-        let Ok(meta) = std::fs::metadata(&file) else { continue };
+        let Ok(meta) = std::fs::metadata(&file) else {
+            continue;
+        };
         let records = if file.extension().is_some_and(|e| e == "json") {
-            std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).map(|v| vec![v]).unwrap_or_default()
+            std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .map(|v| vec![v])
+                .unwrap_or_default()
         } else {
             read_jsonl_head(&file, 512 * 1024).unwrap_or_default()
         };
         let (m, messages) = collect(&records);
-        let Some(first) = messages.iter().find(|x| s(x, "type") == Some("user") && !is_injected(&parts_text(x.get("content")))) else { continue };
+        let Some(first) = messages
+            .iter()
+            .find(|x| s(x, "type") == Some("user") && !is_injected(&parts_text(x.get("content"))))
+        else {
+            continue;
+        };
         let prompt = parts_text(first.get("content"));
         if prompt.trim().is_empty() {
             continue;
         }
         let project_dir = file.parent().and_then(|c| c.parent());
-        let updated: chrono::DateTime<chrono::Utc> = meta.modified().map(Into::into).unwrap_or_else(|_| chrono::Utc::now());
+        let updated: chrono::DateTime<chrono::Utc> = meta
+            .modified()
+            .map(Into::into)
+            .unwrap_or_else(|_| chrono::Utc::now());
         out.push(SessionSummary {
             harness: Harness::Gemini,
             id: s(&m, "sessionId").unwrap_or("").to_string(),
@@ -299,16 +398,36 @@ pub fn list_sessions() -> Vec<SessionSummary> {
 
 pub fn find_log_by_id(id: &str) -> Option<PathBuf> {
     let short: String = id.chars().take(8).collect();
-    let mut candidates: Vec<PathBuf> = session_files().into_iter().filter(|p| p.to_string_lossy().contains(&short)).collect();
+    let mut candidates: Vec<PathBuf> = session_files()
+        .into_iter()
+        .filter(|p| p.to_string_lossy().contains(&short))
+        .collect();
     candidates.sort();
-    candidates.into_iter().rev().find(|p| read_jsonl_head(p, 65536).ok().and_then(|h| h.iter().find_map(|r| s(r, "sessionId").map(String::from))).as_deref() == Some(id))
+    candidates.into_iter().rev().find(|p| {
+        read_jsonl_head(p, 65536)
+            .ok()
+            .and_then(|h| h.iter().find_map(|r| s(r, "sessionId").map(String::from)))
+            .as_deref()
+            == Some(id)
+    })
 }
 
 /// Run one user turn through `gemini -p … --output-format stream-json`.
 pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunResult> {
-    let bin = opts.bin.clone().or_else(|| std::env::var("CASIMIR_GEMINI_BIN").ok()).unwrap_or_else(|| "gemini".into());
-    let mut args: Vec<String> = vec!["-p".into(), opts.prompt.clone(), "--output-format".into(), "stream-json".into()];
-    if opts.allow_unrestricted { args.extend(["--approval-mode".into(), "yolo".into()]); }
+    let bin = opts
+        .bin
+        .clone()
+        .or_else(|| std::env::var("CASIMIR_GEMINI_BIN").ok())
+        .unwrap_or_else(|| "gemini".into());
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        opts.prompt.clone(),
+        "--output-format".into(),
+        "stream-json".into(),
+    ];
+    if opts.allow_unrestricted {
+        args.extend(["--approval-mode".into(), "yolo".into()]);
+    }
     if let Some(m) = &opts.model {
         args.extend(["-m".into(), m.clone()]);
     }
@@ -317,16 +436,27 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     }
     args.extend(opts.extra_args.iter().cloned());
     let mut cmd = Command::new(&bin);
-    cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(cwd) = &opts.cwd {
         cmd.current_dir(cwd);
     }
     clean_command(&mut cmd);
-    let mut process = crate::process::Process::spawn(&mut cmd, opts.prompt.as_bytes(),
-        std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)), opts.spool.as_deref())?;
+    let mut process = crate::process::Process::spawn(
+        &mut cmd,
+        opts.prompt.as_bytes(),
+        std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)),
+        opts.spool.as_deref(),
+    )?;
 
     let turn = opts.turn.max(1);
-    let mut res = RunResult { session_id: opts.resume.clone(), model: opts.model.clone(), ..Default::default() };
+    let mut res = RunResult {
+        session_id: opts.resume.clone(),
+        model: opts.model.clone(),
+        ..Default::default()
+    };
     let mut buffer = String::new();
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let flush = |buffer: &mut String, res: &mut RunResult, on_event: &mut dyn FnMut(&Event)| {
@@ -346,9 +476,12 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
         if !t.starts_with('{') {
             continue;
         }
-        let rec = serde_json::from_str::<Value>(t).context("malformed harness JSON stream; raw bytes retained")?;
+        let rec = serde_json::from_str::<Value>(t)
+            .context("malformed harness JSON stream; raw bytes retained")?;
         super::retain_raw(&mut res, &rec, &mut retained_bytes)?;
-        let ts = s(&rec, "timestamp").map(String::from).unwrap_or_else(now_iso);
+        let ts = s(&rec, "timestamp")
+            .map(String::from)
+            .unwrap_or_else(now_iso);
         match s(&rec, "type").unwrap_or("") {
             "init" => {
                 res.session_id = s(&rec, "session_id").map(String::from);
@@ -366,22 +499,48 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
                 let id = s(&rec, "tool_id").unwrap_or("").to_string();
                 let name = s(&rec, "tool_name").unwrap_or("tool").to_string();
                 tool_names.insert(id.clone(), name.clone());
-                let e = Event::tool_call(turn, ts, id, name, rec.get("parameters").cloned().unwrap_or_else(|| serde_json::json!({})));
+                let e = Event::tool_call(
+                    turn,
+                    ts,
+                    id,
+                    name,
+                    rec.get("parameters")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({})),
+                );
                 on_event(&e);
                 res.events.push(e);
             }
             "tool_result" => {
                 let id = s(&rec, "tool_id").unwrap_or("").to_string();
                 let is_error = s(&rec, "status") == Some("error");
-                let out = s(&rec, "output").map(String::from).or_else(|| rec.get("error").and_then(|e| s(e, "message")).map(String::from)).unwrap_or_default();
-                let e = Event::tool_result(turn, ts, id.clone(), tool_names.get(&id).cloned(), out, is_error);
+                let out = s(&rec, "output")
+                    .map(String::from)
+                    .or_else(|| {
+                        rec.get("error")
+                            .and_then(|e| s(e, "message"))
+                            .map(String::from)
+                    })
+                    .unwrap_or_default();
+                let e = Event::tool_result(
+                    turn,
+                    ts,
+                    id.clone(),
+                    tool_names.get(&id).cloned(),
+                    out,
+                    is_error,
+                );
                 on_event(&e);
                 res.events.push(e);
             }
             "error" => {
                 flush(&mut buffer, &mut res, on_event);
                 let msg = s(&rec, "message").unwrap_or("error").to_string();
-                let e = if s(&rec, "severity") == Some("warning") { Event::system(turn, ts, "warning", msg) } else { Event::text(turn, ts, EventKind::Error, msg) };
+                let e = if s(&rec, "severity") == Some("warning") {
+                    Event::system(turn, ts, "warning", msg)
+                } else {
+                    Event::text(turn, ts, EventKind::Error, msg)
+                };
                 on_event(&e);
                 res.events.push(e);
             }
@@ -389,7 +548,13 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
                 flush(&mut buffer, &mut res, on_event);
                 if let Some(stats) = rec.get("stats") {
                     let n = |k: &str| stats.get(k).and_then(Value::as_u64).unwrap_or(0);
-                    res.usage = Some(Usage { input: n("input"), output: n("output_tokens"), cache_read: n("cached"), cache_write: 0, reasoning: 0 });
+                    res.usage = Some(Usage {
+                        input: n("input"),
+                        output: n("output_tokens"),
+                        cache_read: n("cached"),
+                        cache_write: 0,
+                        reasoning: 0,
+                    });
                 }
                 if s(&rec, "status") == Some("error") {
                     res.is_error = true;
@@ -403,11 +568,21 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     let status = output.status;
     res.stderr = output.stderr;
     let completed = res.session_id.as_deref().is_some_and(|s| !s.is_empty())
-        && res.raw.iter().any(|r| s(r, "type") == Some("result") && s(r, "status") == Some("success"));
-    if res.is_error || !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error) {
+        && res
+            .raw
+            .iter()
+            .any(|r| s(r, "type") == Some("result") && s(r, "status") == Some("success"));
+    if res.is_error
+        || !status.success()
+        || !completed
+        || res.events.iter().any(|e| e.kind == EventKind::Error)
+    {
         res.is_error = true;
         if !res.events.iter().any(|e| e.kind == EventKind::Error) {
-            let msg = crate::util::stderr_error_line(&res.stderr, "gemini ended without a successful result");
+            let msg = crate::util::stderr_error_line(
+                &res.stderr,
+                "gemini ended without a successful result",
+            );
             let e = Event::text(turn, now_iso(), EventKind::Error, msg);
             on_event(&e);
             res.events.push(e);

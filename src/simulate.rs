@@ -11,7 +11,10 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::llm::{complete_json, LlmOpts};
-use crate::model::{events_for_turn, files_touched, final_assistant_text, tool_one_liner, user_turns, EventKind, Session};
+use crate::model::{
+    events_for_turn, files_touched, final_assistant_text, tool_one_liner, user_turns, EventKind,
+    Session,
+};
 
 pub const MAX_RETRIES: usize = 3;
 
@@ -53,15 +56,26 @@ Reply with a JSON object only:
 fn clip(s: &str, n: usize) -> String {
     let count = s.chars().count();
     if count > n {
-        format!("{} … [{} more chars]", s.chars().take(n).collect::<String>(), count - n)
+        format!(
+            "{} … [{} more chars]",
+            s.chars().take(n).collect::<String>(),
+            count - n
+        )
     } else {
         s.to_string()
     }
 }
 
 fn turn_activity(session: &Session, turn: u32, max_tools: usize, final_chars: usize) -> String {
-    let evs: Vec<_> = events_for_turn(session, turn).into_iter().filter(|e| !e.sidechain).collect();
-    let tools: Vec<String> = evs.iter().filter(|e| e.kind == EventKind::ToolCall).map(|e| format!("  - {}", tool_one_liner(e, 140))).collect();
+    let evs: Vec<_> = events_for_turn(session, turn)
+        .into_iter()
+        .filter(|e| !e.sidechain)
+        .collect();
+    let tools: Vec<String> = evs
+        .iter()
+        .filter(|e| e.kind == EventKind::ToolCall)
+        .map(|e| format!("  - {}", tool_one_liner(e, 140)))
+        .collect();
     let mut shown: Vec<String> = tools.iter().take(max_tools).cloned().collect();
     if tools.len() > max_tools {
         shown.push(format!("  … {} more tool calls", tools.len() - max_tools));
@@ -69,13 +83,21 @@ fn turn_activity(session: &Session, turn: u32, max_tools: usize, final_chars: us
     if shown.is_empty() {
         shown.push("  (none)".into());
     }
-    let errors: Vec<String> = evs.iter().filter(|e| e.kind == EventKind::Error).map(|e| format!("  ! {}", clip(e.text_str(), 300))).collect();
+    let errors: Vec<String> = evs
+        .iter()
+        .filter(|e| e.kind == EventKind::Error)
+        .map(|e| format!("  ! {}", clip(e.text_str(), 300)))
+        .collect();
     let fin = final_assistant_text(session, Some(turn));
     let mut out = vec![format!("tool calls ({}):", tools.len())];
     out.extend(shown);
     out.extend(errors);
     out.push("final assistant message:".into());
-    out.push(if fin.is_empty() { "(none)".into() } else { clip(&fin, final_chars) });
+    out.push(if fin.is_empty() {
+        "(none)".into()
+    } else {
+        clip(&fin, final_chars)
+    });
     out.join("\n")
 }
 
@@ -104,7 +126,13 @@ pub struct SimResult {
     pub retries: usize,
 }
 
-fn build_prompt(original: &Session, rerun: &Session, turn_index: u32, state: &SimState, target_text: &str) -> String {
+fn build_prompt(
+    original: &Session,
+    rerun: &Session,
+    turn_index: u32,
+    state: &SimState,
+    target_text: &str,
+) -> String {
     let turns = user_turns(original);
     let prev = turn_index.saturating_sub(1).max(1);
     let mut p: Vec<String> = Vec::new();
@@ -115,7 +143,16 @@ fn build_prompt(original: &Session, rerun: &Session, turn_index: u32, state: &Si
     }
     p.push("# All user messages in the ORIGINAL session".into());
     for t in &turns {
-        p.push(format!("[turn {}]{}\n{}", t.turn, if t.turn == turn_index { " (the one to send now)" } else { "" }, clip(&t.text, 3000)));
+        p.push(format!(
+            "[turn {}]{}\n{}",
+            t.turn,
+            if t.turn == turn_index {
+                " (the one to send now)"
+            } else {
+                ""
+            },
+            clip(&t.text, 3000)
+        ));
     }
     p.push(String::new());
     p.push(format!("# What the ORIGINAL agent did in turn {prev}, right before the user sent turn {turn_index}"));
@@ -124,14 +161,30 @@ fn build_prompt(original: &Session, rerun: &Session, turn_index: u32, state: &Si
     p.push("# What the NEW agent did in the replay so far".into());
     for t in 1..prev {
         p.push(format!("## replay turn {t} (summary)"));
-        let sent = rerun.events.iter().find(|e| e.kind == EventKind::User && e.turn == t).map(|e| clip(e.text_str(), 400)).unwrap_or_default();
+        let sent = rerun
+            .events
+            .iter()
+            .find(|e| e.kind == EventKind::User && e.turn == t)
+            .map(|e| clip(e.text_str(), 400))
+            .unwrap_or_default();
         p.push(format!("user sent: {sent}"));
         p.push(turn_activity(rerun, t, 8, 1200));
     }
     p.push(format!("## replay turn {prev} (latest, in detail)"));
     p.push(turn_activity(rerun, prev, 30, 5000));
-    let files = files_touched(rerun).iter().map(|f| f.path.clone()).collect::<Vec<_>>().join(", ");
-    p.push(format!("files touched so far in the replay: {}", if files.is_empty() { "(none)".into() } else { files }));
+    let files = files_touched(rerun)
+        .iter()
+        .map(|f| f.path.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    p.push(format!(
+        "files touched so far in the replay: {}",
+        if files.is_empty() {
+            "(none)".into()
+        } else {
+            files
+        }
+    ));
     if !state.memory.is_empty() {
         p.push(String::new());
         p.push("# Your notes from earlier replay turns".into());
@@ -147,14 +200,39 @@ fn build_prompt(original: &Session, rerun: &Session, turn_index: u32, state: &Si
 }
 
 fn parse_turns(v: Option<&Value>) -> Vec<u32> {
-    v.and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_u64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter_map(|n| u32::try_from(n).ok()).collect()).unwrap_or_default()
+    v.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    x.as_u64()
+                        .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
+                })
+                .filter_map(|n| u32::try_from(n).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Decide the user message for `turn_index` (1-based, >= 2) of the rerun.
-pub fn simulate_user_turn(original: &Session, rerun: &Session, turn_index: u32, llm: &LlmOpts, state: &mut SimState) -> Result<SimResult> {
+pub fn simulate_user_turn(
+    original: &Session,
+    rerun: &Session,
+    turn_index: u32,
+    llm: &LlmOpts,
+    state: &mut SimState,
+) -> Result<SimResult> {
     let turns = user_turns(original);
     let Some(target) = turns.iter().find(|t| t.turn == turn_index) else {
-        return Ok(SimResult { message: None, verbatim: false, reason: "no such turn in original".into(), stop_reason: Some("out_of_scope".into()), no_op: false, kind: None, grounded_in: vec![], retries: 0 });
+        return Ok(SimResult {
+            message: None,
+            verbatim: false,
+            reason: "no such turn in original".into(),
+            stop_reason: Some("out_of_scope".into()),
+            no_op: false,
+            kind: None,
+            grounded_in: vec![],
+            retries: 0,
+        });
     };
     let max_turn = turns.iter().map(|t| t.turn).max().unwrap_or(0);
     let base_prompt = build_prompt(original, rerun, turn_index, state, &target.text);
@@ -162,28 +240,83 @@ pub fn simulate_user_turn(original: &Session, rerun: &Session, turn_index: u32, 
     let mut retries = 0;
     loop {
         let obj = complete_json(SYSTEM, &prompt, llm)?;
-        let message = obj.get("message").and_then(Value::as_str).unwrap_or("").to_string();
-        let reason = obj.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
-        let memory = obj.get("memory").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let message = obj
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let reason = obj
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let memory = obj
+            .get("memory")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let grounded_in = parse_turns(obj.get("grounded_in"));
         let action = obj.get("action").and_then(Value::as_str).unwrap_or("");
-        let kind = obj.get("kind").and_then(Value::as_str).filter(|k| matches!(*k, "verbatim" | "answer" | "question" | "redirect" | "new_requirement")).map(String::from);
+        let kind = obj
+            .get("kind")
+            .and_then(Value::as_str)
+            .filter(|k| {
+                matches!(
+                    *k,
+                    "verbatim" | "answer" | "question" | "redirect" | "new_requirement"
+                )
+            })
+            .map(String::from);
         if action == "no_op" {
             if !memory.is_empty() {
                 state.memory.push(memory);
             }
-            return Ok(SimResult { message: None, verbatim: false, reason: if reason.is_empty() { "nothing to add at this turn".into() } else { reason }, stop_reason: None, no_op: true, kind: None, grounded_in, retries });
+            return Ok(SimResult {
+                message: None,
+                verbatim: false,
+                reason: if reason.is_empty() {
+                    "nothing to add at this turn".into()
+                } else {
+                    reason
+                },
+                stop_reason: None,
+                no_op: true,
+                kind: None,
+                grounded_in,
+                retries,
+            });
         }
-        let stop_reason = obj.get("stop_reason").and_then(Value::as_str).filter(|s| matches!(*s, "goals_met" | "cannot_adapt" | "out_of_scope"));
+        let stop_reason = obj
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .filter(|s| matches!(*s, "goals_met" | "cannot_adapt" | "out_of_scope"));
         if let ("stop", Some(stop_reason)) = (action, stop_reason) {
             let stop_reason = stop_reason.to_string();
             if !memory.is_empty() {
                 state.memory.push(memory);
             }
-            return Ok(SimResult { message: None, verbatim: false, reason: if reason.is_empty() { "simulator stopped the session".into() } else { reason }, stop_reason: Some(stop_reason), no_op: false, kind: None, grounded_in, retries });
+            return Ok(SimResult {
+                message: None,
+                verbatim: false,
+                reason: if reason.is_empty() {
+                    "simulator stopped the session".into()
+                } else {
+                    reason
+                },
+                stop_reason: Some(stop_reason),
+                no_op: false,
+                kind: None,
+                grounded_in,
+                retries,
+            });
         }
         let verbatim = message == target.text;
-        let grounded = action == "send" && !message.trim().is_empty() && (verbatim || (!grounded_in.is_empty() && grounded_in.iter().all(|t| *t >= 1 && *t <= max_turn)));
+        let grounded = action == "send"
+            && !message.trim().is_empty()
+            && (verbatim
+                || (!grounded_in.is_empty()
+                    && grounded_in.iter().all(|t| *t >= 1 && *t <= max_turn)));
         if !grounded {
             if retries == MAX_RETRIES {
                 // bounded: fall back to the recorded message rather than send an ungrounded one
@@ -207,8 +340,26 @@ pub fn simulate_user_turn(original: &Session, rerun: &Session, turn_index: u32, 
         if !memory.is_empty() {
             state.memory.push(memory);
         }
-        let grounded_in = if verbatim && grounded_in.is_empty() { vec![turn_index] } else { grounded_in };
-        let kind = if verbatim { Some("verbatim".into()) } else { kind.filter(|k| k != "verbatim").or_else(|| Some("answer".into())) };
-        return Ok(SimResult { message: Some(message), verbatim, reason, stop_reason: None, no_op: false, kind, grounded_in, retries });
+        let grounded_in = if verbatim && grounded_in.is_empty() {
+            vec![turn_index]
+        } else {
+            grounded_in
+        };
+        let kind = if verbatim {
+            Some("verbatim".into())
+        } else {
+            kind.filter(|k| k != "verbatim")
+                .or_else(|| Some("answer".into()))
+        };
+        return Ok(SimResult {
+            message: Some(message),
+            verbatim,
+            reason,
+            stop_reason: None,
+            no_op: false,
+            kind,
+            grounded_in,
+            retries,
+        });
     }
 }

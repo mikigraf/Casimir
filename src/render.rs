@@ -1,7 +1,11 @@
 //! Terminal, markdown, and list renderers.
 use crate::adapters::SessionSummary;
-use crate::model::{files_touched, sorted_counts, stats, tool_one_liner, Event, EventKind, Session};
-use crate::util::{colors, fmt_duration, fmt_num, home_dir, indent, one_line, pad, truncate, ts_ms};
+use crate::model::{
+    files_touched, sorted_counts, stats, tool_one_liner, Event, EventKind, Session,
+};
+use crate::util::{
+    colors, fmt_duration, fmt_num, home_dir, indent, one_line, pad, truncate, ts_ms,
+};
 
 #[derive(Clone, Debug)]
 pub struct RenderOpts {
@@ -15,7 +19,14 @@ pub struct RenderOpts {
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        RenderOpts { thinking: false, full: false, sidechains: false, max_lines: 12, max_chars: 4000, turn: None }
+        RenderOpts {
+            thinking: false,
+            full: false,
+            sidechains: false,
+            max_lines: 12,
+            max_chars: 4000,
+            turn: None,
+        }
     }
 }
 
@@ -55,54 +66,124 @@ pub fn format_event(ev: &Event, o: &RenderOpts, start: Option<i64>) -> Option<St
     }
     let c = colors();
     let tag = format!("{}{}{} ", c.gray, clock(ev, start), c.reset);
-    let side = if ev.sidechain { format!("{}[subagent] {}", c.magenta, c.reset) } else { String::new() };
+    let side = if ev.sidechain {
+        format!("{}[subagent] {}", c.magenta, c.reset)
+    } else {
+        String::new()
+    };
     let text = ev.text_str();
     Some(match ev.kind {
         EventKind::User => {
             let sim = match &ev.simulated {
-                Some(s) if s.verbatim => format!(" {}[simulated user: verbatim]{}", c.magenta, c.reset),
+                Some(s) if s.verbatim => {
+                    format!(" {}[simulated user: verbatim]{}", c.magenta, c.reset)
+                }
                 Some(_) => format!(" {}[simulated user: adapted]{}", c.magenta, c.reset),
                 None => String::new(),
             };
-            format!("\n{tag}{}{}▶ user (turn {}){}{sim}\n{}\n", c.bold, c.cyan, ev.turn, c.reset, indent(text, "  "))
+            format!(
+                "\n{tag}{}{}▶ user (turn {}){}{sim}\n{}\n",
+                c.bold,
+                c.cyan,
+                ev.turn,
+                c.reset,
+                indent(text, "  ")
+            )
         }
         EventKind::Assistant => {
-            let model = ev.model.as_ref().map(|m| format!(" {}{}{}", c.dim, m, c.reset)).unwrap_or_default();
-            format!("{tag}{side}{}●{}{model}\n{}", c.green, c.reset, indent(&clip(text, o, o.max_lines), "  "))
+            let model = ev
+                .model
+                .as_ref()
+                .map(|m| format!(" {}{}{}", c.dim, m, c.reset))
+                .unwrap_or_default();
+            format!(
+                "{tag}{side}{}●{}{model}\n{}",
+                c.green,
+                c.reset,
+                indent(&clip(text, o, o.max_lines), "  ")
+            )
         }
         EventKind::Thinking => {
             if !o.thinking {
                 return None;
             }
             if text.trim().is_empty() {
-                format!("{tag}{side}{}∴ thinking (hidden by provider){}", c.gray, c.reset)
+                format!(
+                    "{tag}{side}{}∴ thinking (hidden by provider){}",
+                    c.gray, c.reset
+                )
             } else {
-                format!("{tag}{side}{}∴ thinking{}\n{}{}{}", c.gray, c.reset, c.gray, indent(&clip(text, o, o.max_lines), "  "), c.reset)
+                format!(
+                    "{tag}{side}{}∴ thinking{}\n{}{}{}",
+                    c.gray,
+                    c.reset,
+                    c.gray,
+                    indent(&clip(text, o, o.max_lines), "  "),
+                    c.reset
+                )
             }
         }
-        EventKind::ToolCall => format!("{tag}{side}{}⚙ {}{}", c.yellow, tool_one_liner(ev, if o.full { 100_000 } else { 160 }), c.reset),
+        EventKind::ToolCall => format!(
+            "{tag}{side}{}⚙ {}{}",
+            c.yellow,
+            tool_one_liner(ev, if o.full { 100_000 } else { 160 }),
+            c.reset
+        ),
         EventKind::ToolResult => {
             let r = ev.result.as_ref()?;
-            let body = clip(&r.output, o, if o.full { usize::MAX } else { o.max_lines.min(6) });
+            let body = clip(
+                &r.output,
+                o,
+                if o.full {
+                    usize::MAX
+                } else {
+                    o.max_lines.min(6)
+                },
+            );
             if body.trim().is_empty() {
                 format!("{tag}{side}{}  ↳ (empty result){}", c.dim, c.reset)
             } else {
-                format!("{}{}{}", if r.is_error { c.red } else { c.dim }, indent(&body, "    │ "), c.reset)
+                format!(
+                    "{}{}{}",
+                    if r.is_error { c.red } else { c.dim },
+                    indent(&body, "    │ "),
+                    c.reset
+                )
             }
         }
-        EventKind::System => format!("{tag}{}◇ {}{} {}{}{}", c.blue, ev.subtype.as_deref().unwrap_or("system"), c.reset, c.dim, truncate(&one_line(text), 160), c.reset),
+        EventKind::System => format!(
+            "{tag}{}◇ {}{} {}{}{}",
+            c.blue,
+            ev.subtype.as_deref().unwrap_or("system"),
+            c.reset,
+            c.dim,
+            truncate(&one_line(text), 160),
+            c.reset
+        ),
         EventKind::Error => format!("{tag}{}✖ {}{}", c.red, truncate(text, 500), c.reset),
     })
 }
 
 pub fn session_start_ms(session: &Session) -> Option<i64> {
-    session.started_at.as_deref().and_then(ts_ms).or_else(|| session.events.first().and_then(|e| ts_ms(&e.ts)))
+    session
+        .started_at
+        .as_deref()
+        .and_then(ts_ms)
+        .or_else(|| session.events.first().and_then(|e| ts_ms(&e.ts)))
 }
 
 pub fn render_header(session: &Session) -> String {
     let c = colors();
     let s = stats(session);
-    let mut lines = vec![format!("{}{}{} session {}{}{}", c.bold, session.harness(), c.reset, c.dim, session.id, c.reset)];
+    let mut lines = vec![format!(
+        "{}{}{} session {}{}{}",
+        c.bold,
+        session.harness(),
+        c.reset,
+        c.dim,
+        session.id,
+        c.reset
+    )];
     if let Some(t) = &session.title {
         lines.push(format!("  title:    {t}"));
     }
@@ -118,14 +199,26 @@ pub fn render_header(session: &Session) -> String {
         lines.push(format!("  cwd:      {cwd}{git}"));
     }
     if let Some(st) = &session.started_at {
-        lines.push(format!("  started:  {st}  duration: {}", fmt_duration(s.duration_ms)));
+        lines.push(format!(
+            "  started:  {st}  duration: {}",
+            fmt_duration(s.duration_ms)
+        ));
     }
     lines.push(format!(
         "  turns: {}  assistant msgs: {}  tool calls: {} ({} errors)  files touched: {}",
         s.turns, s.assistant_messages, s.tool_calls, s.tool_errors, s.files_touched
     ));
-    let cost = s.cost_usd.map(|c| format!("  provider cost estimate ${c:.4}")).unwrap_or_else(|| "  provider cost estimate unknown".into());
-    lines.push(format!("  tokens: in {}  out {}  cache read {}{}", fmt_num(s.usage.input), fmt_num(s.usage.output), fmt_num(s.usage.cache_read), cost));
+    let cost = s
+        .cost_usd
+        .map(|c| format!("  provider cost estimate ${c:.4}"))
+        .unwrap_or_else(|| "  provider cost estimate unknown".into());
+    lines.push(format!(
+        "  tokens: in {}  out {}  cache read {}{}",
+        fmt_num(s.usage.input),
+        fmt_num(s.usage.output),
+        fmt_num(s.usage.cache_read),
+        cost
+    ));
     if let Some(p) = &session.path {
         lines.push(format!("  {}{}{}", c.dim, p, c.reset));
     }
@@ -162,10 +255,18 @@ pub fn render_stats(session: &Session) -> String {
         ("output tokens", fmt_num(s.usage.output)),
         ("cache read tokens", fmt_num(s.usage.cache_read)),
         ("cache write tokens", fmt_num(s.usage.cache_write)),
-        ("provider cost estimate (USD)", s.cost_usd.map(|c| format!("{c:.4}")).unwrap_or_else(|| "unknown".into())),
+        (
+            "provider cost estimate (USD)",
+            s.cost_usd
+                .map(|c| format!("{c:.4}"))
+                .unwrap_or_else(|| "unknown".into()),
+        ),
     ];
     let w = rows.iter().map(|r| r.0.len()).max().unwrap_or(0);
-    let mut lines: Vec<String> = rows.iter().map(|(k, v)| format!("{}  {v}", pad(k, w))).collect();
+    let mut lines: Vec<String> = rows
+        .iter()
+        .map(|(k, v)| format!("{}  {v}", pad(k, w)))
+        .collect();
     lines.push(String::new());
     lines.push("tools by name:".into());
     for (n, k) in sorted_counts(&s.tools_by_name) {
@@ -180,10 +281,30 @@ pub fn render_stats(session: &Session) -> String {
     lines.push(String::new());
     lines.push("process:".into());
     lines.push(format!("  {} {}", pad("search loops", 24), ap.search_loops));
-    lines.push(format!("  {} {}", pad("re-read churn", 24), if ap.reread_churn_files.is_empty() { "none".to_string() } else { ap.reread_churn_files.join(", ") }));
-    lines.push(format!("  {} {}", pad("verification skipped", 24), if ap.verification_skip { "yes" } else { "no" }));
-    lines.push(format!("  {} {:.0}%", pad("failed-action share", 24), ap.failed_action_share * 100.0));
-    lines.push(format!("  {} {:.0}%", pad("exploration share", 24), ap.exploration_share * 100.0));
+    lines.push(format!(
+        "  {} {}",
+        pad("re-read churn", 24),
+        if ap.reread_churn_files.is_empty() {
+            "none".to_string()
+        } else {
+            ap.reread_churn_files.join(", ")
+        }
+    ));
+    lines.push(format!(
+        "  {} {}",
+        pad("verification skipped", 24),
+        if ap.verification_skip { "yes" } else { "no" }
+    ));
+    lines.push(format!(
+        "  {} {:.0}%",
+        pad("failed-action share", 24),
+        ap.failed_action_share * 100.0
+    ));
+    lines.push(format!(
+        "  {} {:.0}%",
+        pad("exploration share", 24),
+        ap.exploration_share * 100.0
+    ));
     let files = files_touched(session);
     if !files.is_empty() {
         lines.push(String::new());
@@ -196,15 +317,24 @@ pub fn render_stats(session: &Session) -> String {
 }
 
 fn quote(text: &str) -> String {
-    text.lines().map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .map(|l| format!("> {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Markdown export of a session.
 pub fn render_markdown(session: &Session, o: &RenderOpts) -> String {
-    let o = RenderOpts { max_lines: 40, ..o.clone() };
+    let o = RenderOpts {
+        max_lines: 40,
+        ..o.clone()
+    };
     let s = stats(session);
     let mut md: Vec<String> = Vec::new();
-    md.push(format!("# {}", session.title.clone().unwrap_or_else(|| session.id.clone())));
+    md.push(format!(
+        "# {}",
+        session.title.clone().unwrap_or_else(|| session.id.clone())
+    ));
     md.push(String::new());
     md.push(format!("- harness: {}", session.harness()));
     md.push(format!("- session: {}", session.id));
@@ -212,12 +342,28 @@ pub fn render_markdown(session: &Session, o: &RenderOpts) -> String {
         md.push(format!("- model: {m}"));
     }
     if let Some(cwd) = &session.cwd {
-        md.push(format!("- cwd: {cwd}{}", session.git_branch.as_ref().map(|b| format!(" ({b})")).unwrap_or_default()));
+        md.push(format!(
+            "- cwd: {cwd}{}",
+            session
+                .git_branch
+                .as_ref()
+                .map(|b| format!(" ({b})"))
+                .unwrap_or_default()
+        ));
     }
     if let Some(st) = &session.started_at {
-        md.push(format!("- started: {st}, duration {}", fmt_duration(s.duration_ms)));
+        md.push(format!(
+            "- started: {st}, duration {}",
+            fmt_duration(s.duration_ms)
+        ));
     }
-    md.push(format!("- turns: {}, tool calls: {}, tokens in/out: {}/{}", s.turns, s.tool_calls, fmt_num(s.usage.input), fmt_num(s.usage.output)));
+    md.push(format!(
+        "- turns: {}, tool calls: {}, tokens in/out: {}/{}",
+        s.turns,
+        s.tool_calls,
+        fmt_num(s.usage.input),
+        fmt_num(s.usage.output)
+    ));
     md.push(String::new());
     for ev in &session.events {
         if ev.sidechain && !o.sidechains {
@@ -237,28 +383,58 @@ pub fn render_markdown(session: &Session, o: &RenderOpts) -> String {
                 md.push(String::new());
             }
             EventKind::Assistant => {
-                md.push(format!("**assistant**{}:", ev.model.as_ref().map(|m| format!(" ({m})")).unwrap_or_default()));
+                md.push(format!(
+                    "**assistant**{}:",
+                    ev.model
+                        .as_ref()
+                        .map(|m| format!(" ({m})"))
+                        .unwrap_or_default()
+                ));
                 md.push(String::new());
                 md.push(text.to_string());
                 md.push(String::new());
             }
             EventKind::Thinking => {
                 if o.thinking && !text.trim().is_empty() {
-                    md.extend(["<details><summary>thinking</summary>".into(), String::new(), text.to_string(), String::new(), "</details>".into(), String::new()]);
+                    md.extend([
+                        "<details><summary>thinking</summary>".into(),
+                        String::new(),
+                        text.to_string(),
+                        String::new(),
+                        "</details>".into(),
+                        String::new(),
+                    ]);
                 }
             }
-            EventKind::ToolCall => md.push(format!("- 🔧 `{}`", tool_one_liner(ev, 200).replace('`', "'"))),
+            EventKind::ToolCall => md.push(format!(
+                "- 🔧 `{}`",
+                tool_one_liner(ev, 200).replace('`', "'")
+            )),
             EventKind::ToolResult => {
                 if let Some(r) = &ev.result {
-                    let body = if o.full { r.output.clone() } else { clip(&r.output, &o, 20) };
+                    let body = if o.full {
+                        r.output.clone()
+                    } else {
+                        clip(&r.output, &o, 20)
+                    };
                     let body = strip_ansi(&body);
                     if !body.trim().is_empty() {
-                        md.extend([String::new(), "  ```".into(), indent(&body, "  "), "  ```".into(), String::new()]);
+                        md.extend([
+                            String::new(),
+                            "  ```".into(),
+                            indent(&body, "  "),
+                            "  ```".into(),
+                            String::new(),
+                        ]);
                     }
                 }
             }
             EventKind::System => {
-                md.push(format!("> _{}_: {}", ev.subtype.as_deref().unwrap_or("system"), truncate(&one_line(text), 200)));
+                md.push(format!(
+                    "> _{}_: {}",
+                    ev.subtype.as_deref().unwrap_or("system"),
+                    truncate(&one_line(text), 200)
+                ));
                 md.push(String::new());
             }
             EventKind::Error => {
@@ -294,11 +470,35 @@ pub fn render_session_list(items: &[SessionSummary]) -> String {
     }
     let c = colors();
     let home = home_dir().display().to_string();
-    let mut lines = vec![format!("{}{}{}{}{}title{}", c.bold, pad("harness", 12), pad("id", 38), pad("updated", 21), pad("cwd", 34), c.reset)];
+    let mut lines = vec![format!(
+        "{}{}{}{}{}title{}",
+        c.bold,
+        pad("harness", 12),
+        pad("id", 38),
+        pad("updated", 21),
+        pad("cwd", 34),
+        c.reset
+    )];
     for it in items {
-        let cwd = it.cwd.as_deref().map(|d| truncate(&d.replacen(&home, "~", 1), 32)).unwrap_or_default();
-        let updated = it.updated_at.chars().take(19).collect::<String>().replace('T', " ");
-        lines.push(format!("{}{}{}{}{}", pad(it.harness.as_str(), 12), pad(&it.id, 38), pad(&updated, 21), pad(&cwd, 34), truncate(&it.title, 60)));
+        let cwd = it
+            .cwd
+            .as_deref()
+            .map(|d| truncate(&d.replacen(&home, "~", 1), 32))
+            .unwrap_or_default();
+        let updated = it
+            .updated_at
+            .chars()
+            .take(19)
+            .collect::<String>()
+            .replace('T', " ");
+        lines.push(format!(
+            "{}{}{}{}{}",
+            pad(it.harness.as_str(), 12),
+            pad(&it.id, 38),
+            pad(&updated, 21),
+            pad(&cwd, 34),
+            truncate(&it.title, 60)
+        ));
     }
     lines.join("\n")
 }

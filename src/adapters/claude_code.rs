@@ -4,23 +4,34 @@
 //! Each line is a record; `user` / `assistant` records carry an API-shaped `message`.
 //! Rerun: `claude -p --output-format stream-json --verbose` emits records with the same
 //! `message` shape, so one mapper serves both the on-disk log and the live stream.
+#[allow(unused_imports)]
+use anyhow::Context as _;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-#[allow(unused_imports)]
-use anyhow::Context as _;
 use std::process::{Command, Stdio};
 
 use super::{RunOpts, RunResult, SessionSummary};
 use crate::model::{Event, EventKind, Harness, Session, Usage};
-use crate::util::{first_line, home_dir, jstr, ju64, now_iso, read_jsonl, read_jsonl_head, truncate, walk};
+use crate::util::{
+    first_line, home_dir, jstr, ju64, now_iso, read_jsonl, read_jsonl_head, truncate, walk,
+};
 
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".claude"))
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".claude"))
 }
 
-const SKIP_TYPES: &[&str] = &["queue-operation", "atis-latch", "last-prompt", "attachment", "file-history-snapshot", "progress"];
+const SKIP_TYPES: &[&str] = &[
+    "queue-operation",
+    "atis-latch",
+    "last-prompt",
+    "attachment",
+    "file-history-snapshot",
+    "progress",
+];
 
 /// Remove `<system-reminder>…</system-reminder>` blocks the harness appends to user text.
 pub fn strip_reminders(text: &str) -> String {
@@ -81,10 +92,18 @@ fn classify_user_text(raw: &str, rec: &Value) -> Option<(EventKind, Option<&'sta
     }
     if let Some(cmd) = between(raw, "<command-name>", "</command-name>") {
         let args = between(raw, "<command-args>", "</command-args>").unwrap_or("");
-        return Some((EventKind::System, Some("command"), format!("{} {}", cmd.trim(), args.trim()).trim().to_string()));
+        return Some((
+            EventKind::System,
+            Some("command"),
+            format!("{} {}", cmd.trim(), args.trim()).trim().to_string(),
+        ));
     }
     if let Some(out) = between(raw, "<local-command-stdout>", "</local-command-stdout>") {
-        return Some((EventKind::System, Some("command-output"), out.trim().to_string()));
+        return Some((
+            EventKind::System,
+            Some("command-output"),
+            out.trim().to_string(),
+        ));
     }
     if raw.trim_start().starts_with("[Request interrupted by user") {
         return Some((EventKind::System, Some("interrupt"), raw.trim().to_string()));
@@ -102,8 +121,15 @@ fn classify_user_text(raw: &str, rec: &Value) -> Option<(EventKind, Option<&'sta
 /// Convert one user/assistant record (log line or stream-json line) into events.
 pub fn record_to_events(rec: &Value, turn: u32) -> Vec<Event> {
     let mut events = Vec::new();
-    let ts = rec.get("timestamp").and_then(Value::as_str).map(String::from).unwrap_or_else(now_iso);
-    let sidechain = rec.get("isSidechain").and_then(Value::as_bool).unwrap_or(false);
+    let ts = rec
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(now_iso);
+    let sidechain = rec
+        .get("isSidechain")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let msg = rec.get("message").cloned().unwrap_or(Value::Null);
     let rtype = rec.get("type").and_then(Value::as_str).unwrap_or("");
     let mk = |kind: EventKind| {
@@ -125,7 +151,11 @@ pub fn record_to_events(rec: &Value, turn: u32) -> Vec<Event> {
                     };
                     let mut e = mk(EventKind::ToolResult);
                     e.result = Some(crate::model::ToolResult {
-                        id: b.get("tool_use_id").and_then(Value::as_str).unwrap_or("").to_string(),
+                        id: b
+                            .get("tool_use_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                         name: None,
                         output,
                         is_error: b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
@@ -147,8 +177,15 @@ pub fn record_to_events(rec: &Value, turn: u32) -> Vec<Event> {
     if rtype == "assistant" {
         let usage = map_usage(msg.get("usage"));
         // e.g. "<synthetic>": harness-generated API error text, not a model message
-        let synthetic = msg.get("model").and_then(Value::as_str).is_some_and(|m| m.starts_with('<'));
-        let model = if synthetic { None } else { msg.get("model").and_then(Value::as_str).map(String::from) };
+        let synthetic = msg
+            .get("model")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.starts_with('<'));
+        let model = if synthetic {
+            None
+        } else {
+            msg.get("model").and_then(Value::as_str).map(String::from)
+        };
         let msg_id = msg.get("id").and_then(Value::as_str).map(String::from);
         let mut first = true;
         if let Some(blocks) = msg.get("content").and_then(Value::as_array) {
@@ -172,14 +209,27 @@ pub fn record_to_events(rec: &Value, turn: u32) -> Vec<Event> {
                     }
                     "thinking" | "redacted_thinking" => {
                         let mut e = mk(EventKind::Thinking);
-                        e.text = Some(b.get("thinking").and_then(Value::as_str).unwrap_or("").to_string());
+                        e.text = Some(
+                            b.get("thinking")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                        );
                         e
                     }
                     "tool_use" => {
                         let mut e = mk(EventKind::ToolCall);
                         e.tool = Some(crate::model::ToolCall {
-                            id: b.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
-                            name: b.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                            id: b
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            name: b
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
                             input: b.get("input").cloned().unwrap_or(Value::Null),
                         });
                         e
@@ -240,13 +290,28 @@ pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
                 }
             }
             "system" => {
-                let ts = rec.get("timestamp").and_then(Value::as_str).unwrap_or("").to_string();
+                let ts = rec
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let subtype = rec.get("subtype").and_then(Value::as_str).unwrap_or("");
                 if subtype.contains("compact") {
-                    session.events.push(Event::system(turn.max(1), ts, "compact", "context compacted"));
+                    session.events.push(Event::system(
+                        turn.max(1),
+                        ts,
+                        "compact",
+                        "context compacted",
+                    ));
                 } else if rec.get("level").and_then(Value::as_str) == Some("error") {
-                    let text = rec.get("content").and_then(Value::as_str).unwrap_or(subtype).to_string();
-                    session.events.push(Event::text(turn.max(1), ts, EventKind::Error, text));
+                    let text = rec
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or(subtype)
+                        .to_string();
+                    session
+                        .events
+                        .push(Event::text(turn.max(1), ts, EventKind::Error, text));
                 }
             }
             "user" | "assistant" => {
@@ -294,7 +359,11 @@ pub fn parse_records(records: &[Value], file: Option<&Path>) -> Session {
     }
     if session.id.is_empty() {
         if let Some(f) = file {
-            session.id = f.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            session.id = f
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
         }
     }
     session
@@ -308,31 +377,65 @@ pub fn parse_file(file: &Path) -> Result<Session> {
 pub fn list_sessions() -> Vec<SessionSummary> {
     let root = config_dir().join("projects");
     let mut files = Vec::new();
-    walk(&root, &|p: &Path| p.extension().is_some_and(|e| e == "jsonl") && p.parent().and_then(|d| d.parent()) == Some(root.as_path()), &mut files);
+    walk(
+        &root,
+        &|p: &Path| {
+            p.extension().is_some_and(|e| e == "jsonl")
+                && p.parent().and_then(|d| d.parent()) == Some(root.as_path())
+        },
+        &mut files,
+    );
     let mut out = Vec::new();
     for file in files {
-        let Ok(meta) = std::fs::metadata(&file) else { continue };
+        let Ok(meta) = std::fs::metadata(&file) else {
+            continue;
+        };
         if meta.len() == 0 {
             continue;
         }
-        let Ok(head) = read_jsonl_head(&file, 65536) else { continue };
-        let first = head.iter().find(|r| r.get("type").and_then(Value::as_str) == Some("user") && jstr(r, &["message", "content"]).is_some());
+        let Ok(head) = read_jsonl_head(&file, 65536) else {
+            continue;
+        };
+        let first = head.iter().find(|r| {
+            r.get("type").and_then(Value::as_str) == Some("user")
+                && jstr(r, &["message", "content"]).is_some()
+        });
         let any = head.iter().find(|r| r.get("sessionId").is_some());
-        let title = head.iter().find(|r| r.get("type").and_then(Value::as_str) == Some("ai-title")).and_then(|r| r.get("aiTitle").and_then(Value::as_str));
+        let title = head
+            .iter()
+            .find(|r| r.get("type").and_then(Value::as_str) == Some("ai-title"))
+            .and_then(|r| r.get("aiTitle").and_then(Value::as_str));
         if first.is_none() && title.is_none() {
             continue;
         }
-        let prompt = first.and_then(|r| jstr(r, &["message", "content"])).map(strip_reminders).unwrap_or_default();
-        let get = |r: Option<&Value>, k: &str| r.and_then(|r| r.get(k)).and_then(Value::as_str).map(String::from);
-        let updated: chrono::DateTime<chrono::Utc> = meta.modified().map(Into::into).unwrap_or_else(|_| chrono::Utc::now());
+        let prompt = first
+            .and_then(|r| jstr(r, &["message", "content"]))
+            .map(strip_reminders)
+            .unwrap_or_default();
+        let get = |r: Option<&Value>, k: &str| {
+            r.and_then(|r| r.get(k))
+                .and_then(Value::as_str)
+                .map(String::from)
+        };
+        let updated: chrono::DateTime<chrono::Utc> = meta
+            .modified()
+            .map(Into::into)
+            .unwrap_or_else(|_| chrono::Utc::now());
         out.push(SessionSummary {
             harness: Harness::ClaudeCode,
-            id: get(any, "sessionId").unwrap_or_else(|| file.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string()),
+            id: get(any, "sessionId").unwrap_or_else(|| {
+                file.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string()
+            }),
             cwd: get(first, "cwd").or_else(|| get(any, "cwd")),
             git_branch: get(first, "gitBranch"),
             started_at: get(first, "timestamp").or_else(|| get(any, "timestamp")),
             updated_at: updated.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            title: title.map(String::from).unwrap_or_else(|| truncate(first_line(&prompt), 80)),
+            title: title
+                .map(String::from)
+                .unwrap_or_else(|| truncate(first_line(&prompt), 80)),
             size_bytes: meta.len(),
             path: file,
         });
@@ -345,7 +448,11 @@ pub fn find_log_by_id(id: &str) -> Option<PathBuf> {
     let root = config_dir().join("projects");
     let want = format!("{id}.jsonl");
     let mut hits = Vec::new();
-    walk(&root, &|p: &Path| p.file_name().and_then(|n| n.to_str()) == Some(want.as_str()), &mut hits);
+    walk(
+        &root,
+        &|p: &Path| p.file_name().and_then(|n| n.to_str()) == Some(want.as_str()),
+        &mut hits,
+    );
     hits.into_iter().next()
 }
 
@@ -359,29 +466,52 @@ fn permission_args(mode: Option<&str>) -> Vec<String> {
 
 /// Run one user turn through `claude -p` and stream normalized events to `on_event`.
 pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunResult> {
-    let bin = opts.bin.clone().or_else(|| std::env::var("CASIMIR_CLAUDE_BIN").ok()).unwrap_or_else(|| "claude".into());
-    let mut args: Vec<String> = vec!["-p".into(), "--output-format".into(), "stream-json".into(), "--verbose".into()];
+    let bin = opts
+        .bin
+        .clone()
+        .or_else(|| std::env::var("CASIMIR_CLAUDE_BIN").ok())
+        .unwrap_or_else(|| "claude".into());
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+    ];
     if let Some(m) = &opts.model {
         args.extend(["--model".into(), m.clone()]);
     }
     match &opts.resume {
         Some(r) => args.extend(["--resume".into(), r.clone()]),
-        None => args.extend(["--session-id".into(), opts.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string())]),
+        None => args.extend([
+            "--session-id".into(),
+            opts.session_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        ]),
     }
     args.extend(permission_args(opts.permission_mode.as_deref()));
     args.extend(opts.extra_args.iter().cloned());
 
     let mut cmd = Command::new(&bin);
-    cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(cwd) = &opts.cwd {
         cmd.current_dir(cwd);
     }
     crate::util::subscription_command(&mut cmd, Harness::ClaudeCode);
-    let mut process = crate::process::Process::spawn(&mut cmd, opts.prompt.as_bytes(),
-        std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)), opts.spool.as_deref())?;
+    let mut process = crate::process::Process::spawn(
+        &mut cmd,
+        opts.prompt.as_bytes(),
+        std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)),
+        opts.spool.as_deref(),
+    )?;
 
-
-    let mut res = RunResult { session_id: opts.resume.clone().or_else(|| opts.session_id.clone()), ..Default::default() };
+    let mut res = RunResult {
+        session_id: opts.resume.clone().or_else(|| opts.session_id.clone()),
+        ..Default::default()
+    };
     let mut result_rec: Option<Value> = None;
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let turn = opts.turn.max(1);
@@ -391,14 +521,23 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
         if t.is_empty() {
             continue;
         }
-        let mut rec = serde_json::from_str::<Value>(t).context("malformed harness JSON stream; raw bytes retained")?;
+        let mut rec = serde_json::from_str::<Value>(t)
+            .context("malformed harness JSON stream; raw bytes retained")?;
         super::retain_raw(&mut res, &rec, &mut retained_bytes)?;
         if let Some(sid) = rec.get("session_id").and_then(Value::as_str) {
             res.session_id = Some(sid.to_string());
         }
-        let rtype = rec.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+        let rtype = rec
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if rtype == "result" {
-            if rec.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+            if rec
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 if let Some(text) = rec.get("result").and_then(Value::as_str) {
                     let ev = Event::text(turn, now_iso(), EventKind::Error, text);
                     on_event(&ev);
@@ -434,18 +573,36 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     if let Some(r) = &result_rec {
         res.cost_usd = r.get("total_cost_usd").and_then(Value::as_f64);
         res.is_error = r.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-        res.model = r.get("modelUsage").and_then(Value::as_object).and_then(|m| m.keys().next().cloned());
+        res.model = r
+            .get("modelUsage")
+            .and_then(Value::as_object)
+            .and_then(|m| m.keys().next().cloned());
     }
     if res.model.is_none() {
         res.model = res.events.iter().find_map(|e| e.model.clone());
     }
-    let completed = result_rec.as_ref().is_some_and(|r| r.get("subtype").and_then(Value::as_str) == Some("success")
-        && r.get("is_error").and_then(Value::as_bool) == Some(false))
-        && res.session_id.as_deref().is_some_and(|s| !s.is_empty());
-    res.is_error |= !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error);
+    let completed = result_rec.as_ref().is_some_and(|r| {
+        r.get("subtype").and_then(Value::as_str) == Some("success")
+            && r.get("is_error").and_then(Value::as_bool) == Some(false)
+    }) && res.session_id.as_deref().is_some_and(|s| !s.is_empty());
+    res.is_error |=
+        !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error);
     if res.is_error && !res.events.iter().any(|e| e.kind == EventKind::Error) {
-        let detail = crate::util::stderr_error_line(&res.stderr, "provider diagnostics retained privately");
-        let ev = Event::text(turn, now_iso(), EventKind::Error, format!("claude exited with {status}{}: {detail}", if !completed { " without a successful result and session ID" } else { "" }));
+        let detail =
+            crate::util::stderr_error_line(&res.stderr, "provider diagnostics retained privately");
+        let ev = Event::text(
+            turn,
+            now_iso(),
+            EventKind::Error,
+            format!(
+                "claude exited with {status}{}: {detail}",
+                if !completed {
+                    " without a successful result and session ID"
+                } else {
+                    ""
+                }
+            ),
+        );
         on_event(&ev);
         res.events.push(ev);
     }
@@ -453,19 +610,34 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
 }
 
 pub fn detect(rec: &Value) -> bool {
-    rec.is_object() && ((rec.get("sessionId").is_some() && rec.get("type").is_some()) || rec.get("parentUuid").is_some())
+    rec.is_object()
+        && ((rec.get("sessionId").is_some() && rec.get("type").is_some())
+            || rec.get("parentUuid").is_some())
 }
 
 /// Claude Code's project directory name for a working directory (every non-alphanumeric byte → '-').
 pub fn project_slug(cwd: &Path) -> String {
-    cwd.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+    cwd.display()
+        .to_string()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// Fork a recorded session at `up_to_turn`: write a transcript holding every record before the user
 /// message that starts that turn, under a new session id and the given working directory, where
 /// `claude --resume <new_id>` will find it. Returns the new transcript path.
-pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Path) -> Result<PathBuf> {
-    let src = original.harness_log_path.as_deref().or(original.path.as_deref()).context("original session has no native on-disk transcript to fork from")?;
+pub fn prepare_fork(
+    original: &Session,
+    up_to_turn: u32,
+    new_id: &str,
+    cwd: &Path,
+) -> Result<PathBuf> {
+    let src = original
+        .harness_log_path
+        .as_deref()
+        .or(original.path.as_deref())
+        .context("original session has no native on-disk transcript to fork from")?;
     let records = read_jsonl(Path::new(src))?;
     let mut kept: Vec<Value> = Vec::new();
     let mut turn = 0u32;
@@ -476,7 +648,9 @@ pub fn prepare_fork(original: &Session, up_to_turn: u32, new_id: &str, cwd: &Pat
             continue;
         }
         if t == "user" || t == "assistant" {
-            let starts_turn = record_to_events(&rec, turn.max(1)).iter().any(|e| e.kind == EventKind::User && !e.sidechain);
+            let starts_turn = record_to_events(&rec, turn.max(1))
+                .iter()
+                .any(|e| e.kind == EventKind::User && !e.sidechain);
             if starts_turn {
                 turn += 1;
                 if turn >= up_to_turn {

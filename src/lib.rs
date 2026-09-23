@@ -13,11 +13,11 @@ pub mod simulate;
 pub mod util;
 pub mod workspace;
 
-pub mod process;
-pub mod doctor;
-pub mod checkpoint;
-pub mod recovery;
-pub mod checks;
-pub mod privacy;
 pub mod artifacts;
 pub mod calibration;
+pub mod checkpoint;
+pub mod checks;
+pub mod doctor;
+pub mod privacy;
+pub mod process;
+pub mod recovery;

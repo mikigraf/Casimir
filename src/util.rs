@@ -8,22 +8,35 @@ use std::sync::OnceLock;
 /// Read a bounded transcript, tolerating only an interrupted final JSONL record.
 pub fn read_jsonl(file: &Path) -> Result<Vec<Value>> {
     let file = fs::File::open(file).with_context(|| format!("reading {}", file.display()))?;
-    if file.metadata()?.len() > 256 * 1024 * 1024 { anyhow::bail!("transcript exceeds the 256 MiB inspection limit"); }
+    if file.metadata()?.len() > 256 * 1024 * 1024 {
+        anyhow::bail!("transcript exceeds the 256 MiB inspection limit");
+    }
     let mut reader = BufReader::new(file);
     let mut records = Vec::new();
     let mut line = Vec::new();
     let mut number = 0;
     loop {
         line.clear();
-        let n = reader.by_ref().take(4 * 1024 * 1024 + 1).read_until(b'\n', &mut line)?;
-        if n == 0 { break; }
+        let n = reader
+            .by_ref()
+            .take(4 * 1024 * 1024 + 1)
+            .read_until(b'\n', &mut line)?;
+        if n == 0 {
+            break;
+        }
         number += 1;
-        if n > 4 * 1024 * 1024 { anyhow::bail!("JSONL record {number} exceeds 4 MiB"); }
-        if line.iter().all(u8::is_ascii_whitespace) { continue; }
+        if n > 4 * 1024 * 1024 {
+            anyhow::bail!("JSONL record {number} exceeds 4 MiB");
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
         match serde_json::from_slice(&line) {
             Ok(record) => records.push(record),
             Err(_) if !line.ends_with(b"\n") && reader.fill_buf()?.is_empty() => break,
-            Err(err) => return Err(err).with_context(|| format!("malformed JSONL record {number}")),
+            Err(err) => {
+                return Err(err).with_context(|| format!("malformed JSONL record {number}"))
+            }
         }
     }
     Ok(records)
@@ -71,7 +84,9 @@ pub fn read_prefix(file: &Path, bytes: usize) -> Result<String> {
 
 /// Recursively list files under `dir` for which `pred` holds.
 pub fn walk(dir: &Path, pred: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if e.file_type().is_ok_and(|t| t.is_dir()) {
@@ -84,56 +99,84 @@ pub fn walk(dir: &Path, pred: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
 
 pub fn home_dir() -> PathBuf {
     #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOMEDRIVE").zip(std::env::var_os("HOMEPATH")).map(|(mut drive, path)| { drive.push(path); drive }));
+    let home = std::env::var_os("USERPROFILE").or_else(|| {
+        std::env::var_os("HOMEDRIVE")
+            .zip(std::env::var_os("HOMEPATH"))
+            .map(|(mut drive, path)| {
+                drive.push(path);
+                drive
+            })
+    });
     #[cfg(not(windows))]
     let home = std::env::var_os("HOME");
-    home.filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+    home.filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 pub fn casimir_home() -> PathBuf {
-    std::env::var_os("CASIMIR_HOME").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".casimir"))
+    std::env::var_os("CASIMIR_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".casimir"))
 }
 
 pub fn private_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
-    #[cfg(unix)] {
+    #[cfg(unix)]
+    {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
-    #[cfg(windows)] private_windows_acl(path, true)?;
+    #[cfg(windows)]
+    private_windows_acl(path, true)?;
     Ok(())
 }
 
 pub fn private_file(path: &Path) -> Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
     Ok(options.open(path)?)
 }
 
 /// Replace only after the complete new file is flushed. tempfile uses native replacement
 /// on Windows; readers see either the previous complete document or the new one.
 pub fn atomic_write(file: &Path, data: &[u8]) -> Result<()> {
-    let parent = file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let parent = file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    #[cfg(windows)] private_windows_acl(temp.path(), false)?;
+    #[cfg(windows)]
+    private_windows_acl(temp.path(), false)?;
     temp.write_all(data)?;
     temp.as_file().sync_all()?;
     let started = std::time::Instant::now();
     loop {
         match temp.persist(file) {
             Ok(_) => break,
-            Err(error) if cfg!(windows) && matches!(error.error.raw_os_error(), Some(5 | 32 | 33)) && started.elapsed() < std::time::Duration::from_secs(2) => {
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.error.raw_os_error(), Some(5 | 32 | 33))
+                    && started.elapsed() < std::time::Duration::from_secs(2) =>
+            {
                 // Antivirus and concurrent readers can briefly hold a Windows sharing lock.
                 // Keep the old file intact and retry the same complete temporary file.
                 temp = error.file;
                 std::thread::sleep(std::time::Duration::from_millis(10));
-            },
-            Err(error) => return Err(error).with_context(|| format!("replacing {}", file.display())),
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("replacing {}", file.display()))
+            }
         }
     }
-    #[cfg(unix)] fs::File::open(parent)?.sync_all()?;
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -144,26 +187,44 @@ pub fn write_json<T: serde::Serialize>(file: &Path, data: &T) -> Result<()> {
 }
 
 /// Locks are held by the open handle and released by the OS on crashes.
-pub struct RunLock { _file: fs::File }
+pub struct RunLock {
+    _file: fs::File,
+}
 impl RunLock {
     pub fn acquire_wait(dir: &Path) -> Result<Self> {
         let start = std::time::Instant::now();
         loop {
             match Self::acquire(dir) {
                 Ok(lock) => return Ok(lock),
-                Err(err) if start.elapsed() >= std::time::Duration::from_secs(30) => return Err(err),
+                Err(err) if start.elapsed() >= std::time::Duration::from_secs(30) => {
+                    return Err(err)
+                }
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
             }
         }
     }
-    pub fn acquire(dir: &Path) -> Result<Self> { Self::acquire_inner(dir, false) }
-    pub(crate) fn acquire_cleanup(dir: &Path) -> Result<Self> { Self::acquire_inner(dir, true) }
+    pub fn acquire(dir: &Path) -> Result<Self> {
+        Self::acquire_inner(dir, false)
+    }
+    pub(crate) fn acquire_cleanup(dir: &Path) -> Result<Self> {
+        Self::acquire_inner(dir, true)
+    }
     fn acquire_inner(dir: &Path, cleanup: bool) -> Result<Self> {
-        if !cleanup && dir.join(".deleting").exists() { anyhow::bail!("run is being cleaned up"); }
+        if !cleanup && dir.join(".deleting").exists() {
+            anyhow::bail!("run is being cleaned up");
+        }
         private_dir(dir)?;
-        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(".lock"))?;
-        fs2::FileExt::try_lock_exclusive(&file).context("run is locked by another Casimir process")?;
-        if !cleanup && dir.join(".deleting").exists() { anyhow::bail!("run is being cleaned up"); }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(".lock"))?;
+        fs2::FileExt::try_lock_exclusive(&file)
+            .context("run is locked by another Casimir process")?;
+        if !cleanup && dir.join(".deleting").exists() {
+            anyhow::bail!("run is being cleaned up");
+        }
         Ok(Self { _file: file })
     }
 }
@@ -249,7 +310,9 @@ pub fn now_stamp() -> String {
 
 /// Milliseconds since the epoch for an ISO-8601 timestamp.
 pub fn ts_ms(ts: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp_millis())
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|d| d.timestamp_millis())
 }
 
 /// Extract the first JSON object from free text (tolerates ```json fences).
@@ -300,7 +363,10 @@ pub fn extract_json(text: &str) -> Option<Value> {
 pub fn is_nested_harness_var(key: &str) -> bool {
     // Credentials and user configuration are not nesting markers. In particular,
     // CLAUDE_CODE_OAUTH_TOKEN is the only authentication source in some CI/cloud setups.
-    matches!(key, "CLAUDECODE" | "CLAUDE_PID" | "CLAUDE_AGENT_SDK_VERSION" | "CLAUDE_CODE_ENTRYPOINT")
+    matches!(
+        key,
+        "CLAUDECODE" | "CLAUDE_PID" | "CLAUDE_AGENT_SDK_VERSION" | "CLAUDE_CODE_ENTRYPOINT"
+    )
 }
 
 pub fn clean_command(cmd: &mut std::process::Command) {
@@ -319,12 +385,26 @@ pub fn subscription_command(cmd: &mut std::process::Command, harness: crate::mod
     clean_command(cmd);
     match harness {
         crate::model::Harness::ClaudeCode => {
-            for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"] {
+            for key in [
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_CUSTOM_HEADERS",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+            ] {
                 cmd.env_remove(key);
             }
         }
         crate::model::Harness::Codex => {
-            for key in ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE"] {
+            for key in [
+                "OPENAI_API_KEY",
+                "CODEX_API_KEY",
+                "OPENAI_BASE_URL",
+                "OPENAI_FEDERATION_RULE_ID",
+                "OPENAI_IDENTITY_TOKEN_FILE",
+            ] {
                 cmd.env_remove(key);
             }
         }
@@ -366,7 +446,18 @@ pub fn colors() -> Colors {
             gray: "\x1b[90m",
         }
     } else {
-        Colors { reset: "", bold: "", dim: "", red: "", green: "", yellow: "", blue: "", magenta: "", cyan: "", gray: "" }
+        Colors {
+            reset: "",
+            bold: "",
+            dim: "",
+            red: "",
+            green: "",
+            yellow: "",
+            blue: "",
+            magenta: "",
+            cyan: "",
+            gray: "",
+        }
     }
 }
 
@@ -380,7 +471,10 @@ pub fn pad(s: &str, n: usize) -> String {
 }
 
 pub fn indent(text: &str, prefix: &str) -> String {
-    text.lines().map(|l| format!("{prefix}{l}")).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .map(|l| format!("{prefix}{l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `value.get(path...)` helper for nested JSON access.
@@ -402,11 +496,20 @@ pub fn ju64(v: &Value, path: &[&str]) -> u64 {
 
 /// Classify provider stderr without copying its potentially secret-bearing text into reports.
 pub fn stderr_error_line(stderr: &str, fallback: &str) -> String {
-    if stderr.trim().is_empty() { return fallback.to_string(); }
+    if stderr.trim().is_empty() {
+        return fallback.to_string();
+    }
     let lower = stderr.to_ascii_lowercase();
-    let category = if lower.contains("rate limit") || lower.contains("rate_limit") || lower.contains("429") {
+    let category = if lower.contains("rate limit")
+        || lower.contains("rate_limit")
+        || lower.contains("429")
+    {
         "rate limit"
-    } else if lower.contains("authentication") || lower.contains("unauthorized") || lower.contains("login") || lower.contains("401") {
+    } else if lower.contains("authentication")
+        || lower.contains("unauthorized")
+        || lower.contains("login")
+        || lower.contains("401")
+    {
         "authentication"
     } else if lower.contains("sandbox") || lower.contains("bubblewrap") || lower.contains("bwrap") {
         "sandbox"
@@ -417,11 +520,16 @@ pub fn stderr_error_line(stderr: &str, fallback: &str) -> String {
     } else {
         "provider error"
     };
-    format!("{} ({category}; details retained in private stderr log)", truncate(fallback, 180))
+    format!(
+        "{} ({category}; details retained in private stderr log)",
+        truncate(fallback, 180)
+    )
 }
 
 impl Drop for RunLock {
-    fn drop(&mut self) { let _ = fs2::FileExt::unlock(&self._file); }
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
 }
 
 /// Protect raw evidence from inherited broad ACLs. Owner rights and SYSTEM retain access;
@@ -429,17 +537,45 @@ impl Drop for RunLock {
 #[cfg(windows)]
 fn private_windows_acl(path: &Path, directory: bool) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::{Foundation::LocalFree, Security::{Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION}};
-    let text = if directory { "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)" } else { "D:P(A;;FA;;;OW)(A;;FA;;;SY)" };
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SetFileSecurityW,
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        },
+    };
+    let text = if directory {
+        "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"
+    } else {
+        "D:P(A;;FA;;;OW)(A;;FA;;;SY)"
+    };
     let sddl: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     unsafe {
         let mut descriptor = std::ptr::null_mut();
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, std::ptr::null_mut()) == 0 { return Err(std::io::Error::last_os_error().into()); }
-        let success = SetFileSecurityW(path.as_ptr(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, descriptor);
-        let error = if success == 0 { Some(std::io::Error::last_os_error()) } else { None };
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let success = SetFileSecurityW(
+            path.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        );
+        let error = if success == 0 {
+            Some(std::io::Error::last_os_error())
+        } else {
+            None
+        };
         LocalFree(descriptor);
-        if let Some(error) = error { return Err(error).context("protecting local artifact ACL"); }
+        if let Some(error) = error {
+            return Err(error).context("protecting local artifact ACL");
+        }
     }
     Ok(())
 }
@@ -450,7 +586,12 @@ mod diagnostic_tests {
 
     #[test]
     fn provider_stderr_never_enters_diagnostics() {
-        for stderr in ["authentication failed: sk-secret", "rate limit; token=sk-secret", "sandbox error sk-secret", "unexpected sk-secret"] {
+        for stderr in [
+            "authentication failed: sk-secret",
+            "rate limit; token=sk-secret",
+            "sandbox error sk-secret",
+            "unexpected sk-secret",
+        ] {
             let diagnostic = stderr_error_line(stderr, "provider call failed");
             assert!(!diagnostic.contains("sk-secret"));
             assert!(diagnostic.contains("private stderr log"));

@@ -5,7 +5,25 @@ use std::sync::OnceLock;
 
 fn sensitive(key: &str) -> bool {
     let key = key.to_ascii_lowercase().replace(['-', '_'], "");
-    key == "token" || ["apikey", "authtoken", "accesstoken", "refreshtoken", "sessiontoken", "idtoken", "githubtoken", "gitlabtoken", "privatekey", "password", "secret", "authorization", "cookie", "credential"].iter().any(|s| key.contains(s))
+    key == "token"
+        || [
+            "apikey",
+            "authtoken",
+            "accesstoken",
+            "refreshtoken",
+            "sessiontoken",
+            "idtoken",
+            "githubtoken",
+            "gitlabtoken",
+            "privatekey",
+            "password",
+            "secret",
+            "authorization",
+            "cookie",
+            "credential",
+        ]
+        .iter()
+        .any(|s| key.contains(s))
 }
 pub fn redact(text: &str) -> String {
     static TOKENS: OnceLock<Regex> = OnceLock::new();
@@ -16,7 +34,9 @@ pub fn redact(text: &str) -> String {
     for (key, value) in std::env::vars_os() {
         if sensitive(&key.to_string_lossy()) {
             let value = value.to_string_lossy();
-            if value.len() >= 6 { out = out.replace(value.as_ref(), "[REDACTED]"); }
+            if value.len() >= 6 {
+                out = out.replace(value.as_ref(), "[REDACTED]");
+            }
         }
     }
     out = tokens.replace_all(&out, "[REDACTED]").into_owned();
@@ -26,11 +46,16 @@ pub fn redact_value(value: &mut Value) {
     match value {
         Value::String(s) => *s = redact(s),
         Value::Array(items) => items.iter_mut().for_each(redact_value),
-        Value::Object(items) => for (key, value) in items {
-            if sensitive(key) { *value = Value::String("[REDACTED]".into()); }
-            else { redact_value(value); }
-        },
-        _ => {},
+        Value::Object(items) => {
+            for (key, value) in items {
+                if sensitive(key) {
+                    *value = Value::String("[REDACTED]".into());
+                } else {
+                    redact_value(value);
+                }
+            }
+        }
+        _ => {}
     }
 }
 pub fn share(value: &Value) -> Value {
@@ -38,7 +63,9 @@ pub fn share(value: &Value) -> Value {
     redact_value(&mut data);
     // Checkpoint identifiers and local source paths are not a portable sharing format.
     if let Some(obj) = data.as_object_mut() {
-        for key in ["checkpoints", "harnessLogPath", "path", "workspace"] { obj.remove(key); }
+        for key in ["checkpoints", "harnessLogPath", "path", "workspace"] {
+            obj.remove(key);
+        }
     }
     serde_json::json!({"schemaVersion":1,"redacted":true,"notice":"Credentials matching known patterns and current credential environment values were removed. Review before sharing; arbitrary secrets cannot be identified perfectly.","data":data})
 }

@@ -23,7 +23,8 @@ pub struct PairCandidate {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Pair {
-    #[serde(default)] pub schema_version: u32,
+    #[serde(default)]
+    pub schema_version: u32,
     pub pair_id: String,
     pub task_summary: String,
     pub candidates: Vec<PairCandidate>,
@@ -66,28 +67,65 @@ pub fn export_pairs(runs: &[PathBuf], out_dir: &Path) -> Result<PairsExport> {
     let mut pairs: Vec<Pair> = Vec::new();
     let mut key: BTreeMap<String, PairKey> = BTreeMap::new();
     for run in runs {
-        let rerun: Session = load_session_file(run).with_context(|| format!("loading {}", run.display()))?;
+        let rerun: Session =
+            load_session_file(run).with_context(|| format!("loading {}", run.display()))?;
         let original_path = run.join("original.json");
         if !original_path.exists() {
             continue;
         }
         let original: Session = read_json(&original_path)?;
-        for e in rerun.events.iter().filter(|e| e.kind == EventKind::User && !e.sidechain) {
+        for e in rerun
+            .events
+            .iter()
+            .filter(|e| e.kind == EventKind::User && !e.sidechain)
+        {
             let Some(sim) = &e.simulated else { continue };
             if sim.verbatim || sim.action.as_deref() == Some("intervention") {
                 continue;
             }
             let source_turn = e.source_turn.unwrap_or(e.turn);
-            let Some(orig) = original.events.iter().find(|o| o.kind == EventKind::User && !o.sidechain && o.turn == source_turn) else { continue };
+            let Some(orig) = original
+                .events
+                .iter()
+                .find(|o| o.kind == EventKind::User && !o.sidechain && o.turn == source_turn)
+            else {
+                continue;
+            };
             // Full session IDs and run identity avoid collisions across imports and replicas.
             let pair_id = format!("{}-{}-{}", rerun.id, pairs.len(), source_turn);
             let real_first = side_for(&pair_id);
-            let human = PairCandidate { label: String::new(), preceding_agent_message: clip(&final_assistant_text(&original, Some(source_turn.saturating_sub(1))), 1500), message: orig.text_str().to_string() };
-            let simulated = PairCandidate { label: String::new(), preceding_agent_message: clip(&final_assistant_text(&rerun, Some(e.turn - 1)), 1500), message: e.text_str().to_string() };
-            let (mut x, mut y) = if real_first { (human, simulated) } else { (simulated, human) };
+            let human = PairCandidate {
+                label: String::new(),
+                preceding_agent_message: clip(
+                    &final_assistant_text(&original, Some(source_turn.saturating_sub(1))),
+                    1500,
+                ),
+                message: orig.text_str().to_string(),
+            };
+            let simulated = PairCandidate {
+                label: String::new(),
+                preceding_agent_message: clip(
+                    &final_assistant_text(&rerun, Some(e.turn - 1)),
+                    1500,
+                ),
+                message: e.text_str().to_string(),
+            };
+            let (mut x, mut y) = if real_first {
+                (human, simulated)
+            } else {
+                (simulated, human)
+            };
             x.label = "X".into();
             y.label = "Y".into();
-            key.insert(pair_id.clone(), PairKey { real: if real_first { "X".into() } else { "Y".into() }, run: run.clone(), turn: source_turn, session: original.id.clone() });
+            key.insert(
+                pair_id.clone(),
+                PairKey {
+                    real: if real_first { "X".into() } else { "Y".into() },
+                    run: run.clone(),
+                    turn: source_turn,
+                    session: original.id.clone(),
+                },
+            );
             pairs.push(Pair {
                 schema_version: 1,
                 pair_id,
@@ -106,12 +144,20 @@ pub fn export_pairs(runs: &[PathBuf], out_dir: &Path) -> Result<PairsExport> {
         text.push('\n');
     }
     crate::util::atomic_write(&pairs_path, text.as_bytes())?;
-    write_json(&out_dir.join("sharing.json"), &serde_json::json!({"schemaVersion":1,"redacted":true,"notice":"Review exports before sharing; arbitrary secrets cannot always be recognized."}))?;
+    write_json(
+        &out_dir.join("sharing.json"),
+        &serde_json::json!({"schemaVersion":1,"redacted":true,"notice":"Review exports before sharing; arbitrary secrets cannot always be recognized."}),
+    )?;
     let key_path = out_dir.join("pairs.key.json");
     write_json(&key_path, &key)?;
-    let template: BTreeMap<String, String> = key.keys().map(|k| (k.clone(), String::new())).collect();
+    let template: BTreeMap<String, String> =
+        key.keys().map(|k| (k.clone(), String::new())).collect();
     write_json(&out_dir.join("answers.template.json"), &template)?;
-    Ok(PairsExport { pairs_path, key_path, n: pairs.len() })
+    Ok(PairsExport {
+        pairs_path,
+        key_path,
+        n: pairs.len(),
+    })
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -135,7 +181,14 @@ pub fn score_pairs(key_path: &Path, answers_path: &Path) -> Result<PairsScore> {
     let mut passed = 0;
     let mut sessions: Vec<String> = Vec::new();
     for (id, k) in &key {
-        let Some(a) = answers.get(id).and_then(Value::as_str).map(|s| s.trim().to_ascii_uppercase()).filter(|s| s == "X" || s == "Y") else { continue };
+        let Some(a) = answers
+            .get(id)
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_ascii_uppercase())
+            .filter(|s| s == "X" || s == "Y")
+        else {
+            continue;
+        };
         answered += 1;
         if a != k.real {
             passed += 1;
@@ -145,5 +198,16 @@ pub fn score_pairs(key_path: &Path, answers_path: &Path) -> Result<PairsScore> {
         }
     }
     let (lo, hi) = wilson(passed, answered);
-    Ok(PairsScore { answered, simulator_passed: passed, pass_rate: if answered == 0 { 0.0 } else { passed as f64 / answered as f64 }, ci_low: lo, ci_high: hi, sessions: sessions.len() })
+    Ok(PairsScore {
+        answered,
+        simulator_passed: passed,
+        pass_rate: if answered == 0 {
+            0.0
+        } else {
+            passed as f64 / answered as f64
+        },
+        ci_low: lo,
+        ci_high: hi,
+        sessions: sessions.len(),
+    })
 }

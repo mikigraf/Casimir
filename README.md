@@ -74,6 +74,14 @@ casimir brief <session> [-o brief.json]          draft a per-session rubric / an
 casimir pairs <run-dir>... -o DIR                blinded original-vs-simulated pairs for human spot checks
 casimir pairs-score <pairs.key.json> <answers.json>
 casimir runs
+
+casimir doctor [--json]                          harness versions, login status, storage; no model calls
+casimir resume <run-dir> [--retry-interrupted]   continue a durable run from its recovery journal
+casimir cleanup <run-dir> [--apply] [--checkpoints]
+                                                 preview (or apply) removal of a run's artifacts and worktrees
+casimir predict-evaluation --corpus F -o F       judge predictions for the frozen evaluation corpus
+casimir calibrate --corpus F --predictions F --reviewer-a F --reviewer-b F --adjudication F
+                                                 score predictions against independent human review
 ```
 
 `<session>` can be a log path, a rerun directory, a Copilot session directory, `last`,
@@ -370,13 +378,15 @@ casimir compare codex:last ~/.casimir/runs/2026-09-22_11-40-03-claude-code-sonne
 ## Development
 
 ```
-cargo test          # parsers, renderers, comparison, and reruns driven by fake harness scripts
+cargo test          # parsers, renderers, comparison, reruns and reliability, driven by compiled fixtures
+python3 -m unittest discover -s tests -p 'test_*.py'
+cargo fmt --check && cargo fmt --check --manifest-path tests/fixture/Cargo.toml
 cargo clippy --all-targets -- -D warnings
 cargo build --release
 ```
 
-CI runs the tests on stable Rust and the minimum supported Rust 1.85, plus strict Clippy and
-a release build. The opt-in live check requires Python 3 and an authenticated Claude Code CLI;
+CI runs the Rust and Python tests on Linux, macOS and Windows with stable Rust and the minimum
+supported Rust 1.85, plus rustfmt, strict Clippy and a release build. The opt-in live check requires Python 3 and an authenticated Claude Code CLI;
 it consumes provider subscription usage and keeps its worktrees and reports for inspection:
 
 ```
