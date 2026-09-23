@@ -62,6 +62,9 @@ impl ShowArgs {
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct LlmArgs {
+    /// Maximum seconds per judge or simulator call
+    #[arg(long, default_value_t = 300)]
+    pub llm_timeout: u64,
     /// Default backend for the user simulator and judge
     #[arg(long, default_value = "auto", value_parser = ["auto", "api", "claude-cli", "cmd"])]
     pub llm: String,
@@ -78,15 +81,27 @@ pub struct LlmArgs {
 
 impl LlmArgs {
     fn opts(&self) -> LlmOpts {
-        LlmOpts { model: self.llm_model.clone(), backend: self.llm.clone(), ..Default::default() }
+        LlmOpts { timeout_secs: self.llm_timeout, model: self.llm_model.clone(), backend: self.llm.clone(), ..Default::default() }
     }
     fn judge_opts(&self) -> LlmOpts {
-        LlmOpts { model: self.judge_model.clone().or_else(|| self.llm_model.clone()), backend: self.judge_llm.clone().unwrap_or_else(|| self.llm.clone()), ..Default::default() }
+        LlmOpts { timeout_secs: self.llm_timeout, model: self.judge_model.clone().or_else(|| self.llm_model.clone()), backend: self.judge_llm.clone().unwrap_or_else(|| self.llm.clone()), ..Default::default() }
     }
 }
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct RunArgs {
+    /// JSON executable checks, frozen outside the agent worktree
+    #[arg(long)]
+    pub checks: Option<PathBuf>,
+    /// Maximum bytes in checkpoint storage (default 2 GiB)
+    #[arg(long, default_value_t = crate::checkpoint::DEFAULT_LIMIT)]
+    pub checkpoint_limit: u64,
+    /// Maximum seconds for each harness turn
+    #[arg(long, default_value_t = 900)]
+    pub turn_timeout: u64,
+    /// Explicitly permit unrestricted harness configuration (including passthrough flags)
+    #[arg(long)]
+    pub allow_unrestricted: bool,
     /// Target harness (default: same as original)
     #[arg(long, value_parser = Harness::parse)]
     pub harness: Option<Harness>,
@@ -102,10 +117,10 @@ pub struct RunArgs {
     /// Replay only the first N user turns
     #[arg(long)]
     pub turns: Option<usize>,
-    /// Claude Code permission mode (default: bypass in isolated workspaces, else acceptEdits)
+    /// Claude Code permission mode (default: preserve harness configuration)
     #[arg(long)]
     pub permission_mode: Option<String>,
-    /// Codex sandbox (default: bypass in isolated workspaces, else workspace-write)
+    /// Codex sandbox (default: preserve harness configuration)
     #[arg(long)]
     pub sandbox: Option<String>,
     /// Ask an LLM to score original vs rerun (runs in both candidate orders)
@@ -163,6 +178,10 @@ impl RunArgs {
             sim.backend = b.clone();
         }
         Ok(RerunOpts {
+            checks: self.checks.clone(),
+            checkpoint_limit: self.checkpoint_limit,
+            turn_timeout_secs: self.turn_timeout,
+            allow_unrestricted: self.allow_unrestricted,
             harness: self.harness,
             model: self.model.clone(),
             user_mode: self.user_mode.clone(),
@@ -200,6 +219,12 @@ impl RunArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
+    /// Preview removal of manifest-owned run artifacts and worktrees
+    Cleanup { run: PathBuf, #[arg(long)] apply: bool },
+    /// Continue a durable run; ambiguous prompts require an explicit new attempt
+    Resume { run: PathBuf, #[arg(long)] retry_interrupted: bool },
+    /// Diagnose local installation and login status without paid model calls
+    Doctor { #[arg(long)] json: bool },
     /// List recorded sessions from all harnesses
     List {
         #[arg(long, value_parser = Harness::parse)]
@@ -241,6 +266,9 @@ pub enum Cmd {
     /// Write normalized JSON or markdown
     Export {
         session: String,
+        /// Produce a redacted sharing export with an explicit redaction marker
+        #[arg(long)]
+        share: bool,
         #[arg(short, long)]
         output: Option<PathBuf>,
         #[arg(long, value_enum)]
@@ -354,6 +382,22 @@ pub fn run() -> Result<i32> {
         _ => None,
     };
     match cli.command {
+        Cmd::Cleanup { run, apply } => println!("{}", serde_json::to_string_pretty(&crate::artifacts::cleanup(&run, apply)?)?),
+        Cmd::Resume { run, retry_interrupted } => {
+            let result = crate::recovery::resume(&run, retry_interrupted, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
+            if let Some(result) = result { println!("Recovery attempt: {}", result.run_dir.display());
+                if result.session.as_ref().and_then(|s| s.execution.as_ref()).is_some_and(|e| e.failed_turns > 0) { return Ok(1); }
+            }
+        },
+        Cmd::Doctor { json: as_json } => {
+            let report = crate::doctor::report();
+            if as_json { println!("{}", serde_json::to_string_pretty(&report)?); } else {
+                println!("Casimir setup: {} {}", std::env::consts::OS, std::env::consts::ARCH);
+                for harness in report["harnesses"].as_array().unwrap() { println!("{}: version={} auth={} executable={}", harness["id"], harness["version"], harness["authentication"], harness["executable"]); }
+                println!("Storage writable: {}. Git: {}", report["storage"]["writable"], report["git"]);
+                println!("Worktrees do not provide process isolation. No paid model calls made.");
+            }
+        },
         Cmd::List { harness, cwd, limit, json } => {
             let mut items = list_all_sessions(harness);
             if let Some(want) = cwd {
@@ -388,16 +432,22 @@ pub fn run() -> Result<i32> {
                 println!("{}", render_stats(&s));
             }
         }
-        Cmd::Export { session, output, format, show } => {
+        Cmd::Export { session, output, format, show, share } => {
             let s = resolve_session(&session)?;
             let fmt = format.unwrap_or(if output.as_ref().is_some_and(|o| o.extension().is_some_and(|e| e == "md")) { Format::Md } else { Format::Json });
             let body = match fmt {
                 Format::Md => render_markdown(&s, &RenderOpts { thinking: true, ..show.render() }),
                 _ => serde_json::to_string_pretty(&s)?,
             };
+            let body = if share {
+                match fmt {
+                    Format::Md => format!("<!-- Casimir schemaVersion: 1; redacted: true -->\n\n{}", crate::privacy::redact(&body)),
+                    _ => serde_json::to_string_pretty(&crate::privacy::share(&serde_json::to_value(&s)?))?,
+                }
+            } else { body };
             match output {
                 Some(o) => {
-                    fs::write(&o, body)?;
+                    crate::util::atomic_write(&o, body.as_bytes())?;
                     eprintln!("wrote {}", o.display());
                 }
                 None => println!("{body}"),
@@ -440,7 +490,7 @@ pub fn run() -> Result<i32> {
                 println!("{}run saved:{} {}", c.bold, c.reset, res.run_dir.display());
                 if res.workspace.mode == "worktree" {
                     let root = res.workspace.root.as_ref().unwrap().display();
-                    println!("{}worktree kept at {root} (remove with: git worktree remove --force {root}){}", c.dim, c.reset);
+                    println!("{}worktree kept at {root} (preview removal with: casimir cleanup RUN){}", c.dim, c.reset);
                 }
                 println!("{}casimir show {}   |   casimir compare {} {}{}", c.dim, res.run_dir.display(), original.path.clone().unwrap_or(original.id.clone()), res.run_dir.display(), c.reset);
                 if res.session.as_ref().unwrap().execution.as_ref().is_some_and(|e| e.failed_turns > 0) || (opts.judge && res.report.as_ref().unwrap().judge.is_none()) { return Ok(1); }
@@ -450,7 +500,7 @@ pub fn run() -> Result<i32> {
                 println!("{}", render_matrix_text(&m));
                 println!();
                 println!("{}runs saved under:{} {}", c.bold, c.reset, m.run_dir.display());
-                println!("{}worktrees are kept under {} (remove with: git worktree remove --force <dir>){}", c.dim, casimir_home().join("worktrees").display(), c.reset);
+                println!("{}worktrees are kept under {} (preview each run with: casimir cleanup RUN){}", c.dim, casimir_home().join("worktrees").display(), c.reset);
                 if m.entries.iter().any(|e| e.errors > 0 || (m.judged && e.judge_score.is_none())) { return Ok(1); }
             }
         }

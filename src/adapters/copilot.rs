@@ -10,7 +10,6 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -280,7 +279,8 @@ pub fn find_log_by_id(id: &str) -> Option<PathBuf> {
 pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunResult> {
     let bin = opts.bin.clone().or_else(|| std::env::var("CASIMIR_COPILOT_BIN").ok()).unwrap_or_else(|| "copilot".into());
     let sid = opts.resume.clone().or_else(|| opts.session_id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut args: Vec<String> = vec!["-p".into(), opts.prompt.clone(), "--allow-all-tools".into(), "--output-format".into(), "json".into(), "--log-level".into(), "none".into(), "--session-id".into(), sid.clone()];
+    let mut args: Vec<String> = vec!["-p".into(), opts.prompt.clone(), "--output-format".into(), "json".into(), "--log-level".into(), "none".into(), "--session-id".into(), sid.clone()];
+    if opts.allow_unrestricted { args.push("--allow-all-tools".into()); }
     if let Some(m) = &opts.model {
         args.extend(["--model".into(), m.clone()]);
     }
@@ -294,18 +294,13 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
         cmd.current_dir(cwd);
     }
     clean_command(&mut cmd);
-    let mut child = cmd.spawn().with_context(|| format!("spawning {bin}"))?;
-    let stderr = child.stderr.take().context("stderr")?;
-    let err_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = BufReader::new(stderr).read_to_string(&mut s);
-        s
-    });
+    let mut process = crate::process::Process::spawn(&mut cmd, opts.prompt.as_bytes(),
+        std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)), opts.spool.as_deref())?;
+
     let mut st = MapState { turn: opts.turn.max(1).saturating_sub(1), ..Default::default() };
     let mut res = RunResult { session_id: Some(sid), model: opts.model.clone(), ..Default::default() };
-    let stdout = child.stdout.take().context("stdout")?;
-    for line in BufReader::new(stdout).lines() {
-        let line = line?;
+    let mut retained_bytes = 0;
+    while let Some(line) = process.next_line()? {
         let t = line.trim();
         if !t.starts_with('{') {
             if !t.is_empty() {
@@ -315,8 +310,8 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
             }
             continue;
         }
-        let Ok(rec) = serde_json::from_str::<Value>(t) else { continue };
-        res.raw.push(rec.clone());
+        let rec = serde_json::from_str::<Value>(t).context("malformed harness JSON stream; raw bytes retained")?;
+        super::retain_raw(&mut res, &rec, &mut retained_bytes)?;
         for ev in event_to_events(&rec, &mut st) {
             if ev.kind == EventKind::User {
                 continue; // our own prompt echo
@@ -325,8 +320,9 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
             res.events.push(ev);
         }
     }
-    let status = child.wait()?;
-    res.stderr = err_thread.join().unwrap_or_default();
+    let output = process.finish()?;
+    let status = output.status;
+    res.stderr = output.stderr;
     if st.model.is_some() {
         res.model = st.model;
     }

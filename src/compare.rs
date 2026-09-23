@@ -55,6 +55,9 @@ pub struct ToolRow {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct JudgePass {
+    #[serde(default)] pub evidence_a: Vec<String>,
+    #[serde(default)] pub evidence_b: Vec<String>,
+    #[serde(default)] pub uncertainty: Vec<String>,
     /// "AB" (A shown first) or "BA" (B shown first)
     pub order: String,
     pub winner: String,
@@ -66,6 +69,9 @@ pub struct JudgePass {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Judgement {
+    #[serde(default)] pub evidence_a: Vec<String>,
+    #[serde(default)] pub evidence_b: Vec<String>,
+    #[serde(default)] pub uncertainty: Vec<String>,
     pub winner: String,
     pub score_a: f64,
     pub score_b: f64,
@@ -158,6 +164,16 @@ pub struct EndState {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub execution_status: String,
+    #[serde(default)]
+    pub overall_outcome: String,
+    #[serde(default)]
+    pub judge_assessment: String,
+    #[serde(default)]
+    pub checks: Option<crate::checks::Results>,
     pub a: SideStats,
     pub b: SideStats,
     pub files: FileSets,
@@ -335,8 +351,9 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
         (Some(da), Some(db)) => Some(end_state_similarity(da, db)),
         _ => None,
     };
-    Report {
-        a: describe(a),
+    let mut report = Report {
+        schema_version: 1, execution_status: if b.execution.as_ref().is_some_and(|e| e.failed_turns == 0 && e.completed_turns + e.preserved_turns + e.skipped_turns >= e.requested_turns) { "completed".into() } else { "incomplete_or_failed".into() },
+        overall_outcome: "inconclusive".into(), judge_assessment: "unassessed".into(), checks: None,        a: describe(a),
         b: describe(b),
         files: FileSets {
             only_a: fa.iter().filter(|f| !fb.contains(f)).cloned().collect(),
@@ -355,7 +372,9 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
         judge,
         simulator_drift: crate::model::simulator_drift(a, b),
         intent_coverage: None,
-    }
+    };
+    report.update_outcome(7.0);
+    report
 }
 
 fn rows(r: &Report) -> Vec<(&'static str, String, String)> {
@@ -495,6 +514,7 @@ pub fn render_compare_text(r: &Report, label_a: &str, label_b: &str) -> String {
     if let Some(j) = &r.judge {
         out.push(String::new());
         out.push(format!("{}judge ({}{}){}", c.bold, j.model, if j.rubric { ", per-session rubric" } else { ", generic prompt" }, c.reset));
+        out.push(format!("  evidence A: {:?}; evidence B: {:?}; uncertainty: {:?}", j.evidence_a, j.evidence_b, j.uncertainty));
         out.push(format!("  winner: {}   scores (averaged over both orders{}): {label_a}={:.1}/10  {label_b}={:.1}/10", j.winner, if j.repeats > 1 { format!(", {} repeats", j.repeats) } else { String::new() }, j.score_a, j.score_b));
         if j.order_sensitive {
             out.push(format!("  {}⚠ order-sensitive: the two candidate orders disagreed, so the verdict is a tie (the averaged scores remain the primary signal){}", c.yellow, c.reset));
@@ -533,6 +553,7 @@ pub fn render_compare_text(r: &Report, label_a: &str, label_b: &str) -> String {
         out.push(format!("{}intent coverage ({}){}", c.bold, ic.model, c.reset));
         out.push(format!("  score {:.2} = 0.7 × recall {:.2} + 0.3 × precision {:.2}   ({}/{} intents re-expressed; {}/{} simulated messages in scope)", ic.score, ic.recall, ic.precision, ic.covered.len(), ic.intents, ic.in_scope, ic.simulated_messages));
     }
+    out.push(r.outcome_line());
     out.join("\n")
 }
 
@@ -597,6 +618,7 @@ pub fn render_compare_markdown(r: &Report, label_a: &str, label_b: &str) -> Stri
     }
     if let Some(j) = &r.judge {
         md.extend([String::new(), format!("## Judge ({}{})", j.model, if j.rubric { ", per-session rubric" } else { "" }), String::new()]);
+        md.push(format!("Evidence A: {:?}\n\nEvidence B: {:?}\n\nUncertainty: {:?}", j.evidence_a, j.evidence_b, j.uncertainty));
         md.push(format!("**Winner:** {} — {label_a} {:.1}/10, {label_b} {:.1}/10 (averaged over both orders{})", j.winner, j.score_a, j.score_b, if j.repeats > 1 { format!(", {} repeats", j.repeats) } else { String::new() }));
         md.push(String::new());
         md.push(format!("- first-slot win rate {:.2}, position bias {:.2}{}", j.first_slot_win_rate, j.position_bias, j.test_retest.map(|t| format!(", test-retest {t:.2}")).unwrap_or_default()));
@@ -630,6 +652,7 @@ pub fn render_compare_markdown(r: &Report, label_a: &str, label_b: &str) -> Stri
     }
     let or_none = |s: &str| if s.is_empty() { "_(none)_".to_string() } else { s.to_string() };
     md.extend([String::new(), format!("## Final message — {label_a}"), String::new(), or_none(&r.final_a), String::new(), format!("## Final message — {label_b}"), String::new(), or_none(&r.final_b), String::new()]);
+    md.push(r.outcome_line());
     md.join("\n")
 }
 
@@ -647,9 +670,9 @@ it does not by itself prove whether a change was committed. Use tool evidence fo
 If relevant evidence was not captured or was truncated, state the uncertainty rather than inventing
 actions or treating missing evidence alone as a confirmed implementation failure.
 Give each run an absolute score from 0 to 10 first, independently, then decide the winner; a tie is acceptable.
-For each run list any invalid reasons from this taxonomy (empty list when none): requirement_violation,
+Include evidenceA and evidenceB as arrays of exact short quotations from the respective run evidence. Include uncertainty as an array (empty only when evidence is sufficient); missing or contradictory evidence requires uncertainty. For each run list any invalid reasons from this taxonomy (empty list when none): requirement_violation,
 root_cause_not_addressed, incomplete_implementation, new_issues_introduced.
-Reply with a JSON object: {\"winner\": \"A\"|\"B\"|\"tie\", \"scoreA\": 0-10, \"scoreB\": 0-10, \"invalidA\": [...], \"invalidB\": [...], \"summary\": \"...\", \"differences\": [\"...\", ...]}";
+Reply with a JSON object: {\"winner\": \"A\"|\"B\"|\"tie\", \"scoreA\": 0-10, \"scoreB\": 0-10, \"invalidA\": [...], \"invalidB\": [...], \"summary\": \"...\", \"differences\": [\"...\", ...], \"evidenceA\": [\"exact quote\"], \"evidenceB\": [\"exact quote\"], \"uncertainty\": []}";
 
 fn judge_system(brief: Option<&Brief>) -> String {
     match brief {
@@ -703,6 +726,9 @@ fn tool_evidence(session: &Session) -> String {
 }
 
 struct JudgeCall {
+    evidence_first: Vec<String>,
+    evidence_second: Vec<String>,
+    uncertainty: Vec<String>,
     winner: String,
     score_first: f64,
     score_second: f64,
@@ -727,7 +753,18 @@ fn judge_once(system: &str, turns_block: &str, first: (&Session, Option<&Diff>),
         if !value.is_finite() || !(0.0..=10.0).contains(&value) { bail!("judge {k} must be a finite score from 0 to 10"); }
         Ok(value)
     };
+    let citations = |key: &str, session: &Session, diff: Option<&Diff>| -> Vec<String> {
+        let evidence = format!("{}\n{}\n{}", final_assistant_text(session, None), tool_evidence(session), diff.map(|d| d.patch.as_str()).unwrap_or(""));
+        obj.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str)
+            .filter(|quote| quote.chars().count() >= 8 && evidence.contains(quote))
+            .map(String::from).collect()).unwrap_or_default()
+    };
+    let mut uncertainty: Vec<String> = obj.get("uncertainty").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_else(|| vec!["judge omitted uncertainty findings".into()]);
+    let evidence_first = citations("evidenceA", first.0, first.1);
+    let evidence_second = citations("evidenceB", second.0, second.1);
+    if evidence_first.is_empty() || evidence_second.is_empty() { uncertainty.push("missing or unverified evidence citations".into()); }
     Ok(JudgeCall {
+        evidence_first, evidence_second, uncertainty,
         winner: winner.to_string(),
         score_first: num("scoreA")?,
         score_second: num("scoreB")?,
@@ -793,6 +830,9 @@ pub fn judge_sessions_with(a: &Session, b: &Session, diff_a: Option<&Diff>, diff
         turns_block.push(format!("{}. {}", t.turn, clip_text(&t.text, 4000)));
     }
     let tb = turns_block.join("\n");
+    let mut evidence_a = Vec::new();
+    let mut evidence_b = Vec::new();
+    let mut uncertainty = Vec::new();
     let mut passes: Vec<JudgePass> = Vec::new();
     let mut ab_winners: Vec<String> = Vec::new();
     let mut ba_winners: Vec<String> = Vec::new();
@@ -806,7 +846,8 @@ pub fn judge_sessions_with(a: &Session, b: &Session, diff_a: Option<&Diff>, diff
     let mut summaries: Vec<(String, String)> = Vec::new();
     for _ in 0..repeats {
         let c1 = judge_once(&system, &tb, (a, diff_a), (b, diff_b), llm)?;
-        passes.push(JudgePass { order: "AB".into(), winner: c1.winner.clone(), score_a: c1.score_first, score_b: c1.score_second, summary: c1.summary.clone() });
+        evidence_a.extend(c1.evidence_first.clone()); evidence_b.extend(c1.evidence_second.clone()); uncertainty.extend(c1.uncertainty.clone());
+        passes.push(JudgePass { evidence_a: c1.evidence_first.clone(), evidence_b: c1.evidence_second.clone(), uncertainty: c1.uncertainty.clone(), order: "AB".into(), winner: c1.winner.clone(), score_a: c1.score_first, score_b: c1.score_second, summary: c1.summary.clone() });
         if c1.winner != "tie" {
             decided += 1;
             if c1.winner == "A" {
@@ -834,7 +875,8 @@ pub fn judge_sessions_with(a: &Session, b: &Session, diff_a: Option<&Diff>, diff
         }
         let c2 = judge_once(&system, &tb, (b, diff_b), (a, diff_a), llm)?;
         let w2 = swap_label(&c2.winner);
-        passes.push(JudgePass { order: "BA".into(), winner: w2.clone(), score_a: c2.score_second, score_b: c2.score_first, summary: c2.summary.clone() });
+        evidence_a.extend(c2.evidence_second.clone()); evidence_b.extend(c2.evidence_first.clone()); uncertainty.extend(c2.uncertainty.clone());
+        passes.push(JudgePass { evidence_a: c2.evidence_second.clone(), evidence_b: c2.evidence_first.clone(), uncertainty: c2.uncertainty.clone(), order: "BA".into(), winner: w2.clone(), score_a: c2.score_second, score_b: c2.score_first, summary: c2.summary.clone() });
         if c2.winner != "tie" {
             decided += 1;
             if c2.winner == "A" {
@@ -889,7 +931,9 @@ pub fn judge_sessions_with(a: &Session, b: &Session, diff_a: Option<&Diff>, diff
     };
     let judge_model = effective_model(llm);
     let (judge_family, family_a, family_b, fw) = family_warning(&judge_model, jo.model_a.as_deref().or(a.model.as_deref()), jo.model_b.as_deref().or(b.model.as_deref()));
+    evidence_a.sort(); evidence_a.dedup(); evidence_b.sort(); evidence_b.dedup(); uncertainty.sort(); uncertainty.dedup();
     Ok(Judgement {
+        evidence_a, evidence_b, uncertainty,
         winner,
         score_a,
         score_b,
@@ -912,4 +956,25 @@ pub fn judge_sessions_with(a: &Session, b: &Session, diff_a: Option<&Diff>, diff
         invalid_b,
         rubric: jo.brief.as_ref().is_some_and(|b| !b.criteria.is_empty() || !b.objective.is_empty()),
     })
+}
+
+impl Report {
+    pub fn update_outcome(&mut self, threshold: f64) {
+        self.judge_assessment = match &self.judge {
+            None => "unassessed",
+            Some(j) if j.order_sensitive || j.reliable_but_biased || !j.uncertainty.is_empty() || j.evidence_a.is_empty() || j.evidence_b.is_empty() => "inconclusive",
+            Some(j) if !j.invalid_b.is_empty() || j.score_b < threshold => "failed",
+            Some(_) => "passed",
+        }.into();
+        self.overall_outcome = if self.checks.as_ref().is_some_and(|c| c.outcome == "failed") { "failed" }
+            else if self.execution_status != "completed" || self.checks.as_ref().is_some_and(|c| c.outcome == "error") { "inconclusive" }
+            else if self.judge_assessment == "failed" { "failed" }
+            else if self.judge_assessment == "inconclusive" { "inconclusive" }
+            else if self.judge_assessment == "passed" || self.checks.as_ref().is_some_and(|c| c.outcome == "passed") { "passed" }
+            else { "inconclusive" }.into();
+    }
+    fn outcome_line(&self) -> String {
+        format!("Execution: {}; executable checks: {}; judge assessment: {}; task outcome: {}", self.execution_status,
+            self.checks.as_ref().map(|c| c.outcome.as_str()).unwrap_or("not supplied"), self.judge_assessment, self.overall_outcome)
+    }
 }

@@ -1,3 +1,4 @@
+mod fixture;
 use casimir::adapters::{claude_code, codex, copilot, gemini, load_session_file, resolve_session};
 use casimir::brief::{draft_brief, intent_coverage, Brief};
 use casimir::compare::{compare_sessions, end_state_similarity, first_divergent_turn, judge_sessions, judge_sessions_with, relativize, render_compare_markdown, render_compare_text, sequence_similarity, JudgeOpts};
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 
 fn fx(name: &str) -> PathBuf {
+    if name.starts_with("fake-") { return fixture::executable(name); }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
 }
 
@@ -59,6 +61,19 @@ fn tmp_repo() -> PathBuf {
 }
 
 fn no_log(_: &str) {}
+
+fn checkpointed_original(repo: &Path) -> Session {
+    let mut original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
+    original.model = Some("fake-model".into());
+    original.cwd = Some(repo.display().to_string());
+    let native = claude_code::prepare_fork(&original, 2, &uuid::Uuid::new_v4().to_string(), repo).unwrap();
+    let configuration_hash = casimir::checkpoint::hash(&serde_json::to_vec(&json!({"harness":Harness::ClaudeCode,"permissionMode":"preserve","sandbox":"preserve","extraArgs":[],"checksHash":null})).unwrap());
+    let id = casimir::checkpoint::capture(casimir::checkpoint::Capture { cwd: repo, run_dir: &tmp("checkpoint-source"), native: Some(&native), harness: Harness::ClaudeCode, version: Some("casimir-fixture 1.0.0".into()), turn: 2, expected_conversation_turns: 1, prompt: &user_turns(&original)[1].text, configuration_hash: &configuration_hash, limit: casimir::checkpoint::DEFAULT_LIMIT }).unwrap();
+    original.checkpoints.insert(2, id);
+    original.configuration_hash = Some(configuration_hash);
+    original.evaluation = Some(json!({"outcome":"failed","execution":"completed","judgeModel":"fake:judge","passThreshold":7.0}));
+    original
+}
 
 #[test]
 fn nested_harness_cleanup_preserves_authentication_and_configuration() {
@@ -199,15 +214,13 @@ fn attribution_requires_outcomes_and_dry_runs_leave_no_artifacts() {
     let mut options = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(output.clone()), quiet: true, replicates: 2, dry_run: true, judge_llm: fake_llm("judge-both-pass"), ..Default::default() };
     assert!(attribute(&original, &options, &[2], &mut no_log, &mut no_log).unwrap_err().to_string().contains("requires --judge"));
     options.judge = true;
-    assert!(attribute(&original, &options, &[2], &mut no_log, &mut no_log).unwrap().dry_run);
+    assert!(attribute(&original, &options, &[2], &mut no_log, &mut no_log).unwrap_err().to_string().contains("withheld"));
     assert!(!output.exists());
     assert!(attribute(&original, &options, &[2, 2], &mut no_log, &mut no_log).is_err());
     assert!(attribute(&original, &options, &[1], &mut no_log, &mut no_log).is_err());
     options.dry_run = false;
     options.replicates = 1;
-    let att = attribute(&original, &options, &[2], &mut no_log, &mut no_log).unwrap();
-    assert_eq!(att.point_of_commitment, None, "a successful original is not a rescued failure");
-    assert!(att.notes.iter().any(|n| n.contains("withheld")));
+    assert!(attribute(&original, &options, &[2], &mut no_log, &mut no_log).is_err(), "missing original evidence cannot establish a rescued failure");
     assert_eq!(wilson(0, 7).0, 0.0, "floating point residue must not look like a positive effect");
 }
 
@@ -302,10 +315,8 @@ fn attribution_returns_nonzero_and_keeps_reports_for_harness_failures() {
             "--quiet", "-o", output.to_str().unwrap(), "--", "--fake-error"])
         .output().unwrap();
     assert_eq!(result.status.code(), Some(1), "{}", String::from_utf8_lossy(&result.stderr));
-    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(output.join("attribution.json")).unwrap()).unwrap();
-    assert_eq!(saved["executionFailed"], true);
-    assert!(saved["pointOfCommitment"].is_null());
-    assert!(output.join("turn2/report.json").exists());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("attribution withheld"));
+    assert!(!output.join("attribution.json").exists(), "missing original evidence fails before model execution");
 }
 
 #[test]
@@ -313,7 +324,7 @@ fn simulator_noops_and_goals_met_have_explicit_completion_semantics() {
     setup_env();
     let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
     let repo = tmp_repo();
-    for (mode, judged, expected_pass) in [("sim-noop", true, true), ("sim-goals-met", true, true), ("sim-goals-met", false, false), ("sim-stop", true, false)] {
+    for (mode, judged, expected_pass) in [("sim-noop", true, true), ("sim-goals-met", true, false), ("sim-goals-met", false, false), ("sim-stop", true, false)] {
         let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(tmp("sim-completion")), quiet: true, replicates: 2, user_mode: "simulate".into(), sim_llm: fake_llm(mode), judge: judged, judge_llm: fake_llm("judge"), ..Default::default() };
         let (_, matrix) = rerun_matrix(&original, &opts, &mut no_log, &mut no_log).unwrap();
         assert!(matrix.unwrap().entries.iter().all(|e| e.pass == expected_pass), "{mode}, judge={judged}");
@@ -778,10 +789,10 @@ fn replicated_rerun_aggregates_pass_rates() {
     let m = matrix.unwrap();
     assert_eq!(m.entries.len(), 2);
     assert_eq!(m.entries[0].label, "r1");
-    assert!(m.entries.iter().all(|e| e.pass), "clean fake runs pass without a judge");
+    assert!(m.entries.iter().all(|e| !e.pass && e.errors == 0), "clean execution without evaluation remains inconclusive");
     assert_eq!(m.groups.len(), 1);
-    assert!((m.groups[0].pass_at_1 - 1.0).abs() < 1e-9);
-    assert!(m.groups[0].pass_pow_k);
+    assert_eq!(m.groups[0].pass_at_1, 0.0);
+    assert!(!m.groups[0].pass_pow_k);
     assert!(!m.groups[0].disagree);
     assert!(out_dir.join("replicates.json").exists());
     assert!(out_dir.join("report.md").exists());
@@ -795,7 +806,7 @@ fn replicated_rerun_aggregates_pass_rates() {
     let stop_group = m2.groups.iter().find(|g| g.simulator_model.as_deref() == Some("fake:sim-stop")).unwrap();
     assert!(!stop_group.pass_pow_k, "an out_of_scope stop before the last turn is not a pass");
     let ok_group = m2.groups.iter().find(|g| g.simulator_model.as_deref() == Some("fake:sim-verbatim")).unwrap();
-    assert!(ok_group.pass_pow_k);
+    assert!(!ok_group.pass_pow_k, "execution alone is not task success");
 }
 
 fn call(turn: u32, id: &str, name: &str, input: serde_json::Value) -> Event {
@@ -981,7 +992,7 @@ fn control_group_measures_the_noise_floor() {
     assert_eq!(m.groups.len(), 2);
     let control = m.groups.iter().find(|g| g.control).unwrap();
     let target = m.groups.iter().find(|g| !g.control).unwrap();
-    assert_eq!(control.verdict, "validated");
+    assert_eq!(control.verdict, "inconclusive");
     assert!(control.exceeds_control.is_none());
     // both groups run the same fake harness, so the target cannot exceed the control spread
     assert_eq!(target.exceeds_control, Some(false));
@@ -996,8 +1007,8 @@ fn control_group_measures_the_noise_floor() {
 #[test]
 fn fork_at_turn_prepares_a_truncated_transcript_and_resumes() {
     setup_env();
-    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
     let repo = tmp_repo();
+    let original = checkpointed_original(&repo);
     let out_dir = tmp("fork");
     let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, from_turn: Some(2), intervention: Some("Make greet default to 'Earth' instead".into()), run_id: Some("t-fork".into()), ..Default::default() };
     let res = rerun(&original, &opts, &mut no_log, &mut no_log).unwrap();
@@ -1019,7 +1030,7 @@ fn fork_at_turn_prepares_a_truncated_transcript_and_resumes() {
     assert!(transcript.starts_with(std::env::var("CLAUDE_CONFIG_DIR").unwrap()));
     let forked = claude_code::parse_file(&transcript).unwrap();
     assert_eq!(user_turns(&forked).len(), 1, "only turn 1 kept");
-    assert_eq!(forked.cwd.as_deref(), Some(repo.display().to_string().as_str()));
+    assert_eq!(forked.cwd.as_deref(), Some(res.workspace.dir.display().to_string().as_str()));
     assert_ne!(forked.id, original.id);
     // codex fork writes a truncated rollout too
     let codex_orig = codex::parse_file(&fx("codex.jsonl")).unwrap();
@@ -1034,8 +1045,8 @@ fn fork_at_turn_prepares_a_truncated_transcript_and_resumes() {
 #[test]
 fn attribution_finds_the_point_of_commitment() {
     setup_env();
-    let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
     let repo = tmp_repo();
+    let original = checkpointed_original(&repo);
     let out_dir = tmp("attr");
     let opts = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(out_dir.clone()), quiet: true, replicates: 2, judge: true, judge_llm: fake_llm("judge"), run_id: Some("t-attr".into()), ..Default::default() };
     let att = attribute(&original, &opts, &[2], &mut no_log, &mut no_log).unwrap();

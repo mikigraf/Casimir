@@ -1,24 +1,32 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::fs;
-use std::io::{IsTerminal, Read};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Parse a JSONL file, skipping malformed lines (a session still being written may end mid-line).
+/// Read a bounded transcript, tolerating only an interrupted final JSONL record.
 pub fn read_jsonl(file: &Path) -> Result<Vec<Value>> {
-    let text = fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
-    Ok(text
-        .lines()
-        .filter_map(|l| {
-            let t = l.trim();
-            if t.is_empty() {
-                None
-            } else {
-                serde_json::from_str(t).ok()
-            }
-        })
-        .collect())
+    let file = fs::File::open(file).with_context(|| format!("reading {}", file.display()))?;
+    if file.metadata()?.len() > 256 * 1024 * 1024 { anyhow::bail!("transcript exceeds the 256 MiB inspection limit"); }
+    let mut reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line = Vec::new();
+    let mut number = 0;
+    loop {
+        line.clear();
+        let n = reader.by_ref().take(4 * 1024 * 1024 + 1).read_until(b'\n', &mut line)?;
+        if n == 0 { break; }
+        number += 1;
+        if n > 4 * 1024 * 1024 { anyhow::bail!("JSONL record {number} exceeds 4 MiB"); }
+        if line.iter().all(u8::is_ascii_whitespace) { continue; }
+        match serde_json::from_slice(&line) {
+            Ok(record) => records.push(record),
+            Err(_) if !line.ends_with(b"\n") && reader.fill_buf()?.is_empty() => break,
+            Err(err) => return Err(err).with_context(|| format!("malformed JSONL record {number}")),
+        }
+    }
+    Ok(records)
 }
 
 /// Parse only the first `bytes` of a JSONL file (complete lines only).
@@ -66,7 +74,7 @@ pub fn walk(dir: &Path, pred: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let p = e.path();
-        if p.is_dir() {
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
             walk(&p, pred, out);
         } else if pred(&p) {
             out.push(p);
@@ -75,20 +83,73 @@ pub fn walk(dir: &Path, pred: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
 }
 
 pub fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOMEDRIVE").zip(std::env::var_os("HOMEPATH")).map(|(mut drive, path)| { drive.push(path); drive }));
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    home.filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
 }
 
 pub fn casimir_home() -> PathBuf {
     std::env::var_os("CASIMIR_HOME").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".casimir"))
 }
 
-pub fn write_json<T: serde::Serialize>(file: &Path, data: &T) -> Result<()> {
-    if let Some(parent) = file.parent() {
-        fs::create_dir_all(parent)?;
+pub fn private_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
-    let mut s = serde_json::to_string_pretty(data)?;
-    s.push('\n');
-    fs::write(file, s).with_context(|| format!("writing {}", file.display()))
+    Ok(())
+}
+
+pub fn private_file(path: &Path) -> Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    Ok(options.open(path)?)
+}
+
+/// Replace only after the complete new file is flushed. tempfile uses native replacement
+/// on Windows; readers see either the previous complete document or the new one.
+pub fn atomic_write(file: &Path, data: &[u8]) -> Result<()> {
+    let parent = file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(data)?;
+    temp.as_file().sync_all()?;
+    temp.persist(file).with_context(|| format!("replacing {}", file.display()))?;
+    #[cfg(unix)] fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+pub fn write_json<T: serde::Serialize>(file: &Path, data: &T) -> Result<()> {
+    let mut s = serde_json::to_vec_pretty(data)?;
+    s.push(b'\n');
+    atomic_write(file, &s)
+}
+
+/// Locks are held by the open handle and released by the OS on crashes.
+pub struct RunLock { _file: fs::File }
+impl RunLock {
+    pub fn acquire_wait(dir: &Path) -> Result<Self> {
+        let start = std::time::Instant::now();
+        loop {
+            match Self::acquire(dir) {
+                Ok(lock) => return Ok(lock),
+                Err(err) if start.elapsed() >= std::time::Duration::from_secs(30) => return Err(err),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        }
+    }
+    pub fn acquire(dir: &Path) -> Result<Self> {
+        if dir.join(".deleting").exists() { anyhow::bail!("run is being cleaned up"); }
+        private_dir(dir)?;
+        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(".lock"))?;
+        fs2::FileExt::try_lock_exclusive(&file).context("run is locked by another Casimir process")?;
+        if dir.join(".deleting").exists() { anyhow::bail!("run is being cleaned up"); }
+        Ok(Self { _file: file })
+    }
 }
 
 pub fn read_json<T: serde::de::DeserializeOwned>(file: &Path) -> Result<T> {
@@ -310,4 +371,8 @@ pub fn stderr_error_line(stderr: &str, fallback: &str) -> String {
     let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     let pick = lines.iter().find(|l| l.to_ascii_lowercase().contains("error")).or_else(|| lines.last()).copied().unwrap_or(fallback);
     truncate(pick, 500)
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) { let _ = fs2::FileExt::unlock(&self._file); }
 }

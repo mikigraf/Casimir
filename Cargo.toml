@@ -23,6 +23,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+tempfile = "3"
+fs2 = "0.4"
+ctrlc = { version = "3", features = ["termination"] }
+libc = "0.2"
+ureq = { version = "2.12", features = ["json"] }
+regex = "1"
 
 [profile.release]
 strip = true
@@ -30,3 +36,6 @@ lto = true
 
 [dev-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Security"] }

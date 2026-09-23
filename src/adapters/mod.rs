@@ -28,6 +28,9 @@ pub struct SessionSummary {
 
 #[derive(Clone, Debug, Default)]
 pub struct RunOpts {
+    pub timeout_secs: Option<u64>,
+    pub spool: Option<PathBuf>,
+    pub allow_unrestricted: bool,
     pub prompt: String,
     pub cwd: Option<PathBuf>,
     pub model: Option<String>,
@@ -83,6 +86,7 @@ pub fn prepare_fork(h: Harness, original: &Session, up_to_turn: u32, new_id: &st
 }
 
 pub fn run_turn(h: Harness, opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunResult> {
+    validate_permissions(opts)?;
     match h {
         Harness::ClaudeCode => claude_code::run_turn(opts, on_event),
         Harness::Codex => codex::run_turn(opts, on_event),
@@ -197,4 +201,68 @@ pub fn resolve_session(reference: &str) -> Result<Session> {
             bail!("ambiguous session \"{reference}\": {}", hits.iter().map(|h| format!("{}:{}", h.harness, h.id)).collect::<Vec<_>>().join(", "))
         }
     }
+}
+
+/// Permission overrides never derive from the choice of working directory.
+pub fn validate_permissions(opts: &RunOpts) -> Result<()> {
+    let dangerous = ["bypass", "bypassPermissions", "danger-full-access", "yolo", "--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox", "--allow-all-tools", "--yolo"];
+    let explicit = opts.permission_mode.iter().chain(opts.sandbox.iter()).chain(opts.extra_args.iter())
+        .any(|v| dangerous.iter().any(|d| v == d || v.split(['=', ' ', '\"', '\'']).any(|p| p == *d)));
+    if explicit && !opts.allow_unrestricted {
+        anyhow::bail!("unrestricted harness execution requires --allow-unrestricted (also for passthrough arguments)");
+    }
+    // Never persist or echo inline credentials supplied through passthrough arguments.
+    if opts.extra_args.iter().any(|a| {
+        let a = a.to_ascii_lowercase();
+        ["api_key", "api-key", "auth_token", "auth-token", "authorization", "bearer "].iter().any(|key| a.contains(key))
+    }) { anyhow::bail!("credentials must be supplied through the harness environment or credential store, not command-line arguments"); }
+    Ok(())
+}
+
+/// Restore exactly the recorded native conversation; no inferred historical cutoff.
+pub fn restore_conversation(checkpoint: &crate::checkpoint::Checkpoint, new_id: &str, cwd: &Path) -> Result<PathBuf> {
+    crate::checkpoint::require_compatible(checkpoint)?;
+    let temporary = tempfile::tempdir()?;
+    let source = temporary.path().join("native.jsonl");
+    crate::checkpoint::native_copy(checkpoint, &source)?;
+    let mut records = crate::util::read_jsonl(&source)?;
+    for rec in &mut records {
+        match checkpoint.harness {
+            Harness::ClaudeCode => {
+                if let Some(obj) = rec.as_object_mut() {
+                    if obj.contains_key("sessionId") { obj.insert("sessionId".into(), new_id.into()); }
+                    if obj.contains_key("cwd") { obj.insert("cwd".into(), cwd.display().to_string().into()); }
+                }
+            },
+            Harness::Codex => {
+                let meta = rec.get("type").and_then(Value::as_str) == Some("session_meta");
+                if let Some(payload) = rec.get_mut("payload").and_then(Value::as_object_mut) {
+                    if meta { payload.insert("id".into(), new_id.into()); payload.insert("session_id".into(), new_id.into()); }
+                    if meta || payload.contains_key("cwd") { payload.insert("cwd".into(), cwd.display().to_string().into()); }
+                }
+            },
+            _ => bail!("native checkpoint continuation is unsupported for experimental harnesses"),
+        }
+    }
+    let destination = match checkpoint.harness {
+        Harness::ClaudeCode => claude_code::config_dir().join("projects").join(claude_code::project_slug(cwd)).join(format!("{new_id}.jsonl")),
+        Harness::Codex => {
+            let now = chrono::Utc::now();
+            codex::codex_home().join("sessions").join(now.format("%Y/%m/%d").to_string()).join(format!("rollout-{}-{new_id}.jsonl", now.format("%Y-%m-%dT%H-%M-%S")))
+        },
+        _ => unreachable!(),
+    };
+    let mut bytes = Vec::new();
+    for record in records { serde_json::to_writer(&mut bytes, &record)?; bytes.push(b'\n'); }
+    if destination.exists() { bail!("refusing to overwrite an existing native conversation"); }
+    crate::util::atomic_write(&destination, &bytes)?;
+    Ok(destination)
+}
+
+/// Bound the in-memory normalized turn; the supervisor retains the complete byte stream.
+pub fn retain_raw(result: &mut RunResult, record: &Value, bytes: &mut usize) -> Result<()> {
+    *bytes = bytes.saturating_add(serde_json::to_vec(record)?.len());
+    if *bytes > 64 * 1024 * 1024 { bail!("turn exceeds 64 MiB normalization limit; raw stream retained on disk"); }
+    result.raw.push(record.clone());
+    Ok(())
 }

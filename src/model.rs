@@ -215,6 +215,14 @@ pub struct Execution {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation: Option<Value>,
+    #[serde(default = "schema_version")]
+    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub checkpoints: BTreeMap<u32, String>,
     pub id: String,
     pub harness: Option<Harness>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,7 +276,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(harness: Harness) -> Session {
-        Session { harness: Some(harness), ..Default::default() }
+        Session { schema_version: 1, harness: Some(harness), ..Default::default() }
     }
     pub fn harness(&self) -> Harness {
         self.harness.unwrap_or(Harness::ClaudeCode)
@@ -1041,3 +1049,5 @@ pub fn simulator_drift(original: &Session, rerun: &Session) -> Option<SimulatorD
     let human: Vec<&str> = original.events.iter().filter(|e| e.kind == EventKind::User && !e.sidechain && e.simulated.is_none()).map(|e| e.text_str()).collect();
     Some(SimulatorDrift { human: lexicon_of(human), simulated: lexicon_of(simulated) })
 }
+
+fn schema_version() -> u32 { 1 }

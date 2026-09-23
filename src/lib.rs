@@ -12,3 +12,11 @@ pub mod rerun;
 pub mod simulate;
 pub mod util;
 pub mod workspace;
+
+pub mod process;
+pub mod doctor;
+pub mod checkpoint;
+pub mod recovery;
+pub mod checks;
+pub mod privacy;
+pub mod artifacts;

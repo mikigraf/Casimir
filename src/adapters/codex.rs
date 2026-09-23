@@ -9,7 +9,6 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -421,7 +420,8 @@ pub fn exec_event_to_events(rec: &Value, turn: u32, state: &mut ExecState) -> Ve
 
 fn sandbox_args(mode: Option<&str>) -> Vec<String> {
     match mode {
-        None | Some("auto") | Some("bypass") | Some("danger-full-access") => vec!["--dangerously-bypass-approvals-and-sandbox".into()],
+        None | Some("auto") | Some("preserve") => vec![],
+        Some("bypass") | Some("danger-full-access") => vec!["--dangerously-bypass-approvals-and-sandbox".into()],
         Some(m) => vec!["-s".into(), m.to_string()],
     }
 }
@@ -449,38 +449,29 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
         cmd.current_dir(cwd);
     }
     clean_command(&mut cmd);
-    let mut child = cmd.spawn().with_context(|| format!("spawning {bin}"))?;
-    let mut stdin = child.stdin.take().context("stdin")?;
-    let prompt = opts.prompt.clone();
-    std::thread::spawn(move || {
-        let _ = stdin.write_all(prompt.as_bytes());
-    });
-    let stderr = child.stderr.take().context("stderr")?;
-    let err_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = BufReader::new(stderr).read_to_string(&mut s);
-        s
-    });
+    let mut process = crate::process::Process::spawn(&mut cmd, opts.prompt.as_bytes(),
+        std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)), opts.spool.as_deref())?;
+
 
     let mut state = ExecState { thread_id: opts.resume.clone(), ..Default::default() };
     let mut res = RunResult { model: opts.model.clone(), ..Default::default() };
     let turn = opts.turn.max(1);
-    let stdout = child.stdout.take().context("stdout")?;
-    for line in BufReader::new(stdout).lines() {
-        let line = line?;
+    let mut retained_bytes = 0;
+    while let Some(line) = process.next_line()? {
         let t = line.trim();
         if !t.starts_with('{') {
             continue;
         }
-        let Ok(rec) = serde_json::from_str::<Value>(t) else { continue };
-        res.raw.push(rec.clone());
+        let rec = serde_json::from_str::<Value>(t).context("malformed harness JSON stream; raw bytes retained")?;
+        super::retain_raw(&mut res, &rec, &mut retained_bytes)?;
         for ev in exec_event_to_events(&rec, turn, &mut state) {
             on_event(&ev);
             res.events.push(ev);
         }
     }
-    let status = child.wait()?;
-    res.stderr = err_thread.join().unwrap_or_default();
+    let output = process.finish()?;
+    let status = output.status;
+    res.stderr = output.stderr;
     let completed = state.thread_id.as_deref().is_some_and(|s| !s.is_empty())
         && res.raw.iter().any(|r| s(r, "type") == Some("turn.completed"));
     res.is_error = !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error);

@@ -11,7 +11,6 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -308,7 +307,8 @@ pub fn find_log_by_id(id: &str) -> Option<PathBuf> {
 /// Run one user turn through `gemini -p … --output-format stream-json`.
 pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunResult> {
     let bin = opts.bin.clone().or_else(|| std::env::var("CASIMIR_GEMINI_BIN").ok()).unwrap_or_else(|| "gemini".into());
-    let mut args: Vec<String> = vec!["-p".into(), opts.prompt.clone(), "--output-format".into(), "stream-json".into(), "--approval-mode".into(), "yolo".into()];
+    let mut args: Vec<String> = vec!["-p".into(), opts.prompt.clone(), "--output-format".into(), "stream-json".into()];
+    if opts.allow_unrestricted { args.extend(["--approval-mode".into(), "yolo".into()]); }
     if let Some(m) = &opts.model {
         args.extend(["-m".into(), m.clone()]);
     }
@@ -317,18 +317,14 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     }
     args.extend(opts.extra_args.iter().cloned());
     let mut cmd = Command::new(&bin);
-    cmd.args(&args).env("GEMINI_CLI_TRUST_WORKSPACE", "true").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cwd) = &opts.cwd {
         cmd.current_dir(cwd);
     }
     clean_command(&mut cmd);
-    let mut child = cmd.spawn().with_context(|| format!("spawning {bin}"))?;
-    let stderr = child.stderr.take().context("stderr")?;
-    let err_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = BufReader::new(stderr).read_to_string(&mut s);
-        s
-    });
+    let mut process = crate::process::Process::spawn(&mut cmd, opts.prompt.as_bytes(),
+        std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)), opts.spool.as_deref())?;
+
     let turn = opts.turn.max(1);
     let mut res = RunResult { session_id: opts.resume.clone(), model: opts.model.clone(), ..Default::default() };
     let mut buffer = String::new();
@@ -344,15 +340,14 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
         res.events.push(e);
         buffer.clear();
     };
-    let stdout = child.stdout.take().context("stdout")?;
-    for line in BufReader::new(stdout).lines() {
-        let line = line?;
+    let mut retained_bytes = 0;
+    while let Some(line) = process.next_line()? {
         let t = line.trim();
         if !t.starts_with('{') {
             continue;
         }
-        let Ok(rec) = serde_json::from_str::<Value>(t) else { continue };
-        res.raw.push(rec.clone());
+        let rec = serde_json::from_str::<Value>(t).context("malformed harness JSON stream; raw bytes retained")?;
+        super::retain_raw(&mut res, &rec, &mut retained_bytes)?;
         let ts = s(&rec, "timestamp").map(String::from).unwrap_or_else(now_iso);
         match s(&rec, "type").unwrap_or("") {
             "init" => {
@@ -404,8 +399,9 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
         }
     }
     flush(&mut buffer, &mut res, on_event);
-    let status = child.wait()?;
-    res.stderr = err_thread.join().unwrap_or_default();
+    let output = process.finish()?;
+    let status = output.status;
+    res.stderr = output.stderr;
     let completed = res.session_id.as_deref().is_some_and(|s| !s.is_empty())
         && res.raw.iter().any(|r| s(r, "type") == Some("result") && s(r, "status") == Some("success"));
     if res.is_error || !status.success() || !completed || res.events.iter().any(|e| e.kind == EventKind::Error) {

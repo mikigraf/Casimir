@@ -80,7 +80,7 @@ fn turn_activity(session: &Session, turn: u32, max_tools: usize, final_chars: us
 }
 
 /// State the simulator carries across turns of one rerun.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SimState {
     /// One note per simulated turn, in order.
     pub memory: Vec<String>,

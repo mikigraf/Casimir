@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "harnesses": [
+    {
+      "id": "claude-code",
+      "version": "2.1.280",
+      "support": "candidate",
+      "streamProtocol": "stream-json",
+      "nativeTranscript": "claude-jsonl",
+      "checkpointValidated": false,
+      "evidence": "Linux replay and historical transcript fork tested before checkpoint implementation; new checkpoint release gate pending"
+    },
+    {
+      "id": "codex",
+      "version": "0.155.1",
+      "support": "candidate",
+      "streamProtocol": "exec-json",
+      "nativeTranscript": "rollout-jsonl",
+      "checkpointValidated": false,
+      "evidence": "Installed version recorded; authenticated acceptance pending"
+    },
+    {
+      "id": "copilot",
+      "support": "experimental",
+      "checkpointValidated": false
+    },
+    {
+      "id": "gemini",
+      "support": "experimental",
+      "checkpointValidated": false
+    },
+    {
+      "id": "claude-code",
+      "version": "casimir-fixture 1.0.0",
+      "support": "fixture-only",
+      "checkpointValidated": true,
+      "evidence": "Compiled protocol fixture for deterministic orchestration tests; not a real provider compatibility claim"
+    },
+    {
+      "id": "codex",
+      "version": "casimir-fixture 1.0.0",
+      "support": "fixture-only",
+      "checkpointValidated": true,
+      "evidence": "Compiled protocol fixture for deterministic orchestration tests; not a real provider compatibility claim"
+    }
+  ],
+  "platforms": {
+    "linux": "acceptance pending",
+    "macos": "acceptance pending",
+    "windows": "acceptance pending; Codex has a native sandbox; Claude Code has no native OS sandbox"
+  }
+}

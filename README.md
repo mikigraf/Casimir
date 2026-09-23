@@ -1,8 +1,12 @@
 # casimir
 
+> 1.0 candidate work is in progress. Do not treat fixture tests as provider or evaluation
+> certification. See [release gates](docs/production-readiness.md), [migration](docs/migration.md),
+> [privacy](docs/privacy.md), and [troubleshooting](docs/troubleshooting.md).
+
 Replay, rerun, and compare coding-agent sessions recorded by **Claude Code**, **OpenAI Codex**,
 **GitHub Copilot CLI**, and **Gemini CLI**. Written in Rust; a single binary with no runtime
-dependencies beyond `git` (and `curl` for the optional Anthropic API backend).
+dependencies beyond `git`; the optional Anthropic API backend uses in-process HTTPS.
 
 These harnesses write a complete transcript of every session to disk. `casimir` reads those logs,
 normalizes them into one event model, and lets you:
@@ -105,10 +109,22 @@ subdirectory per replicate plus `replicates.json` and a summary `report.md`.
 When the input is a saved run, its captured patch is reused as the reference even if that
 run's workspace has changed since. `--original-diff` overrides it explicitly.
 
-Permissions: in an isolated worktree or explicit directory the harness runs with permission prompts
-bypassed (`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`), because
-a non-interactive rerun cannot answer prompts. In-place reruns default to `acceptEdits` /
-`workspace-write`. Override with `--permission-mode` / `--sandbox`.
+Permissions default to preserving the harness configuration. Unrestricted execution requires
+`--allow-unrestricted` plus the requested bypass setting, including when supplied after `--`.
+Worktrees separate repository edits; they are not OS sandboxes. Codex has a native Windows
+sandbox; Claude Code currently has no native Windows OS sandbox.
+
+Use `casimir doctor --json` to diagnose setup without paid calls. Harness turns default to a
+15-minute timeout; judge/simulator calls default to five minutes (`--turn-timeout` and
+`--llm-timeout`). Interrupted runs use `casimir resume RUN`; ambiguous turns require
+`--retry-interrupted` and create a new attempt from a verified checkpoint.
+
+Supply `--checks checks.json` for frozen executable validation. Reports distinguish process
+execution, executable checks, judge assessment and overall task outcome. Clean execution
+without evaluation evidence is inconclusive; a failed required check cannot become a pass.
+
+Preview artifact removal with `casimir cleanup RUN`; add `--apply` to remove owned artifacts.
+Use `casimir export RUN --share` for redacted sharing exports.
 
 ### Scoring outcomes, not trajectories
 
@@ -186,17 +202,13 @@ identifier, or either group fails to complete cleanly, the control comparison is
 
 ### Fork at a turn
 
-`casimir fork <session> --at-turn N [--message "..."]` preserves turns 1 to N-1 verbatim, writes a
-truncated transcript under a new session id where the harness will find it, checks out a worktree
-at the last commit before turn N, and resumes the session natively with either the original
-turn-N message (a resample) or an edited one (an intervention). In-situ intervention at the
-suspected failure step flipped 17.6 percent of failed trials in one study, while end-of-trace
-self-refinement flipped none (arXiv 2512.06749). Message-only logs cannot restore the agent's
-state, which is why the fork leans on the harness's own resume: Claude Code and Codex are
-supported experimentally; Copilot CLI and Gemini CLI cannot resume a truncated transcript.
-Native transcript formats and indexing may change; a copied transcript is not a full checkpoint. The plan notes
-whether the workspace before turn N could be restored exactly, from commits, or only heuristically
-(no commit between the session base and turn N although files were edited).
+`casimir fork <session> --at-turn N [--message "..."]` restores the recorded workspace,
+Git index and native conversation into a fresh worktree before continuing at turn N.
+It requires a verified Casimir checkpoint and a validated installed transcript version.
+Historical imported logs support inspection and full reruns, but commit timestamps and
+inferred state are insufficient for forks. External services, files and process memory
+are outside checkpoint coverage. See [checkpoint limitations](docs/checkpoints.md) and
+[the compatibility manifest](compatibility/harnesses.json).
 
 ### Attribution: the point of commitment
 
@@ -208,7 +220,7 @@ unless the judge consistently scores the original below the pass threshold.
 Resampling turn k also re-rolls downstream decisions. Inspired by arXiv 2606.08275, Casimir selects
 the latest tested turn with observed rescues and a positive Wilson lower bound. These are intervals
 for rescue proportions, not paired causal effects. The result is a turn-level diagnostic conditional
-on the judge and reconstructed workspace, not proof of a causal step.
+on the judge and verified checkpoint, not proof of a causal step.
 
 ### Process metrics and anti-patterns
 
@@ -299,7 +311,7 @@ Turing pass rate with a Wilson interval (0.5 means indistinguishable).
 
 The simulator (`--sim-model`, `--sim-llm`) and the judge (`--judge-model`, `--judge-llm`) are
 configured independently and default to `--llm-model` / `--llm`. They use `claude-opus-5` through
-the Anthropic Messages API (via `curl`) when credentials are available (`ANTHROPIC_API_KEY`,
+the Anthropic Messages API (in-process HTTPS) when credentials are available (`ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile), with Anthropic's server-side refusal
 fallback enabled. With `claude-cli` they run through `claude -p` with tools disabled, reusing your
 Claude Code login. With `cmd` they run `$CASIMIR_LLM_CMD` (prompt on stdin, system prompt in

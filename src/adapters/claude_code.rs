@@ -7,7 +7,6 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 #[allow(unused_imports)]
 use anyhow::Context as _;
@@ -352,7 +351,8 @@ pub fn find_log_by_id(id: &str) -> Option<PathBuf> {
 
 fn permission_args(mode: Option<&str>) -> Vec<String> {
     match mode {
-        None | Some("auto") | Some("bypassPermissions") | Some("bypass") => vec!["--dangerously-skip-permissions".into()],
+        None | Some("auto") | Some("preserve") => vec![],
+        Some("bypassPermissions") | Some("bypass") => vec!["--dangerously-skip-permissions".into()],
         Some(m) => vec!["--permission-mode".into(), m.to_string()],
     }
 }
@@ -377,33 +377,22 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
         cmd.current_dir(cwd);
     }
     clean_command(&mut cmd);
-    let mut child = cmd.spawn().with_context(|| format!("spawning {bin}"))?;
+    let mut process = crate::process::Process::spawn(&mut cmd, opts.prompt.as_bytes(),
+        std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)), opts.spool.as_deref())?;
 
-    let mut stdin = child.stdin.take().context("stdin")?;
-    let prompt = opts.prompt.clone();
-    std::thread::spawn(move || {
-        let _ = stdin.write_all(prompt.as_bytes());
-    });
-    let stderr = child.stderr.take().context("stderr")?;
-    let err_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = BufReader::new(stderr).read_to_string(&mut s);
-        s
-    });
 
     let mut res = RunResult { session_id: opts.resume.clone().or_else(|| opts.session_id.clone()), ..Default::default() };
     let mut result_rec: Option<Value> = None;
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let turn = opts.turn.max(1);
-    let stdout = child.stdout.take().context("stdout")?;
-    for line in BufReader::new(stdout).lines() {
-        let line = line?;
+    let mut retained_bytes = 0;
+    while let Some(line) = process.next_line()? {
         let t = line.trim();
         if t.is_empty() {
             continue;
         }
-        let Ok(mut rec) = serde_json::from_str::<Value>(t) else { continue };
-        res.raw.push(rec.clone());
+        let mut rec = serde_json::from_str::<Value>(t).context("malformed harness JSON stream; raw bytes retained")?;
+        super::retain_raw(&mut res, &rec, &mut retained_bytes)?;
         if let Some(sid) = rec.get("session_id").and_then(Value::as_str) {
             res.session_id = Some(sid.to_string());
         }
@@ -439,8 +428,9 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
             res.events.push(ev);
         }
     }
-    let status = child.wait()?;
-    res.stderr = err_thread.join().unwrap_or_default();
+    let output = process.finish()?;
+    let status = output.status;
+    res.stderr = output.stderr;
     if let Some(r) = &result_rec {
         res.cost_usd = r.get("total_cost_usd").and_then(Value::as_f64);
         res.is_error = r.get("is_error").and_then(Value::as_bool).unwrap_or(false);

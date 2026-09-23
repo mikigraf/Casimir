@@ -12,14 +12,19 @@ use crate::adapters::{self, RunOpts};
 use crate::brief::{draft_brief, intent_coverage, Brief};
 use crate::compare::{compare_sessions, judge_sessions_with, render_compare_markdown, sequence_similarity, JudgeOpts, Report};
 use crate::llm::{effective_model, LlmOpts};
-use crate::model::{action_sequence, files_touched, renumber_turns, stats, user_turns, Event, EventKind, Execution, Harness, RerunOf, Session, Simulated, SimulatorInfo};
+use crate::model::{action_sequence, renumber_turns, stats, user_turns, Event, EventKind, Execution, Harness, RerunOf, Session, Simulated, SimulatorInfo};
 use crate::render::{format_event, RenderOpts};
-use crate::simulate::{simulate_user_turn, SimState};
+use crate::simulate::simulate_user_turn;
 use crate::util::{casimir_home, colors, first_line, fmt_num, now_iso, now_stamp, pad, slug, write_json};
-use crate::workspace::{base_commit, capture_diff, capture_diff_against, commit_exists, create_worktree, is_git_repo, reconstruct_original_diff, repo_root, Diff};
+use crate::workspace::{base_commit, capture_diff, capture_diff_against, create_worktree, is_git_repo, reconstruct_original_diff, repo_root, Diff};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RerunOpts {
+    pub checks: Option<PathBuf>,
+    pub checkpoint_limit: u64,
+    pub turn_timeout_secs: u64,
+    pub allow_unrestricted: bool,
     pub harness: Option<Harness>,
     pub model: Option<String>,
     /// "verbatim" or "simulate"
@@ -67,6 +72,10 @@ pub struct RerunOpts {
 impl Default for RerunOpts {
     fn default() -> Self {
         RerunOpts {
+            checks: None,
+            checkpoint_limit: crate::checkpoint::DEFAULT_LIMIT,
+            turn_timeout_secs: 900,
+            allow_unrestricted: false,
             harness: None,
             model: None,
             user_mode: "verbatim".into(),
@@ -171,18 +180,18 @@ pub fn plan_workspace_at(original: &Session, workspace: &str, run_id: &str, from
     let plain = |dir: PathBuf, mode: &str| WorkspacePlan { dir, mode: mode.into(), root: None, commit: None, how: None, repo: None, note: None, restored: None };
     if !matches!(workspace, "auto" | "worktree" | "same") {
         let dir = fs::canonicalize(workspace).with_context(|| format!("workspace directory does not exist: {workspace}"))?;
-        return Ok(plain(dir, "dir"));
+        if !is_git_repo(&dir) { bail!("runs require a Git repository for reliable checkpoints"); }
+        let repo = repo_root(&dir)?;
+        let root = casimir_home().join("worktrees").join(run_id);
+        let relative = dir.strip_prefix(&repo).unwrap_or(Path::new(""));
+        return Ok(WorkspacePlan { dir: root.join(relative), mode: "worktree".into(), root: Some(root), commit: Some(crate::workspace::head_commit(&repo)?), how: Some("explicit repository HEAD".into()), repo: Some(repo), note: None, restored: None });
     }
     let cwd = original.cwd.as_deref().map(Path::new);
     let Some(cwd) = cwd.filter(|p| p.exists()) else {
-        if workspace != "auto" {
-            bail!("original cwd is not available here ({}); pass --workspace <dir>", original.cwd.as_deref().unwrap_or("?"));
-        }
-        let mut p = plain(std::env::current_dir()?, "cwd-fallback");
-        p.note = Some(format!("original cwd {} not found; using current directory", original.cwd.as_deref().unwrap_or("?")));
-        return Ok(p);
+        bail!("original cwd is unavailable; pass --workspace <repository>");
     };
     let git = is_git_repo(cwd);
+    if !git { bail!("runs require a Git repository for reliable checkpoints"); }
     if workspace == "same" || (workspace == "auto" && !git) {
         let mut p = plain(cwd.to_path_buf(), "same");
         if !git {
@@ -193,36 +202,13 @@ pub fn plan_workspace_at(original: &Session, workspace: &str, run_id: &str, from
     let repo = repo_root(cwd)?;
     let (mut commit, mut how) = base_commit(original, cwd)?;
     let mut restored = None;
-    if let Some(n) = from_turn.filter(|n| *n > 1) {
-        let turns = user_turns(original);
-        let ts = turns.iter().find(|t| t.turn == n).map(|t| t.ts.clone());
-        let at = ts.as_deref().and_then(|ts| {
-            let mut refs: Vec<&str> = Vec::new();
-            if let Some(b) = original.git_branch.as_deref() {
-                refs.push(b);
-            }
-            refs.push("HEAD");
-            refs.into_iter().find_map(|r| {
-                let out = std::process::Command::new("git").args(["rev-list", "-1", &format!("--before={ts}"), r]).current_dir(cwd).output().ok()?;
-                let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if out.status.success() && !sha.is_empty() && commit_exists(&sha, cwd) { Some(sha) } else { None }
-            })
-        });
-        let earlier_edits = files_touched(&Session { events: original.events.iter().filter(|e| e.turn < n).cloned().collect(), ..Default::default() }).len();
-        match at {
-            Some(sha) if sha != commit => {
-                commit = sha;
-                how = format!("last commit before turn {n}");
-                restored = Some("commits".into());
-            }
-            _ => {
-                restored = Some(if earlier_edits > 0 {
-                    format!("heuristic: no commit between the session base and turn {n}, but the original edited {earlier_edits} file(s) before that turn; the fork may start from a workspace without those edits")
-                } else {
-                    "exact: nothing was edited before the forked turn".into()
-                });
-            }
-        }
+    if let Some(n) = from_turn {
+        let id = original.checkpoints.get(&n).context("fork requires a compatible checkpoint; imported historical sessions support inspection and full reruns only")?;
+        let checkpoint = crate::checkpoint::load(id)?;
+        crate::checkpoint::require_compatible(&checkpoint)?;
+        commit = checkpoint.base;
+        how = "verified checkpoint".into();
+        restored = Some("recorded repository workspace and conversation; external state excluded".into());
     }
     let dest = casimir_home().join("worktrees").join(run_id);
     let rel = cwd.strip_prefix(&repo).unwrap_or(Path::new(""));
@@ -283,6 +269,7 @@ fn validate_run(original: &Session, o: &RerunOpts) -> Result<()> {
     if n == 0 { bail!("original session has no user turns to replay"); }
     if o.replicates == 0 || o.judge_repeats == 0 { bail!("replicates and judge repeats must be at least 1"); }
     if !o.pass_threshold.is_finite() || !(0.0..=10.0).contains(&o.pass_threshold) { bail!("pass threshold must be a finite score from 0 to 10"); }
+    if o.turn_timeout_secs == 0 || o.judge_llm.timeout_secs == 0 || o.sim_llm.timeout_secs == 0 { bail!("timeouts must be positive"); }
     if o.turns == Some(0) { bail!("turns must be at least 1"); }
     if let Some(t) = o.from_turn {
         if t < 2 || t as usize > o.turns.unwrap_or(n).min(n) { bail!("fork turn must be between 2 and the last requested turn"); }
@@ -293,7 +280,14 @@ fn validate_run(original: &Session, o: &RerunOpts) -> Result<()> {
 }
 
 pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: &mut dyn FnMut(&str)) -> Result<RerunOutcome> {
+    rerun_inner(original, o, None, log, out)
+}
+pub(crate) fn rerun_recovered(original: &Session, o: &RerunOpts, recovery: crate::recovery::Recovery, log: &mut dyn FnMut(&str), out: &mut dyn FnMut(&str)) -> Result<RerunOutcome> {
+    rerun_inner(original, o, Some(recovery), log, out)
+}
+fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recovery::Recovery>, log: &mut dyn FnMut(&str), out: &mut dyn FnMut(&str)) -> Result<RerunOutcome> {
     validate_run(original, o)?;
+    adapters::validate_permissions(&RunOpts { permission_mode: o.permission_mode.clone(), sandbox: o.sandbox.clone(), extra_args: o.extra_args.clone(), allow_unrestricted: o.allow_unrestricted, ..Default::default() })?;
     let c = colors();
     let harness = o.harness.unwrap_or(original.harness());
     let same_harness = harness == original.harness();
@@ -303,16 +297,23 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     if turns.is_empty() {
         bail!("original session has no user turns to replay");
     }
-    let from_turn = o.from_turn.unwrap_or(1).max(1);
-    if from_turn > turns.len() as u32 {
+    let from_turn = recovery.as_ref().map(|r| r.next_turn).unwrap_or_else(|| o.from_turn.unwrap_or(1).max(1));
+    if from_turn > turns.len() as u32 && recovery.is_none() {
         bail!("cannot fork at turn {from_turn}: the session has {} user turns", turns.len());
     }
-    if from_turn > 1 && !same_harness {
+    if from_turn > 1 && !same_harness && recovery.is_none() {
         bail!("fork-at-turn requires the same harness as the original ({}); the forked transcript is resumed natively", original.harness());
     }
     let mut workspace_original = original.clone();
     if let Some(repo) = &o.workspace_repo { workspace_original.cwd = Some(repo.display().to_string()); }
-    let ws = plan_workspace_at(&workspace_original, &o.workspace, &run_id, o.from_turn)?;
+    let restore_id = recovery.as_ref().and_then(|r| r.checkpoint.clone()).or_else(|| o.from_turn.and_then(|t| original.checkpoints.get(&t).cloned()));
+    if o.from_turn.is_some() && restore_id.is_none() { bail!("fork requires a compatible checkpoint; timestamps and inferred commits are insufficient"); }
+    let checkpoint = restore_id.as_deref().map(crate::checkpoint::load).transpose()?;
+    if let Some(cp) = &checkpoint { if from_turn as usize <= o.turns.unwrap_or(turns.len()).min(turns.len()) { crate::checkpoint::require_compatible(cp)?; } }
+    let ws = if let Some(cp) = &checkpoint {
+        let root = casimir_home().join("worktrees").join(&run_id);
+        WorkspacePlan { dir: root.join(&cp.subdir), mode: "worktree".into(), root: Some(root), commit: Some(cp.base.clone()), how: Some("verified checkpoint".into()), repo: Some(cp.repository.clone()), note: Some(cp.coverage.clone()), restored: Some("checkpoint".into()) }
+    } else { plan_workspace_at(&workspace_original, &o.workspace, &run_id, None)? };
     let max_turns = o.turns.map(|n| n.min(turns.len())).unwrap_or(turns.len());
     let run_dir = o.out_dir.clone().unwrap_or_else(|| casimir_home().join("runs").join(&run_id));
     if run_dir.join("meta.json").exists() { bail!("run directory already contains a run: {}; choose a fresh output directory", run_dir.display()); }
@@ -332,6 +333,7 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     if from_turn > 1 {
         log(&format!("  fork: turns 1..{} preserved from the original, turn {from_turn} {}", from_turn - 1, if o.intervention.is_some() { "replaced by the intervention message" } else { "resampled verbatim" }));
     }
+    log(&format!("  preflight: at most {} harness turns, {} ordered judge calls; turn timeout {}s; LLM timeout {}s; costs measured when available, otherwise unknown", max_turns.saturating_sub(from_turn as usize - 1), if o.judge { 2 * o.judge_repeats } else { 0 }, o.turn_timeout_secs, o.judge_llm.timeout_secs));
     log(&format!("  output: {}", run_dir.display()));
     if o.dry_run {
         for t in turns.iter().take(max_turns).filter(|t| t.turn >= from_turn) {
@@ -341,29 +343,40 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         return Ok(RerunOutcome { run_dir, session: None, report: None, diff: None, workspace: ws, dry_run: true });
     }
 
-    if ws.mode == "worktree" {
+    let _lock = crate::util::RunLock::acquire(&run_dir)?;
+    if run_dir.join("meta.json").exists() { bail!("run directory already contains a run"); }
+    for entry in fs::read_dir(&run_dir)? {
+        let name = entry?.file_name();
+        if name != ".lock" && !(recovery.is_some() && name == "recovery.json") { bail!("output directory must be empty to establish artifact ownership"); }
+    }
+    if let Some(id) = &restore_id {
+        crate::checkpoint::restore(id, ws.root.as_ref().unwrap())?;
+    } else if ws.mode == "worktree" {
         create_worktree(ws.repo.as_ref().unwrap(), ws.commit.as_ref().unwrap(), ws.root.as_ref().unwrap())?;
         log(&format!("  created worktree {}", ws.root.as_ref().unwrap().display()));
     }
+    crate::artifacts::register(&run_dir, &ws)?;
     // Freeze the base before the agent can commit. For forks include the preserved prefix's edits.
     let diff_base = if is_git_repo(&ws.dir) { Some(base_commit(&workspace_original, &ws.dir)?.0) } else { None };
     fs::create_dir_all(&run_dir)?;
     write_json(&run_dir.join("original.json"), original)?;
+    let frozen_checks = o.checks.as_ref().map(|p| crate::checks::freeze(p, &run_dir, &ws.dir)).transpose()?;
 
-    let mut session = Session::new(harness);
+    let mut session = recovery.as_ref().map(|r| r.session.clone()).unwrap_or_else(|| Session::new(harness));
     session.model = model.clone();
+    session.version = crate::doctor::harness_version(harness);
     session.cwd = Some(ws.dir.display().to_string());
     session.title = original.title.clone();
     session.started_at = Some(now_iso());
     session.git_commit = diff_base.clone();
-    session.execution = Some(Execution { requested_turns: max_turns, preserved_turns: (from_turn - 1) as usize, ..Default::default() });
+    if recovery.is_none() { session.execution = Some(Execution { requested_turns: max_turns, preserved_turns: (from_turn - 1) as usize, ..Default::default() }); }
     session.rerun_of = Some(RerunOf { harness: original.harness(), id: original.id.clone(), path: original.path.clone() });
     session.workspace = Some(serde_json::to_value(&ws)?);
     if simulate {
         session.simulator = Some(SimulatorInfo { model: sim_model.clone(), backend: crate::llm::pick_backend(&o.sim_llm.backend) });
     }
     let mut meta = json!({
-        "runId": run_id, "original": session.rerun_of, "harness": harness, "model": model,
+        "schemaVersion": 1, "state": "running", "runId": run_id, "original": session.rerun_of, "harness": harness, "model": model,
         "userMode": o.user_mode, "simulator": session.simulator,
         "judgeModel": if o.judge { Some(effective_model(&o.judge_llm)) } else { None },
         "workspace": ws, "startedAt": session.started_at, "requestedTurns": max_turns,
@@ -371,16 +384,17 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     write_json(&run_dir.join("meta.json"), &meta)?;
     let mut raw = fs::OpenOptions::new().create(true).append(true).open(run_dir.join("raw.jsonl"))?;
     let start = crate::util::ts_ms(session.started_at.as_deref().unwrap_or(""));
-    let isolated = ws.mode == "worktree" || ws.mode == "dir";
-    let permission_mode = o.permission_mode.clone().unwrap_or_else(|| if isolated { "auto".into() } else { "acceptEdits".into() });
-    let sandbox = o.sandbox.clone().unwrap_or_else(|| if isolated { "auto".into() } else { "workspace-write".into() });
+    let permission_mode = o.permission_mode.clone().unwrap_or_else(|| "preserve".into());
+    let sandbox = o.sandbox.clone().unwrap_or_else(|| "preserve".into());
     let render = RenderOpts { thinking: o.thinking, max_lines: 6, ..Default::default() };
     let session_path = run_dir.join("session.json");
 
     let mut harness_session_id: Option<String> = None;
-    let mut cost = 0.0f64;
-    let mut saw_cost = false;
-    let mut sim_state = SimState::default();
+    let mut cost = session.cost_usd.unwrap_or(0.0);
+    let mut saw_cost = session.cost_usd.is_some();
+    let mut sim_state: crate::simulate::SimState = recovery.as_ref().map(|r| r.simulator.clone()).unwrap_or_default();
+    let configuration_hash = crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":harness,"permissionMode":permission_mode,"sandbox":sandbox,"extraArgs":o.extra_args,"checksHash":frozen_checks.as_ref().map(|(_, hash)| hash)}))?);
+    if recovery.is_some() && checkpoint.as_ref().is_some_and(|cp| cp.configuration_hash != configuration_hash) { bail!("recovery configuration differs from its checkpoint"); }
     let diff_a = original_diff_for(original, o);
     let brief = resolve_brief(original, o, diff_a.as_ref(), &run_dir, log)?;
     if let Some(b) = &brief {
@@ -389,30 +403,39 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         write_json(&run_dir.join("meta.json"), &meta)?;
     }
 
-    if from_turn > 1 {
+    if from_turn > 1 && from_turn as usize <= max_turns {
         // Harness-native fork: the transcript before the forked turn is preserved verbatim and the
         // harness resumes it (in-situ intervention, after arXiv 2512.06749).
         let new_id = uuid::Uuid::new_v4().to_string();
-        let transcript = adapters::prepare_fork(harness, original, from_turn, &new_id, &ws.dir)?;
+        let cp = checkpoint.as_ref().context("native continuation requires a verified checkpoint")?;
+        let transcript = adapters::restore_conversation(cp, &new_id, &ws.dir)?;
         log(&format!("  forked transcript: {}", transcript.display()));
         harness_session_id = Some(new_id);
-        for e in original.events.iter().filter(|e| e.turn < from_turn) {
-            session.events.push(e.clone());
+        if recovery.is_none() {
+            for e in original.events.iter().filter(|e| e.turn < from_turn) { session.events.push(e.clone()); }
         }
-        session.events.push(Event::system(from_turn, now_iso(), "fork", format!("forked from {} at turn {from_turn}", original.id)));
+        session.events.push(Event::system(from_turn, now_iso(), "fork", format!("continued from verified checkpoint before turn {from_turn}")));
         meta["forkedAtTurn"] = json!(from_turn);
         meta["intervention"] = json!(o.intervention);
         meta["forkedTranscript"] = json!(transcript);
         write_json(&run_dir.join("meta.json"), &meta)?;
     }
 
+    session.configuration_hash = Some(configuration_hash.clone());
+    let mut saved_options = o.clone();
+    if frozen_checks.is_some() { saved_options.checks = Some(run_dir.join("checks.definition.json")); }
+    if brief.is_some() { saved_options.brief = Some(run_dir.join("brief.json")); }
+    let mut journal = crate::recovery::Recovery { schema_version: 1, state: "running".into(), options: saved_options, original: original.clone(), session: session.clone(), simulator: sim_state.clone(), next_turn: from_turn, checkpoint: restore_id.clone(), active: false, source: run_dir.clone(), resumed_as: None };
+    journal.save(&run_dir)?;
     for (i, t) in turns.iter().take(max_turns).enumerate() {
         if t.turn < from_turn {
             continue;
         }
         let mut message = t.text.clone();
         let mut simulated: Option<Simulated> = None;
-        if t.turn == from_turn && from_turn > 1 {
+        if t.turn == from_turn && recovery.as_ref().is_some_and(|r| r.active) {
+            message = checkpoint.as_ref().unwrap().pending_prompt.clone();
+        } else if t.turn == from_turn && from_turn > 1 && recovery.is_none() {
             if let Some(m) = &o.intervention {
                 message = m.clone();
                 simulated = Some(Simulated { verbatim: false, reason: "intervention: user message replaced at the fork".into(), grounded_in: vec![from_turn], action: Some("intervention".into()) });
@@ -436,6 +459,7 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
                     log(&format!("{}simulator: no-op at turn {} ({}){}", c.magenta, t.turn, sim.reason, c.reset));
                     session.events.push(Event::system(t.turn, now_iso(), "simulator-noop", sim.reason));
                     session.execution.as_mut().unwrap().skipped_turns += 1;
+                    journal.session = session.clone(); journal.simulator = sim_state.clone(); journal.next_turn = t.turn + 1; journal.save(&run_dir)?;
                     continue;
                 }
                 None => {
@@ -457,6 +481,15 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
                 }
             }
         }
+        let native = harness_session_id.as_ref().and_then(|id| adapters::find_log_by_id(harness, id));
+        if is_git_repo(&ws.dir) {
+            let cp = crate::checkpoint::capture(crate::checkpoint::Capture { cwd: &ws.dir, run_dir: &run_dir, native: native.as_deref(), harness, version: session.version.clone(), turn: t.turn, expected_conversation_turns: user_turns(&session).len() as u32, prompt: &message, configuration_hash: &configuration_hash, limit: o.checkpoint_limit })?;
+            session.checkpoints.insert(t.turn, cp.clone());
+            journal.checkpoint = Some(cp);
+        }
+        journal.session = session.clone(); journal.simulator = sim_state.clone(); journal.next_turn = t.turn; journal.active = true;
+        journal.save(&run_dir)?;
+        meta["activeTurn"] = json!(t.turn); write_json(&run_dir.join("meta.json"), &meta)?;
         let mut user_ev = Event::text(t.turn, now_iso(), EventKind::User, message.clone());
         user_ev.simulated = simulated;
         if !o.quiet {
@@ -467,6 +500,9 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         session.events.push(user_ev);
 
         let opts = RunOpts {
+            timeout_secs: Some(o.turn_timeout_secs),
+            allow_unrestricted: o.allow_unrestricted,
+            spool: Some(run_dir.join("turns").join(t.turn.to_string())),
             prompt: message,
             cwd: Some(ws.dir.clone()),
             model: model.clone(),
@@ -503,6 +539,7 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         } else {
             session.execution.as_mut().unwrap().completed_turns += 1;
         }
+        if serde_json::to_vec(&session.events)?.len().saturating_add(serde_json::to_vec(&live)?.len()) > 256 * 1024 * 1024 { bail!("run exceeds 256 MiB normalization limit; raw streams and recovery checkpoint retained"); }
         session.events.extend(live);
         for r in &res.raw {
             writeln!(raw, "{r}")?;
@@ -525,6 +562,18 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
             }
         }
         session.ended_at = Some(now_iso());
+        session.harness_session_id = harness_session_id.clone();
+        session.cost_usd = if saw_cost { Some(cost) } else { None };
+        if !res.is_error {
+            journal.session = session.clone(); journal.simulator = sim_state.clone(); journal.next_turn = t.turn + 1; journal.active = false; journal.checkpoint = None;
+            // Commit completion before any subsequent work. A crash here never resends this turn.
+            journal.save(&run_dir)?;
+            if is_git_repo(&ws.dir) {
+                let native = harness_session_id.as_ref().and_then(|id| adapters::find_log_by_id(harness, id));
+                journal.checkpoint = Some(crate::checkpoint::capture(crate::checkpoint::Capture { cwd: &ws.dir, run_dir: &run_dir, native: native.as_deref(), harness, version: session.version.clone(), turn: t.turn + 1, expected_conversation_turns: user_turns(&session).len() as u32, prompt: turns.get(i + 1).map(|t| t.text.as_str()).unwrap_or(""), configuration_hash: &configuration_hash, limit: o.checkpoint_limit })?);
+                journal.save(&run_dir)?;
+            }
+        }
         write_json(&session_path, &session)?;
         if res.is_error && !o.continue_on_error {
             log(&format!("{}harness reported an error in turn {}; stopping (use --continue-on-error to keep going){}", c.red, t.turn, c.reset));
@@ -566,6 +615,7 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         fs::write(run_dir.join("original.patch"), &d.patch)?;
     }
 
+    let check_results = frozen_checks.as_ref().map(|(definition, hash)| crate::checks::execute(definition, hash, &ws.dir, &run_dir)).transpose()?;
     let mut judge = None;
     if o.judge {
         let jo = JudgeOpts { llm: o.judge_llm.clone(), repeats: o.judge_repeats.max(1), brief: brief.clone(), model_a: original.model.clone(), model_b: session.model.clone() };
@@ -581,6 +631,8 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
         }
     }
     let mut report = compare_sessions(original, &session, diff_a, Some(diff.clone()), judge);
+    report.checks = check_results;
+    report.update_outcome(o.pass_threshold);
     if o.judge {
         if let Some(b) = &brief {
             match intent_coverage(b, &session, &o.judge_llm) {
@@ -591,6 +643,12 @@ pub fn rerun(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str), out: 
     }
     fs::write(run_dir.join("report.md"), render_compare_markdown(&report, "original", "rerun"))?;
     write_json(&run_dir.join("report.json"), &report)?;
+    session.evaluation = Some(json!({"outcome":report.overall_outcome,"execution":report.execution_status,"checks":report.checks,"judgeAssessment":report.judge_assessment,"judgeModel":if o.judge {Some(effective_model(&o.judge_llm))} else {None},"passThreshold":o.pass_threshold}));
+    write_json(&session_path, &session)?;
+    if !journal.active { journal.session = session.clone(); }
+    journal.state = if session.execution.as_ref().is_some_and(|e| e.failed_turns > 0) { "failed".into() } else { "completed".into() };
+    journal.save(&run_dir)?;
+    meta["state"] = json!(if session.execution.as_ref().is_some_and(|e| e.failed_turns > 0) { "failed" } else { "completed" });
     meta["endedAt"] = json!(session.ended_at);
     meta["harnessSessionId"] = json!(harness_session_id);
     meta["completedTurns"] = json!(session.execution.as_ref().unwrap().completed_turns);
@@ -656,6 +714,7 @@ pub fn write_record(path: &Path, session: &Session, permission_mode: &str, sandb
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplicateEntry {
+    #[serde(default)] pub outcome: String,
     pub label: String,
     pub dir: PathBuf,
     pub harness: Option<Harness>,
@@ -772,7 +831,6 @@ pub struct MatrixSummary {
 }
 
 fn entry_from(label: &str, original: &Session, control: bool, sim_model: Option<String>, requested: usize, outcome: &RerunOutcome, opts: &RerunOpts) -> ReplicateEntry {
-    let threshold = opts.pass_threshold;
     let judged = opts.judge;
     let session = outcome.session.as_ref().unwrap();
     let st = stats(session);
@@ -791,10 +849,11 @@ fn entry_from(label: &str, original: &Session, control: bool, sim_model: Option<
     let end_state = report.end_state.as_ref().filter(|e| e.informative).map(|e| e.score);
     let stopped = session.execution.as_ref().and_then(|e| e.stop_reason.as_deref());
     let all_turns_done = (completed >= requested && stopped.is_none()) || (stopped == Some("goals_met") && judged);
-    let pass = continuation_errors == 0 && session.execution.as_ref().is_some_and(|e| e.failed_turns == 0) && all_turns_done && (!judged || report.judge.as_ref().is_some_and(|j| j.score_b >= threshold && j.invalid_b.is_empty()));
+    let pass = continuation_errors == 0 && session.execution.as_ref().is_some_and(|e| e.failed_turns == 0) && all_turns_done && report.overall_outcome == "passed";
     // Compare only the executed suffix for forks; a long preserved prefix must not dilute distance.
     let distance = 1.0 - sequence_similarity(&action_sequence(&reference), &action_sequence(&candidate));
     ReplicateEntry {
+        outcome: report.overall_outcome.clone(),
         label: label.into(),
         dir: outcome.run_dir.clone(),
         harness: session.harness,
@@ -934,7 +993,7 @@ pub fn summarize(entries: Vec<ReplicateEntry>, run_dir: PathBuf, replicates: usi
                 max_distance: dists.iter().cloned().reduce(f64::max).unwrap_or(0.0),
                 earliest_divergent_turn: es.iter().filter_map(|e| e.first_divergent_turn).min(),
                 exceeds_control: None,
-                verdict: verdict(passes, clean, es.len()).into(),
+                verdict: if es.iter().any(|e| e.outcome == "inconclusive") { "inconclusive".into() } else { verdict(passes, clean, es.len()).into() },
                 pass_at_1_ci: wilson(passes, es.len()),
                 order_sensitive_rate,
                 mean_judge_position_bias: mean(&biases),
@@ -999,7 +1058,7 @@ pub fn summarize(entries: Vec<ReplicateEntry>, run_dir: PathBuf, replicates: usi
 pub fn render_matrix_text(m: &MatrixSummary) -> String {
     let c = colors();
     let f = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "-".into());
-    let mut out = vec![format!("{}replicates: {} per group; pass = no errors, all turns, judge ≥ {:.1}{}{}", c.bold, m.replicates, m.pass_threshold, if m.judged { "" } else { " (no judge: pass = completed cleanly)" }, c.reset)];
+    let mut out = vec![format!("{}replicates: {} per group; pass = no errors, all turns, judge ≥ {:.1}{}{}", c.bold, m.replicates, m.pass_threshold, if m.judged { "" } else { " (no evaluation evidence: task outcome is inconclusive)" }, c.reset)];
     out.push(format!("{}{}{}{}{}{}{}{}{}{}", pad("replicate", 22), pad("model", 20), pad("turns", 7), pad("errs", 5), pad("tools", 6), pad("out tok", 9), pad("judge", 7), pad("end/recall", 11), pad("dist@turn", 10), "pass"));
     for e in &m.entries {
         out.push(format!(
@@ -1129,6 +1188,9 @@ pub fn rerun_matrix(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str)
     let model = o.model.clone().or_else(|| if harness == original.harness() { original.model.clone() } else { None });
     let parent_id = o.run_id.clone().unwrap_or_else(|| make_run_id(original, harness, model.as_deref()));
     let parent_dir = o.out_dir.clone().unwrap_or_else(|| casimir_home().join("runs").join(&parent_id));
+    let count = replicates * sim_models.len() * if o.control { 2 } else { 1 };
+    log(&format!("Preflight: {count} runs; up to {} harness turns; {} AB/BA judge calls plus brief/coverage and simulator calls. Unavailable costs remain unknown.", count * o.turns.unwrap_or(user_turns(original).len()), if o.judge { count * 2 * o.judge_repeats } else { 0 }));
+    let _experiment_lock = if o.dry_run { None } else { Some(crate::util::RunLock::acquire(&parent_dir)?) };
     let frozen = prepare_experiment(original, o, &parent_dir, log)?;
     let requested = o.turns.map(|n| n.min(user_turns(original).len())).unwrap_or(user_turns(original).len());
     let mut entries = Vec::new();
@@ -1186,6 +1248,11 @@ fn prepare_experiment(original: &Session, o: &RerunOpts, dir: &Path, log: &mut d
     if !o.dry_run {
         if dir.join("replicates.json").exists() || dir.join("attribution.json").exists() { bail!("experiment directory already contains results: {}; choose a fresh output directory", dir.display()); }
         fs::create_dir_all(dir)?;
+        if let Some(source) = &o.checks {
+            let workspace = frozen.workspace_repo.as_deref().or_else(|| original.cwd.as_deref().map(Path::new)).context("experiment repository missing")?;
+            crate::checks::freeze(source, dir, workspace)?;
+            frozen.checks = Some(dir.join("checks.definition.json"));
+        }
         frozen.original_diff = original_diff_for(original, o);
         if let Some(brief) = resolve_brief(original, o, frozen.original_diff.as_ref(), dir, log)? {
             let path = dir.join("brief.json");
@@ -1239,6 +1306,12 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
         bail!("attribution resamples the original harness and model; use fork for model-change interventions");
     }
     if original.model.is_none() { bail!("attribution requires the original model to be recorded"); }
+    let evaluation = original.evaluation.as_ref().context("attribution withheld: original has no recorded evaluation; demonstrate failure under frozen criteria first")?;
+    if evaluation["outcome"] != "failed" || evaluation["execution"] != "completed" { bail!("attribution withheld: original must demonstrate task failure without infrastructure failure"); }
+    if evaluation["judgeModel"].as_str() != Some(effective_model(&o.judge_llm).as_str()) || evaluation["passThreshold"].as_f64() != Some(o.pass_threshold) { bail!("attribution withheld: evaluation configuration differs from the original"); }
+    let checks_hash = o.checks.as_ref().map(fs::read).transpose()?.map(|bytes| crate::checkpoint::hash(&bytes));
+    let configuration_hash = crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":original.harness(),"permissionMode":o.permission_mode.as_deref().unwrap_or("preserve"),"sandbox":o.sandbox.as_deref().unwrap_or("preserve"),"extraArgs":o.extra_args,"checksHash":checks_hash}))?);
+    if original.configuration_hash.as_deref() != Some(&configuration_hash) { bail!("attribution withheld: harness permissions, arguments, or executable checks differ from original"); }
     if o.user_mode != "verbatim" || o.sim_models.len() > 1 { bail!("attribution requires verbatim user turns to avoid mixing simulator effects with turn effects"); }
     let n = user_turns(original).len();
     if o.turns.is_some_and(|t| t < n) { bail!("attribution must evaluate the whole task; omit --turns"); }
@@ -1253,6 +1326,12 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
     let harness = o.harness.unwrap_or(original.harness());
     let parent_id = o.run_id.clone().unwrap_or_else(|| format!("{}-attribute", make_run_id(original, harness, o.model.as_deref())));
     let parent_dir = o.out_dir.clone().unwrap_or_else(|| casimir_home().join("runs").join(&parent_id));
+    for turn in turns {
+        let id = original.checkpoints.get(turn).context("attribution withheld: missing checkpoint")?;
+        let checkpoint = crate::checkpoint::load(id)?; crate::checkpoint::require_compatible(&checkpoint)?;
+        if checkpoint.configuration_hash != configuration_hash { bail!("attribution withheld: checkpoint configuration differs"); }
+    }
+    let _experiment_lock = if o.dry_run { None } else { Some(crate::util::RunLock::acquire(&parent_dir)?) };
     let frozen = prepare_experiment(original, o, &parent_dir, log)?;
     let mut effects = Vec::new();
     let mut original_failed = true;
