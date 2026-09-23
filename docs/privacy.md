@@ -20,3 +20,8 @@ Redaction is a best-effort transformation: arbitrary secrets cannot always be re
 Review the resulting file before sharing. Raw exports without `--share` retain evidence.
 
 Windows implementation reference: [Microsoft security information flags](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-information).
+
+Claude-backed judge, simulator and brief helpers use a temporary working directory and
+`--safe-mode` to disable ambient project/user customizations while retaining authentication.
+Their system prompts are private files, not command-line text. This helper isolation does not
+alter the permission settings or configuration of the coding harness being evaluated.

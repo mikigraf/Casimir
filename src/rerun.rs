@@ -396,6 +396,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     let mut harness_session_id: Option<String> = None;
     let mut cost = session.cost_usd.unwrap_or(0.0);
     let mut saw_cost = session.cost_usd.is_some();
+    let mut missing_cost = false;
     let mut sim_state: crate::simulate::SimState = recovery.as_ref().map(|r| r.simulator.clone()).unwrap_or_default();
     let configuration_for = |model: Option<&str>| -> Result<String> { Ok(crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":harness,"model":model,"permissionMode":permission_mode,"sandbox":sandbox,"extraArgs":o.extra_args,"checksHash":frozen_checks.as_ref().map(|(_, hash)| hash)}))?)) };
     let mut configuration_hash = configuration_for(session.model.as_deref())?;
@@ -561,7 +562,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
         if let Some(cu) = res.cost_usd {
             cost += cu;
             saw_cost = true;
-        }
+        } else { missing_cost = true; }
         if let Some(usage) = &res.usage {
             if matches!(harness, Harness::Codex | Harness::Gemini) {
                 session.usage_total.get_or_insert_with(Default::default).add(usage);
@@ -571,7 +572,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
         }
         session.ended_at = Some(now_iso());
         session.harness_session_id = harness_session_id.clone();
-        session.cost_usd = if saw_cost { Some(cost) } else { None };
+        session.cost_usd = if saw_cost && !missing_cost { Some(cost) } else { None };
         if !res.is_error {
             journal.session = session.clone(); journal.simulator = sim_state.clone(); journal.next_turn = t.turn + 1; journal.active = false; journal.checkpoint = None;
             // Commit completion before any subsequent work. A crash here never resends this turn.
@@ -591,9 +592,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
 
     session.id = harness_session_id.clone().unwrap_or_else(|| run_id.clone());
     session.harness_session_id = harness_session_id.clone();
-    if saw_cost {
-        session.cost_usd = Some(cost);
-    }
+    session.cost_usd = if saw_cost && !missing_cost { Some(cost) } else { None };
     for e in &mut session.events { e.source_turn.get_or_insert(e.turn); }
     if let Some(hid) = &harness_session_id {
         if let Some(file) = adapters::find_log_by_id(harness, hid) {
@@ -628,8 +627,10 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     let check_results = frozen_checks.as_ref().map(|(definition, hash)| crate::checks::execute(definition, hash, &ws.dir, &run_dir)).transpose()?;
     let mut judge = None;
     let mut judge_error = None;
+    let mut judge_configuration_hash = None;
     if o.judge {
         let jo = JudgeOpts { llm: o.judge_llm.clone(), repeats: o.judge_repeats.max(1), brief: brief.clone(), model_a: original.model.clone(), model_b: session.model.clone() };
+        judge_configuration_hash = Some(crate::compare::judge_configuration_hash(&jo, o.pass_threshold));
         log(&format!("{}asking judge ({}) in both candidate orders{}…{}", c.magenta, effective_model(&o.judge_llm), if jo.repeats > 1 { format!(", {} repeats each", jo.repeats) } else { String::new() }, c.reset));
         match judge_sessions_with(original, &session, diff_a.as_ref(), Some(&diff), &jo) {
             Ok(j) => {
@@ -655,7 +656,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     }
     fs::write(run_dir.join("report.md"), render_compare_markdown(&report, "original", "rerun"))?;
     write_json(&run_dir.join("report.json"), &report)?;
-    session.evaluation = Some(json!({"outcome":report.overall_outcome,"execution":report.execution_status,"checks":report.checks,"judgeAssessment":report.judge_assessment,"judgeError":report.judge_error,"judgeModel":if o.judge {Some(effective_model(&o.judge_llm))} else {None},"passThreshold":o.pass_threshold,"rubricHash":brief.as_ref().map(|b| crate::checkpoint::hash(b.rubric_text().as_bytes()))}));
+    session.evaluation = Some(json!({"outcome":report.overall_outcome,"execution":report.execution_status,"checks":report.checks,"judgeAssessment":report.judge_assessment,"judgeError":report.judge_error,"judgeConfigurationHash":judge_configuration_hash,"judgeModel":if o.judge {Some(effective_model(&o.judge_llm))} else {None},"passThreshold":o.pass_threshold,"rubricHash":brief.as_ref().map(|b| crate::checkpoint::hash(b.rubric_text().as_bytes()))}));
     write_json(&session_path, &session)?;
     if session.execution.as_ref().is_some_and(|e| e.failed_turns == 0) { journal.session = session.clone(); }
     journal.state = if session.execution.as_ref().is_some_and(|e| e.failed_turns > 0) { "failed".into() } else { "completed".into() };
@@ -1328,6 +1329,10 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
     let rubric_hash = o.brief.as_ref().map(|path| Brief::load(path).map(|b| crate::checkpoint::hash(b.rubric_text().as_bytes()))).transpose()?;
     if evaluation.get("rubricHash").is_none() || evaluation["rubricHash"] != json!(rubric_hash) {
         bail!("attribution withheld: supply the original frozen --brief; rubric evidence is missing or differs");
+    }
+    let judge_options = JudgeOpts { llm:o.judge_llm.clone(), repeats:o.judge_repeats.max(1), brief:o.brief.as_ref().map(|p|Brief::load(p)).transpose()?, model_a:original.model.clone(),model_b:original.model.clone() };
+    if evaluation["judgeConfigurationHash"].as_str() != Some(crate::compare::judge_configuration_hash(&judge_options,o.pass_threshold).as_str()) {
+        bail!("attribution withheld: judge instructions, backend, sampling configuration or helper context differs (or was not recorded)");
     }
     let checks_hash = o.checks.as_ref().map(fs::read).transpose()?.map(|bytes| crate::checkpoint::hash(&bytes));
     let configuration_hash = crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":original.harness(),"model":original.model,"permissionMode":o.permission_mode.as_deref().unwrap_or("preserve"),"sandbox":o.sandbox.as_deref().unwrap_or("preserve"),"extraArgs":o.extra_args,"checksHash":checks_hash}))?);

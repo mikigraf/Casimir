@@ -26,3 +26,7 @@ that the first turn is not repeated, and verifies completed resume is a no-op. T
 `--harness claude-code` or `--harness codex` is useful for version validation; a subset result
 cannot satisfy a release gate requiring both. The checked-in compatibility manifest must
 validate the exact harness version **and platform** before native continuation is enabled.
+
+For a disposable Claude test repository, `--claude-permission-mode acceptEdits` explicitly
+permits edits while retaining the provider's other permission checks. The default still
+preserves the user's configuration; unrestricted mode remains a separate opt-in.

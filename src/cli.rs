@@ -221,6 +221,8 @@ impl RunArgs {
 pub enum Cmd {
     /// Generate AB/BA judge predictions for the frozen 40-pair corpus (makes model calls)
     PredictEvaluation {
+        /// First N pairs for smoke testing; release calibration requires all 40
+        #[arg(long, default_value_t = 40)] limit: usize,
         #[arg(long)] corpus: PathBuf,
         #[arg(short, long)] output: PathBuf,
         #[command(flatten)] llm: LlmArgs,
@@ -397,9 +399,9 @@ pub fn run() -> Result<i32> {
         _ => None,
     };
     match cli.command {
-        Cmd::PredictEvaluation { corpus, output, llm } => {
-            eprintln!("Preflight: 40 trace pairs, 80 ordered judge calls (up to 160 with JSON repair); no human labels are generated.");
-            let result = crate::calibration::predict(&corpus, &output, &llm.judge_opts())?;
+        Cmd::PredictEvaluation { corpus, output, llm, limit } => {
+            eprintln!("Preflight: {limit} trace pairs, {} ordered judge calls (up to {} with JSON repair); no human labels are generated.", limit.saturating_mul(2), limit.saturating_mul(4));
+            let result = crate::calibration::predict_limit(&corpus, &output, &llm.judge_opts(), limit)?;
             println!("Predictions saved to {}", output.join("predictions.json").display());
             if result["failures"].as_object().is_some_and(|failures| !failures.is_empty()) { return Ok(1); }
         },

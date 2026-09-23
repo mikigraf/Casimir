@@ -138,7 +138,9 @@ fn complete_cli(system: &str, prompt: &str, model: &str, timeout: u64, spool: &s
     let mut cmd = Command::new(&bin);
     let system_file = spool.join("system.txt");
     crate::util::atomic_write(&system_file, system.as_bytes())?;
-    cmd.args(["-p", "--output-format", "json", "--tools", "", "--no-session-persistence", "--model", model, "--system-prompt-file"]).arg(&system_file);
+    let working = tempfile::tempdir()?;
+    cmd.current_dir(working.path());
+    cmd.args(["-p", "--safe-mode", "--output-format", "json", "--tools", "", "--no-session-persistence", "--model", model, "--system-prompt-file"]).arg(std::fs::canonicalize(&system_file)?);
     clean_command(&mut cmd);
     let out = crate::process::capture(&mut cmd, prompt.as_bytes(), Duration::from_secs(timeout), Some(&spool.join("process")))?;
     let stdout = String::from_utf8_lossy(&out.stdout);

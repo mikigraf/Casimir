@@ -17,7 +17,8 @@ Results are validated diagnostics on a recorded corpus, never causal proof.
 - `doctor --json` performs version/login-status probes, without model calls.
 - Content-addressed repository/index/conversation checkpoints, retained Git bundles and staged objects; verified fresh-worktree restore even after source deletion.
 - Frozen executable checks and separate execution, check, judge, and overall outcomes; rubric/model matching for attribution and retained judge-failure/contradiction findings.
-- Frozen-corpus prediction runner and offline scoring against independent human review.
+- Frozen-corpus prediction runner and offline scoring against independent human review; revision 2 includes executable check source, captured results and explicit final snapshots.
+- Claude helper calls disable ambient customizations and use temporary working directories.
 - Redacted sharing exports, ownership-based cleanup previews, and optional reference-aware checkpoint reclamation.
 - Compiled protocol fixtures; deterministic CI configured for all three operating systems and Rust 1.85.
 
@@ -28,7 +29,7 @@ workflow or a fixture success is not evidence that an authenticated provider wor
 
 | Gate | Required evidence | Current disposition |
 |---|---|---|
-| Reliability | Full deterministic suite on Linux/macOS/Windows; no orphan processes, lost records, duplicate completed turns, or source checkout edits | 8f9351a passed all six OS/toolchain jobs and lint/release build in two CI runs; final changes require a fresh passing CI run |
+| Reliability | Full deterministic suite on Linux/macOS/Windows; no orphan processes, lost records, duplicate completed turns, or source checkout edits | Deterministic OS/toolchain runs are recorded in GitHub Actions; the release evidence bundle must include a passing run for its exact commit |
 | Live Linux | 10 maintained multi-file tasks × 2 harnesses × 2 replicates; both cross-harness replay directions | Linux Claude 2.1.280 replay/fork/interrupted resume validated; full 40-attempt suite blocked on Codex/API access |
 | Live macOS/Windows | Authenticated replay, checkpoint fork, interrupted resume | Pending native authenticated environments |
 | Evaluation | Frozen 40-pair corpus, two independent reviewers, adjudication; ≥90% decisive agreement; abstentions and false positives reported | Human review and calibration pending |

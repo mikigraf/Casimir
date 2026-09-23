@@ -18,7 +18,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - run: cargo test --locked --all-targets
-      - run: python -m unittest discover -s tests -p test_release_gates.py
+      - run: python -m unittest discover -s tests -p 'test_*.py'
   lint-and-build:
     runs-on: ubuntu-latest
     steps:

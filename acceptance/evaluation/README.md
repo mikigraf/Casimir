@@ -51,3 +51,11 @@ strata and human labels from model inputs, freezes the corpus bytes, retains per
 and marks predictions `humanReviewed: false`. Model/transport failures remain inconclusive;
 required-check failures cannot become passes. Use `predictions/predictions.json` when scoring.
 These generated predictions cannot replace independent human review.
+
+Revision 2 replaces placeholder test comments with executable definitions and captured outputs.
+The prediction runner supplies the recorded final file snapshots and external check source to
+the judge, without claiming they are Git commits or model-authored trajectories. Intentionally
+missing snapshots remain absent. `scripts/refresh-evaluation-corpus.py --refresh` is a maintainer
+operation that invalidates old predictions/reviews by changing the frozen hash; never run it
+silently against a reviewed release corpus. Use `predict-evaluation --limit 1` for a paid smoke
+test before a full run. Partial predictions cannot pass the 40-case calibration gate.

@@ -71,7 +71,7 @@ fn checkpointed_original(repo: &Path) -> Session {
     let id = casimir::checkpoint::capture(casimir::checkpoint::Capture { cwd: repo, run_dir: &tmp("checkpoint-source"), native: Some(&native), harness: Harness::ClaudeCode, version: Some("casimir-fixture 1.0.0".into()), turn: 2, expected_conversation_turns: 1, prompt: &user_turns(&original)[1].text, configuration_hash: &configuration_hash, limit: casimir::checkpoint::DEFAULT_LIMIT }).unwrap();
     original.checkpoints.insert(2, id);
     original.configuration_hash = Some(configuration_hash);
-    original.evaluation = Some(json!({"outcome":"failed","execution":"completed","judgeModel":"fake:judge","passThreshold":7.0,"rubricHash":null}));
+    original.evaluation = Some(json!({"outcome":"failed","execution":"completed","judgeModel":"fake:judge","passThreshold":7.0,"rubricHash":null,"judgeConfigurationHash":casimir::compare::judge_configuration_hash(&JudgeOpts::new(fake_llm("judge")),7.0)}));
     original
 }
 
@@ -236,6 +236,11 @@ fn judge_schema_and_invalidity_are_enforced() {
     let contradictory = judge_sessions(&original, &original, None, None, &fake_llm("judge-contradictory")).unwrap();
     assert!(contradictory.uncertainty.iter().any(|u| u.contains("contradicts its scores")));
     assert_eq!(compare_sessions(&original, &original, None, None, Some(contradictory)).judge_assessment, "inconclusive");
+    let limited = judge_sessions(&original, &original, None, None, &fake_llm("judge-limited")).unwrap();
+    assert!(!limited.limitations.is_empty());
+    assert_eq!(compare_sessions(&original, &original, None, None, Some(limited)).judge_assessment,"passed");
+    let uncertain = judge_sessions(&original, &original, None, None, &fake_llm("judge-uncertain")).unwrap();
+    assert_eq!(compare_sessions(&original, &original, None, None, Some(uncertain)).judge_assessment,"inconclusive");
 }
 
 #[test]

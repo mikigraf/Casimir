@@ -6,6 +6,10 @@ use std::path::Path;
 /// Run the production AB/BA judge on frozen trace evidence. Construction strata and human
 /// labels are deliberately excluded from its inputs. These are predictions, never reviews.
 pub fn predict(corpus_path: &Path, output: &Path, llm: &crate::llm::LlmOpts) -> Result<Value> {
+    predict_limit(corpus_path, output, llm, 40)
+}
+pub fn predict_limit(corpus_path: &Path, output: &Path, llm: &crate::llm::LlmOpts, limit: usize) -> Result<Value> {
+    if !(1..=40).contains(&limit) { bail!("prediction limit must be between 1 and 40; release calibration requires all 40"); }
     use crate::{compare::{compare_sessions, judge_sessions_with, JudgeOpts}, model::{Event, EventKind, Execution, Harness, Session}};
     let bytes = std::fs::read(corpus_path)?;
     let corpus: Value = serde_json::from_slice(&bytes)?;
@@ -19,20 +23,25 @@ pub fn predict(corpus_path: &Path, output: &Path, llm: &crate::llm::LlmOpts) -> 
     if std::fs::read_dir(output)?.any(|entry| entry.map_or(true, |entry| entry.file_name() != ".lock")) { bail!("prediction output must be empty"); }
     let hash = crate::checkpoint::hash(&bytes);
     crate::util::atomic_write(&output.join("corpus.json"), &bytes)?;
-    let mut result = json!({"schemaVersion":1,"corpusHash":hash,"humanReviewed":false,"judgeModel":crate::llm::effective_model(llm),"labels":{},"failures":{}});
-    for case in cases {
+    let mut result = json!({"schemaVersion":1,"corpusHash":hash,"humanReviewed":false,"judgeModel":crate::llm::effective_model(llm),"casesPlanned":limit,"labels":{},"failures":{}});
+    for case in cases.iter().take(limit) {
         let id = case["id"].as_str().unwrap();
         let task = case["task"].as_str().context("case task missing")?;
         let mut sessions = Vec::new();
+        let mut snapshots = Vec::new();
         for (trace_name, failed_key) in [("traceA","requiredCheckFailedA"),("traceB","requiredCheckFailedB")] {
             let trace = &case[trace_name];
             let mut session = Session::new(Harness::ClaudeCode);
             session.events.push(Event::text(1,"",EventKind::User,task));
-            if let Some(files) = trace["files"].as_object() {
-                for (name,content) in files {
-                    session.events.push(Event::tool_call(1,"",name,"Write",json!({"file_path":name,"content":content})));
+            let snapshot = trace["files"].as_object().map(|files| {
+                let mut patch = String::from("Recorded final workspace snapshot (synthetic corpus evidence; no Git commit is claimed):\n");
+                for (name, content) in files { patch.push_str(&format!("\n=== {name} ===\n{}\n",content.as_str().unwrap_or(""))); }
+                if let Some(definition) = trace.get("checkDefinition") {
+                    patch.push_str(&format!("\nFrozen external validation definition (executed independently of the candidate):\n{}\nObserved results:\n{}\n",definition,trace["toolEvidence"]));
                 }
-            }
+                crate::workspace::Diff { files: files.keys().map(|path| crate::workspace::ChangedFile { status:"snapshot".into(),path:path.clone() }).collect(),patch,source:Some("frozen synthetic final snapshot; not an inferred Git diff".into()),..Default::default() }
+            });
+            snapshots.push(snapshot);
             if let Some(evidence) = trace["toolEvidence"].as_array() {
                 for (index,record) in evidence.iter().enumerate() {
                     let tool_id = format!("check-{index}");
@@ -42,23 +51,23 @@ pub fn predict(corpus_path: &Path, output: &Path, llm: &crate::llm::LlmOpts) -> 
             }
             session.events.push(Event::text(1,"",EventKind::Assistant,trace["finalMessage"].as_str().unwrap_or("")));
             session.execution = Some(Execution { requested_turns:1, completed_turns:1, ..Default::default() });
-            if case[failed_key] == true {
-                session.evaluation = Some(json!({"checks":{"schemaVersion":1,"definitionHash":hash,"outcome":"failed","results":[]}}));
+            if case[failed_key] == true || (trace.get("checkDefinition").is_some() && trace["toolEvidence"].as_array().is_some_and(|e| !e.is_empty() && e.iter().all(|r| r["exitStatus"] == 0))) {
+                session.evaluation = Some(json!({"checks":{"schemaVersion":1,"definitionHash":hash,"outcome":if case[failed_key]==true {"failed"} else {"passed"},"results":[]}}));
             }
             sessions.push(session);
         }
         let directory = output.join(id);
         crate::util::private_dir(&directory)?;
         let mut options = llm.clone(); options.recording_dir = Some(directory.join("llm"));
-        let judgement = judge_sessions_with(&sessions[0], &sessions[1], None, None, &JudgeOpts::new(options));
+        let judgement = judge_sessions_with(&sessions[0], &sessions[1], snapshots[0].as_ref(), snapshots[1].as_ref(), &JudgeOpts::new(options));
         let label = match judgement {
             Ok(judge) => {
-                let report_b = compare_sessions(&sessions[0],&sessions[1],None,None,Some(judge.clone()));
+                let report_b = compare_sessions(&sessions[0],&sessions[1],snapshots[0].clone(),snapshots[1].clone(),Some(judge.clone()));
                 let mut swapped = judge.clone();
                 std::mem::swap(&mut swapped.score_a,&mut swapped.score_b);
                 std::mem::swap(&mut swapped.invalid_a,&mut swapped.invalid_b);
                 std::mem::swap(&mut swapped.evidence_a,&mut swapped.evidence_b);
-                let report_a = compare_sessions(&sessions[1],&sessions[0],None,None,Some(swapped));
+                let report_a = compare_sessions(&sessions[1],&sessions[0],snapshots[1].clone(),snapshots[0].clone(),Some(swapped));
                 crate::util::write_json(&directory.join("report.json"),&report_b)?;
                 let winner = if report_a.overall_outcome == "inconclusive" || report_b.overall_outcome == "inconclusive" { "inconclusive" } else { &judge.winner };
                 json!({"winner":winner,"outcomeA":report_a.overall_outcome,"outcomeB":report_b.overall_outcome})

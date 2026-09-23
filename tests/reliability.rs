@@ -179,7 +179,8 @@ fn interrupted_second_turn_retry_preserves_completed_first_turn() {
     let options=RerunOpts {workspace:repo.path().display().to_string(),out_dir:Some(output.path().to_path_buf()),quiet:true,
         extra_args:vec!["--fake-crash-turn2-once".into(),"--marker".into(),external.path().join("once").display().to_string()],..Default::default()};
     let first=rerun(&original(repo.path(),2),&options,&mut |_|{},&mut |_|{}).unwrap();
-    let execution=first.session.unwrap().execution.unwrap();assert_eq!(execution.completed_turns,1);assert_eq!(execution.failed_turns,1);
+    let first_session=first.session.unwrap();assert!(first_session.cost_usd.is_none(),"an interrupted unmeasured turn makes total cost unknown");
+    let execution=first_session.execution.unwrap();assert_eq!(execution.completed_turns,1);assert_eq!(execution.failed_turns,1);
     let second=casimir::recovery::resume(output.path(),true,&mut |_|{},&mut |_|{}).unwrap().unwrap();
     let session=second.session.unwrap();assert_eq!(session.execution.unwrap().completed_turns,2);
     assert_eq!(session.events.iter().filter(|e|e.kind==EventKind::User && e.text_str()=="task 1").count(),1);
@@ -334,4 +335,15 @@ fn failed_judge_keeps_successful_checks_inconclusive() {
     session.evaluation=Some(json!({"checks":checks,"judgeError":"HTTP 429"}));
     let report=casimir::compare::compare_sessions(&session,&session,None,None,None);
     assert_eq!(report.judge_assessment,"inconclusive");assert_eq!(report.overall_outcome,"inconclusive");
+}
+
+#[test]
+fn cli_judges_disable_ambient_context_and_keep_system_text_off_arguments() {
+    setup();let output=tempfile::tempdir().unwrap();
+    let options=casimir::llm::LlmOpts {backend:"claude-cli".into(),model:Some("safe-context".into()),recording_dir:Some(output.path().to_path_buf()),..Default::default()};
+    let answer=casimir::llm::complete("fixture-private-system","only supplied evidence",&options).unwrap();
+    let value:serde_json::Value=serde_json::from_str(&answer).unwrap();
+    assert_eq!(value["system"],"fixture-private-system");assert_eq!(value["prompt"],"only supplied evidence");
+    let cwd=PathBuf::from(value["cwd"].as_str().unwrap());
+    assert_ne!(cwd,std::env::current_dir().unwrap());assert!(!cwd.exists(),"temporary helper workspace is removed");
 }

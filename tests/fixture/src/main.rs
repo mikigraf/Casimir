@@ -36,6 +36,12 @@ fn main() {
         }
     }
     let mut prompt = String::new(); std::io::stdin().read_to_string(&mut prompt).unwrap();
+    if arg(&args,"--model")==Some("safe-context") {
+        assert!(args.iter().any(|arg|arg=="--safe-mode"));
+        assert!(!args.iter().any(|arg|arg.contains("fixture-private-system")));
+        let system=std::fs::read_to_string(arg(&args,"--system-prompt-file").unwrap()).unwrap();
+        emit(json!({"result":json!({"cwd":std::env::current_dir().unwrap(),"system":system,"prompt":prompt}).to_string(),"usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0}));return;
+    }
     if std::env::var_os("CASIMIR_LLM_MODEL").is_some() { llm(&prompt); return; }
     let stream_fixture = std::env::current_exe().unwrap().file_stem().unwrap().to_string_lossy().contains("stream");
     if stream_fixture || (arg(&args,"--fake-mode").is_some()) { stream(&args); return; }
@@ -123,6 +129,8 @@ fn llm(prompt: &str) {
             },
             "judge-contradictory" => json!({"winner":"B","scoreA":9,"scoreB":3,"summary":"contradictory assessment"}),
             "judge-malformed" => json!({"winner":"invalid","scoreA":99,"scoreB":99}),
+            "judge-limited" => json!({"winner":"tie","scoreA":9,"scoreB":9,"limitations":["No Git commit evidence; a commit was not requested."]}),
+            "judge-uncertain" => json!({"winner":"tie","scoreA":9,"scoreB":9,"uncertainty":["Required behavior has no verification evidence."]}),
             "judge-both-pass" => json!({"winner":"tie","scoreA":9,"scoreB":9,"summary":"both pass"}),
             "judge-invalid-patch" => json!({"winner":"tie","scoreA":9,"scoreB":9,"invalidA":["requirement_violation"],"invalidB":["requirement_violation"]}),
             "judge-flip" => json!({"winner":"A","scoreA":8,"scoreB":6,"summary":"first looked better","differences":["order"]}),
@@ -156,7 +164,7 @@ fn llm(prompt: &str) {
             };
             response[key] = json!([quote]);
         }
-        response["uncertainty"] = json!([]);
+        if response.get("uncertainty").is_none() { response["uncertainty"] = json!([]); }
     }
     println!("Here you go:\n```json\n{response}\n```");
 }

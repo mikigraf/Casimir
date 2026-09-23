@@ -32,3 +32,12 @@ Standalone comparisons carry forward recorded required-check failures. Attributi
 requires the original rubric fingerprint (supply the saved `--brief`), matching observed models,
 and conclusive continuation evidence. Legacy evaluations without this evidence remain usable
 for inspection but cannot establish attribution.
+
+Attribution also fingerprints the judge instructions, backend, token budget, repeat count and
+helper-context version. Missing or differing fingerprints withhold conclusions; changing the
+judge implementation requires reevaluating the original under the same criteria.
+
+Judge `uncertainty` records missing or contradictory evidence material to a requested requirement
+and makes the assessment inconclusive. Separate `limitations` retain informational caveats
+about unrequested workflow details without adding requirements. Neither field can override a
+failed executable check. Interrupted runs with unmeasured turn costs report total cost as unknown.

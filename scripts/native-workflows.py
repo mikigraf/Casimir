@@ -42,6 +42,7 @@ def main():
     parser.add_argument('--casimir', type=pathlib.Path, required=True)
     parser.add_argument('--output', type=pathlib.Path, required=True)
     parser.add_argument('--harness', action='append', choices=['claude-code', 'codex'], help='Subset for compatibility validation; releases require both')
+    parser.add_argument('--claude-permission-mode', choices=['preserve', 'acceptEdits'], default='preserve')
     parser.add_argument('--allow-paid', action='store_true')
     parser.add_argument('--allow-unrestricted', action='store_true')
     args = parser.parse_args()
@@ -79,6 +80,8 @@ def main():
         checks = directory / 'checks.json'
         write(checks, {'schemaVersion': 1, 'checks': [{'executable': sys.executable, 'args': [str(checker)], 'timeoutSecs': 60, 'expectedExitStatus': 0}]})
         options = ['--replicates', '1', '--harness', harness, '--workspace', str(repo), '--checks', str(checks), '--quiet', *permission_args(harness, args.allow_unrestricted)]
+        if harness == 'claude-code' and args.claude_permission_mode != 'preserve' and not args.allow_unrestricted:
+            options += ['--permission-mode', args.claude_permission_mode]
         normal = directory / 'replay'
         result = command([binary, 'rerun', str(source), *options, '-o', str(normal)], output=directory / 'replay.log')
         replay_ok = (normal / 'report.json').exists() and valid_report(result.returncode, read(normal / 'report.json'))

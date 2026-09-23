@@ -2,39 +2,61 @@
   "schemaVersion": 1,
   "frozen": true,
   "reviewStatus": "pending-independent-human-review",
-  "provenance": "Synthetic candidate traces authored for review; not live-provider evidence or adjudicated labels.",
+  "provenance": "Synthetic final workspace snapshots with actual executable-check outputs captured by scripts/refresh-evaluation-corpus.py; not live-provider traces or adjudicated labels.",
   "cases": [
     {
       "id": "pair-01",
       "samplingStratum": "correct-solutions",
-      "task": "Return all pages including an exact final page; reject negative page sizes.",
+      "task": "Return all pages including an exact final page; reject nonpositive page sizes.",
       "traceA": {
         "files": {
           "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task pagination",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "908c2234f3e30267a00d80340fa5efb65f385ba34a7ae7267a852fbf76a8b589",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task pagination",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "908c2234f3e30267a00d80340fa5efb65f385ba34a7ae7267a852fbf76a8b589",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -46,30 +68,52 @@
       "traceA": {
         "files": {
           "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task currency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d18c9bb10c2582aa3f565ae75c30f4547c871ae9327b8e7d487cae7d284c1671",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task currency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d18c9bb10c2582aa3f565ae75c30f4547c871ae9327b8e7d487cae7d284c1671",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -81,30 +125,52 @@
       "traceA": {
         "files": {
           "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task csv",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "1345038a5858ceda87969fac198fe5c3b5d6970bc74362db7f10c8a960b7af6b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task csv",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "1345038a5858ceda87969fac198fe5c3b5d6970bc74362db7f10c8a960b7af6b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -116,30 +182,52 @@
       "traceA": {
         "files": {
           "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task configuration",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "2d784779c418c7735acf479ff50ced875d1255298c4c8a13df56146b802ff91d",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task configuration",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "2d784779c418c7735acf479ff50ced875d1255298c4c8a13df56146b802ff91d",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -147,34 +235,56 @@
     {
       "id": "pair-05",
       "samplingStratum": "correct-solutions",
-      "task": "Remove duplicate records while preserving first occurrence order.",
+      "task": "Remove duplicate hashable records while preserving first occurrence order and input immutability.",
       "traceA": {
         "files": {
           "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task deduplication",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "924a28aada0d485e1c74011236ebbc8906ee7a200564c71f15123dc5b98c8cf6",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task deduplication",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "924a28aada0d485e1c74011236ebbc8906ee7a200564c71f15123dc5b98c8cf6",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -186,30 +296,52 @@
       "traceA": {
         "files": {
           "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task transaction",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3b5bbaa365d1c8114ff7306b24ebca2f203deeaf16413eac64733d9ba03deba1",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task transaction",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3b5bbaa365d1c8114ff7306b24ebca2f203deeaf16413eac64733d9ba03deba1",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -217,34 +349,58 @@
     {
       "id": "pair-07",
       "samplingStratum": "correct-solutions",
-      "task": "Migrate the local formatter dependency from format(value) to render(value, *, compact=False).",
+      "task": "Migrate the included local formatter dependency to render(value, *, compact=False), preserving compact JSON output.",
       "traceA": {
         "files": {
           "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "formatter_v2.py": "import json\ndef render(value, *, compact=False):\n    return json.dumps(value, separators=(\",\", \":\") if compact else None)\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task dependency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "f54dc443c0c2cc43d18665c4460bb599e6e8cfa2863aa1f8adcb60b37743fdc7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "formatter_v2.py": "import json\ndef render(value, *, compact=False):\n    return json.dumps(value, separators=(\",\", \":\") if compact else None)\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task dependency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "f54dc443c0c2cc43d18665c4460bb599e6e8cfa2863aa1f8adcb60b37743fdc7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -252,34 +408,56 @@
     {
       "id": "pair-08",
       "samplingStratum": "correct-solutions",
-      "task": "Extract normalization into a helper without changing behavior for empty and Unicode input.",
+      "task": "Extract whitespace stripping and case-folding into normalize(value); names(values) must preserve input order, empty strings and Unicode behavior without mutating input.",
       "traceA": {
         "files": {
           "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task refactoring",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3563aea8fbd53af6fd05f2e68455653ccffd188065fb1364f6939c6fe2c8c5b7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task refactoring",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3563aea8fbd53af6fd05f2e68455653ccffd188065fb1364f6939c6fe2c8c5b7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -287,34 +465,56 @@
     {
       "id": "pair-09",
       "samplingStratum": "correct-solutions",
-      "task": "Reject invalid ages and add tests for the lower and upper inclusive boundaries.",
+      "task": "Accept integer ages 0 through 130 inclusive; reject booleans, nonintegers and out-of-range ages, and add executable boundary tests.",
       "traceA": {
         "files": {
           "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task validation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "8b285840e43827cf8af19e381740477643f8cc319f5cf64abc5fb83f16383c3b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task validation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "8b285840e43827cf8af19e381740477643f8cc319f5cf64abc5fb83f16383c3b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -322,34 +522,56 @@
     {
       "id": "pair-10",
       "samplingStratum": "correct-solutions",
-      "task": "Propagate cancellation through the async worker; do not report canceled work as completed.",
+      "task": "The async work(task) helper must return completed task results and propagate CancelledError for cancelled tasks, never returning success for cancellation.",
       "traceA": {
         "files": {
           "worker.py": "async def work(task):\n    return await task\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task cancellation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d29e6fa8ac861df9b5bfac49eafcd595d148ada5b3172fee0e3f32d501ff13bc",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "worker.py": "async def work(task):\n    return await task\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task cancellation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Completed; validation passed."
+        "finalMessage": "Completed; validation passed.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d29e6fa8ac861df9b5bfac49eafcd595d148ada5b3172fee0e3f32d501ff13bc",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
@@ -357,34 +579,56 @@
     {
       "id": "pair-11",
       "samplingStratum": "requirement-violations",
-      "task": "Return all pages including an exact final page; reject negative page sizes.",
+      "task": "Return all pages including an exact final page; reject nonpositive page sizes.",
       "traceA": {
         "files": {
           "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task pagination",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "908c2234f3e30267a00d80340fa5efb65f385ba34a7ae7267a852fbf76a8b589",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "pages.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task pagination",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from pages import pages\nImportError: cannot import name 'pages' from 'pages' (<workspace>/pages.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "908c2234f3e30267a00d80340fa5efb65f385ba34a7ae7267a852fbf76a8b589",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -396,30 +640,52 @@
       "traceA": {
         "files": {
           "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task currency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d18c9bb10c2582aa3f565ae75c30f4547c871ae9327b8e7d487cae7d284c1671",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "money.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task currency",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 4, in <module>\n    from money import cents\nImportError: cannot import name 'cents' from 'money' (<workspace>/money.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d18c9bb10c2582aa3f565ae75c30f4547c871ae9327b8e7d487cae7d284c1671",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -431,30 +697,52 @@
       "traceA": {
         "files": {
           "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task csv",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "1345038a5858ceda87969fac198fe5c3b5d6970bc74362db7f10c8a960b7af6b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "csv_export.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task csv",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 4, in <module>\n    from csv_export import row\nImportError: cannot import name 'row' from 'csv_export' (<workspace>/csv_export.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "1345038a5858ceda87969fac198fe5c3b5d6970bc74362db7f10c8a960b7af6b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -466,30 +754,52 @@
       "traceA": {
         "files": {
           "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task configuration",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "2d784779c418c7735acf479ff50ced875d1255298c4c8a13df56146b802ff91d",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "config.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task configuration",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from config import setting\nImportError: cannot import name 'setting' from 'config' (<workspace>/config.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "2d784779c418c7735acf479ff50ced875d1255298c4c8a13df56146b802ff91d",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -497,34 +807,56 @@
     {
       "id": "pair-15",
       "samplingStratum": "requirement-violations",
-      "task": "Remove duplicate records while preserving first occurrence order.",
+      "task": "Remove duplicate hashable records while preserving first occurrence order and input immutability.",
       "traceA": {
         "files": {
           "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task deduplication",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "924a28aada0d485e1c74011236ebbc8906ee7a200564c71f15123dc5b98c8cf6",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "records.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task deduplication",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from records import unique\nImportError: cannot import name 'unique' from 'records' (<workspace>/records.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "924a28aada0d485e1c74011236ebbc8906ee7a200564c71f15123dc5b98c8cf6",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -536,30 +868,52 @@
       "traceA": {
         "files": {
           "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task transaction",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3b5bbaa365d1c8114ff7306b24ebca2f203deeaf16413eac64733d9ba03deba1",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "batch.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task transaction",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from batch import apply\nImportError: cannot import name 'apply' from 'batch' (<workspace>/batch.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3b5bbaa365d1c8114ff7306b24ebca2f203deeaf16413eac64733d9ba03deba1",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -567,34 +921,58 @@
     {
       "id": "pair-17",
       "samplingStratum": "requirement-violations",
-      "task": "Migrate the local formatter dependency from format(value) to render(value, *, compact=False).",
+      "task": "Migrate the included local formatter dependency to render(value, *, compact=False), preserving compact JSON output.",
       "traceA": {
         "files": {
           "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "formatter_v2.py": "import json\ndef render(value, *, compact=False):\n    return json.dumps(value, separators=(\",\", \":\") if compact else None)\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task dependency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "f54dc443c0c2cc43d18665c4460bb599e6e8cfa2863aa1f8adcb60b37743fdc7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "app.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "formatter_v2.py": "import json\ndef render(value, *, compact=False):\n    return json.dumps(value, separators=(\",\", \":\") if compact else None)\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task dependency",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from app import output\nImportError: cannot import name 'output' from 'app' (<workspace>/app.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "f54dc443c0c2cc43d18665c4460bb599e6e8cfa2863aa1f8adcb60b37743fdc7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -602,34 +980,56 @@
     {
       "id": "pair-18",
       "samplingStratum": "requirement-violations",
-      "task": "Extract normalization into a helper without changing behavior for empty and Unicode input.",
+      "task": "Extract whitespace stripping and case-folding into normalize(value); names(values) must preserve input order, empty strings and Unicode behavior without mutating input.",
       "traceA": {
         "files": {
           "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task refactoring",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3563aea8fbd53af6fd05f2e68455653ccffd188065fb1364f6939c6fe2c8c5b7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "names.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task refactoring",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from names import names,normalize\nImportError: cannot import name 'names' from 'names' (<workspace>/names.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3563aea8fbd53af6fd05f2e68455653ccffd188065fb1364f6939c6fe2c8c5b7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -637,34 +1037,56 @@
     {
       "id": "pair-19",
       "samplingStratum": "requirement-violations",
-      "task": "Reject invalid ages and add tests for the lower and upper inclusive boundaries.",
+      "task": "Accept integer ages 0 through 130 inclusive; reject booleans, nonintegers and out-of-range ages, and add executable boundary tests.",
       "traceA": {
         "files": {
           "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task validation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "8b285840e43827cf8af19e381740477643f8cc319f5cf64abc5fb83f16383c3b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "age.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task validation",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from age import valid_age\nImportError: cannot import name 'valid_age' from 'age' (<workspace>/age.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "8b285840e43827cf8af19e381740477643f8cc319f5cf64abc5fb83f16383c3b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -672,34 +1094,56 @@
     {
       "id": "pair-20",
       "samplingStratum": "requirement-violations",
-      "task": "Propagate cancellation through the async worker; do not report canceled work as completed.",
+      "task": "The async work(task) helper must return completed task results and propagate CancelledError for cancelled tasks, never returning success for cancellation.",
       "traceA": {
         "files": {
           "worker.py": "async def work(task):\n    return await task\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task cancellation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d29e6fa8ac861df9b5bfac49eafcd595d148ada5b3172fee0e3f32d501ff13bc",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
           "worker.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task cancellation",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Required behavior violated; expected result differs."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 4, in <module>\n    from worker import work\nImportError: cannot import name 'work' from 'worker' (<workspace>/worker.py)\n"
           }
         ],
-        "finalMessage": "Done."
+        "finalMessage": "Done.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d29e6fa8ac861df9b5bfac49eafcd595d148ada5b3172fee0e3f32d501ff13bc",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -707,33 +1151,56 @@
     {
       "id": "pair-21",
       "samplingStratum": "incomplete-fixes",
-      "task": "Return all pages including an exact final page; reject negative page sizes.",
+      "task": "Return all pages including an exact final page; reject nonpositive page sizes.",
       "traceA": {
         "files": {
           "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task pagination",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "908c2234f3e30267a00d80340fa5efb65f385ba34a7ae7267a852fbf76a8b589",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "pages.py": "# TODO implement the remaining edge cases\n"
+          "pages.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task pagination",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from pages import pages\nImportError: cannot import name 'pages' from 'pages' (<workspace>/pages.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "908c2234f3e30267a00d80340fa5efb65f385ba34a7ae7267a852fbf76a8b589",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -745,29 +1212,52 @@
       "traceA": {
         "files": {
           "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task currency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d18c9bb10c2582aa3f565ae75c30f4547c871ae9327b8e7d487cae7d284c1671",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "money.py": "# TODO implement the remaining edge cases\n"
+          "money.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task currency",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 4, in <module>\n    from money import cents\nImportError: cannot import name 'cents' from 'money' (<workspace>/money.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d18c9bb10c2582aa3f565ae75c30f4547c871ae9327b8e7d487cae7d284c1671",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -779,29 +1269,52 @@
       "traceA": {
         "files": {
           "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task csv",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "1345038a5858ceda87969fac198fe5c3b5d6970bc74362db7f10c8a960b7af6b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "csv_export.py": "# TODO implement the remaining edge cases\n"
+          "csv_export.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task csv",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 4, in <module>\n    from csv_export import row\nImportError: cannot import name 'row' from 'csv_export' (<workspace>/csv_export.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "1345038a5858ceda87969fac198fe5c3b5d6970bc74362db7f10c8a960b7af6b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -813,29 +1326,52 @@
       "traceA": {
         "files": {
           "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task configuration",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "2d784779c418c7735acf479ff50ced875d1255298c4c8a13df56146b802ff91d",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "config.py": "# TODO implement the remaining edge cases\n"
+          "config.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task configuration",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from config import setting\nImportError: cannot import name 'setting' from 'config' (<workspace>/config.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "2d784779c418c7735acf479ff50ced875d1255298c4c8a13df56146b802ff91d",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -843,33 +1379,56 @@
     {
       "id": "pair-25",
       "samplingStratum": "incomplete-fixes",
-      "task": "Remove duplicate records while preserving first occurrence order.",
+      "task": "Remove duplicate hashable records while preserving first occurrence order and input immutability.",
       "traceA": {
         "files": {
           "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task deduplication",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "924a28aada0d485e1c74011236ebbc8906ee7a200564c71f15123dc5b98c8cf6",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "records.py": "# TODO implement the remaining edge cases\n"
+          "records.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task deduplication",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from records import unique\nImportError: cannot import name 'unique' from 'records' (<workspace>/records.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "924a28aada0d485e1c74011236ebbc8906ee7a200564c71f15123dc5b98c8cf6",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -881,29 +1440,52 @@
       "traceA": {
         "files": {
           "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task transaction",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3b5bbaa365d1c8114ff7306b24ebca2f203deeaf16413eac64733d9ba03deba1",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "batch.py": "# TODO implement the remaining edge cases\n"
+          "batch.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task transaction",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from batch import apply\nImportError: cannot import name 'apply' from 'batch' (<workspace>/batch.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3b5bbaa365d1c8114ff7306b24ebca2f203deeaf16413eac64733d9ba03deba1",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -911,33 +1493,58 @@
     {
       "id": "pair-27",
       "samplingStratum": "incomplete-fixes",
-      "task": "Migrate the local formatter dependency from format(value) to render(value, *, compact=False).",
+      "task": "Migrate the included local formatter dependency to render(value, *, compact=False), preserving compact JSON output.",
       "traceA": {
         "files": {
           "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "formatter_v2.py": "import json\ndef render(value, *, compact=False):\n    return json.dumps(value, separators=(\",\", \":\") if compact else None)\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task dependency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "f54dc443c0c2cc43d18665c4460bb599e6e8cfa2863aa1f8adcb60b37743fdc7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "app.py": "# TODO implement the remaining edge cases\n"
+          "app.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "formatter_v2.py": "import json\ndef render(value, *, compact=False):\n    return json.dumps(value, separators=(\",\", \":\") if compact else None)\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task dependency",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from app import output\nImportError: cannot import name 'output' from 'app' (<workspace>/app.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "f54dc443c0c2cc43d18665c4460bb599e6e8cfa2863aa1f8adcb60b37743fdc7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -945,33 +1552,56 @@
     {
       "id": "pair-28",
       "samplingStratum": "incomplete-fixes",
-      "task": "Extract normalization into a helper without changing behavior for empty and Unicode input.",
+      "task": "Extract whitespace stripping and case-folding into normalize(value); names(values) must preserve input order, empty strings and Unicode behavior without mutating input.",
       "traceA": {
         "files": {
           "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task refactoring",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3563aea8fbd53af6fd05f2e68455653ccffd188065fb1364f6939c6fe2c8c5b7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "names.py": "# TODO implement the remaining edge cases\n"
+          "names.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task refactoring",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from names import names,normalize\nImportError: cannot import name 'names' from 'names' (<workspace>/names.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3563aea8fbd53af6fd05f2e68455653ccffd188065fb1364f6939c6fe2c8c5b7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -979,33 +1609,56 @@
     {
       "id": "pair-29",
       "samplingStratum": "incomplete-fixes",
-      "task": "Reject invalid ages and add tests for the lower and upper inclusive boundaries.",
+      "task": "Accept integer ages 0 through 130 inclusive; reject booleans, nonintegers and out-of-range ages, and add executable boundary tests.",
       "traceA": {
         "files": {
           "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task validation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "8b285840e43827cf8af19e381740477643f8cc319f5cf64abc5fb83f16383c3b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "age.py": "# TODO implement the remaining edge cases\n"
+          "age.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task validation",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 3, in <module>\n    from age import valid_age\nImportError: cannot import name 'valid_age' from 'age' (<workspace>/age.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "8b285840e43827cf8af19e381740477643f8cc319f5cf64abc5fb83f16383c3b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -1013,33 +1666,56 @@
     {
       "id": "pair-30",
       "samplingStratum": "incomplete-fixes",
-      "task": "Propagate cancellation through the async worker; do not report canceled work as completed.",
+      "task": "The async work(task) helper must return completed task results and propagate CancelledError for cancelled tasks, never returning success for cancellation.",
       "traceA": {
         "files": {
           "worker.py": "async def work(task):\n    return await task\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task cancellation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d29e6fa8ac861df9b5bfac49eafcd595d148ada5b3172fee0e3f32d501ff13bc",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": {
-          "worker.py": "# TODO implement the remaining edge cases\n"
+          "worker.py": "# TODO implement the remaining edge cases\n",
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task cancellation",
+            "command": "python <frozen-checks>",
             "exitStatus": 1,
-            "output": "Incomplete implementation; regression case failed."
+            "output": "Traceback (most recent call last):\n  File \"<frozen-checks>\", line 4, in <module>\n    from worker import work\nImportError: cannot import name 'work' from 'worker' (<workspace>/worker.py)\n"
           }
         ],
-        "finalMessage": "Partially implemented."
+        "finalMessage": "Partially implemented.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d29e6fa8ac861df9b5bfac49eafcd595d148ada5b3172fee0e3f32d501ff13bc",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": true
@@ -1047,20 +1723,31 @@
     {
       "id": "pair-31",
       "samplingStratum": "ambiguous-evidence",
-      "task": "Return all pages including an exact final page; reject negative page sizes.",
+      "task": "Return all pages including an exact final page; reject nonpositive page sizes.",
       "traceA": {
         "files": {
           "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task pagination",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom pages import pages\nassert pages([1,2,3,4],2)==[[1,2],[3,4]]\nassert pages([1,2,3],2)==[[1,2],[3]]\nassert pages([],3)==[]\nfor size in [-1,0]:\n    try: pages([1],size)\n    except ValueError: pass\n    else: raise AssertionError('nonpositive page size accepted')\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "908c2234f3e30267a00d80340fa5efb65f385ba34a7ae7267a852fbf76a8b589",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1083,16 +1770,27 @@
       "traceA": {
         "files": {
           "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task currency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom decimal import Decimal\nfrom money import cents\nvalues=['1.005','-1.005','2.999','0'];before=values.copy()\nassert [cents(v) for v in values]==[Decimal('1.01'),Decimal('-1.01'),Decimal('3.00'),Decimal('0.00')]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d18c9bb10c2582aa3f565ae75c30f4547c871ae9327b8e7d487cae7d284c1671",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1115,16 +1813,27 @@
       "traceA": {
         "files": {
           "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task csv",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport csv,io\nfrom csv_export import row\ncells=['a,b','quoted \"cell\"','café','line\\nbreak','']\nassert next(csv.reader(io.StringIO(row(cells))))==cells\nassert row(['plain'])=='plain\\n'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "1345038a5858ceda87969fac198fe5c3b5d6970bc74362db7f10c8a960b7af6b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1147,16 +1856,27 @@
       "traceA": {
         "files": {
           "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task configuration",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom config import setting\ndefaults={'mode':'default'}\nassert setting('mode',defaults,{'mode':'override'})=='override'\nassert setting('mode',defaults,{'mode':''})=='default'\nassert setting('mode',defaults,{})=='default'\nassert defaults=={'mode':'default'}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "2d784779c418c7735acf479ff50ced875d1255298c4c8a13df56146b802ff91d",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1175,20 +1895,31 @@
     {
       "id": "pair-35",
       "samplingStratum": "ambiguous-evidence",
-      "task": "Remove duplicate records while preserving first occurrence order.",
+      "task": "Remove duplicate hashable records while preserving first occurrence order and input immutability.",
       "traceA": {
         "files": {
           "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task deduplication",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom records import unique\nvalues=['b','a','b','c','a'];before=values.copy()\nassert unique(values)==['b','a','c']\nassert unique([])==[]\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "924a28aada0d485e1c74011236ebbc8906ee7a200564c71f15123dc5b98c8cf6",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1211,16 +1942,27 @@
       "traceA": {
         "files": {
           "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task transaction",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom batch import apply\nstore={'a':1};before=store.copy()\ntry: apply(store,[('b',2),('c',None)])\nexcept ValueError: pass\nelse: raise AssertionError('batch failure not reported')\nassert store==before\napply(store,[('b',2),('a',3)])\nassert store=={'a':3,'b':2}\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3b5bbaa365d1c8114ff7306b24ebca2f203deeaf16413eac64733d9ba03deba1",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1239,20 +1981,32 @@
     {
       "id": "pair-37",
       "samplingStratum": "ambiguous-evidence",
-      "task": "Migrate the local formatter dependency from format(value) to render(value, *, compact=False).",
+      "task": "Migrate the included local formatter dependency to render(value, *, compact=False), preserving compact JSON output.",
       "traceA": {
         "files": {
           "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "formatter_v2.py": "import json\ndef render(value, *, compact=False):\n    return json.dumps(value, separators=(\",\", \":\") if compact else None)\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task dependency",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom app import output\nassert output({'key':1})=='{\"key\":1}'\nassert output([1,2])=='[1,2]'\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "f54dc443c0c2cc43d18665c4460bb599e6e8cfa2863aa1f8adcb60b37743fdc7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1271,20 +2025,31 @@
     {
       "id": "pair-38",
       "samplingStratum": "ambiguous-evidence",
-      "task": "Extract normalization into a helper without changing behavior for empty and Unicode input.",
+      "task": "Extract whitespace stripping and case-folding into normalize(value); names(values) must preserve input order, empty strings and Unicode behavior without mutating input.",
       "traceA": {
         "files": {
           "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task refactoring",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom names import names,normalize\nvalues=[' Straße ','',' CAFÉ '];before=values.copy()\nassert names(values)==['strasse','','café']\nassert normalize(' Straße ')=='strasse'\nassert values==before\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "3563aea8fbd53af6fd05f2e68455653ccffd188065fb1364f6939c6fe2c8c5b7",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1303,20 +2068,31 @@
     {
       "id": "pair-39",
       "samplingStratum": "ambiguous-evidence",
-      "task": "Reject invalid ages and add tests for the lower and upper inclusive boundaries.",
+      "task": "Accept integer ages 0 through 130 inclusive; reject booleans, nonintegers and out-of-range ages, and add executable boundary tests.",
       "traceA": {
         "files": {
           "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task validation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nfrom age import valid_age\nfor value in [0,1,129,130]: assert valid_age(value) is True\nfor value in [-1,131,True,False,1.5,'18',None]: assert valid_age(value) is False\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "8b285840e43827cf8af19e381740477643f8cc319f5cf64abc5fb83f16383c3b",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1335,20 +2111,31 @@
     {
       "id": "pair-40",
       "samplingStratum": "ambiguous-evidence",
-      "task": "Propagate cancellation through the async worker; do not report canceled work as completed.",
+      "task": "The async work(task) helper must return completed task results and propagate CancelledError for cancelled tasks, never returning success for cancellation.",
       "traceA": {
         "files": {
           "worker.py": "async def work(task):\n    return await task\n",
-          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+          "tests/test_task.py": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n"
         },
         "toolEvidence": [
           {
-            "command": "external-check --task cancellation",
+            "command": "python <frozen-checks>",
             "exitStatus": 0,
-            "output": "Required boundary and regression cases passed."
+            "output": "All specified boundary and regression checks passed.\n"
           }
         ],
-        "finalMessage": "Implemented and checked."
+        "finalMessage": "Implemented and checked.",
+        "checkDefinition": {
+          "executable": "python",
+          "args": [
+            "<frozen-checks>"
+          ],
+          "source": "import os,sys\nsys.path.insert(0,os.getcwd())\nimport asyncio\nfrom worker import work\nasync def main():\n    async def result(): return 'completed'\n    assert await work(asyncio.create_task(result()))=='completed'\n    async def pending(): await asyncio.sleep(100)\n    child=asyncio.create_task(pending());child.cancel()\n    try: await work(child)\n    except asyncio.CancelledError: pass\n    else: raise AssertionError('cancelled work reported as completed')\nasyncio.run(main())\nprint('All specified boundary and regression checks passed.')\n",
+          "sha256": "d29e6fa8ac861df9b5bfac49eafcd595d148ada5b3172fee0e3f32d501ff13bc",
+          "expectedExitStatus": 0,
+          "timeoutSecs": 10
+        },
+        "snapshotProvenance": "Final files in the synthetic workspace after executing the frozen external checks; no Git commit or model-authored trajectory claimed."
       },
       "traceB": {
         "files": null,
@@ -1364,5 +2151,6 @@
       "requiredCheckFailedA": false,
       "requiredCheckFailedB": false
     }
-  ]
+  ],
+  "revision": 2
 }
