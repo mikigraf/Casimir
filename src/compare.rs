@@ -172,6 +172,8 @@ pub struct Report {
     pub overall_outcome: String,
     #[serde(default)]
     pub judge_assessment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_error: Option<String>,
     #[serde(default)]
     pub checks: Option<crate::checks::Results>,
     pub a: SideStats,
@@ -358,6 +360,7 @@ pub fn compare_sessions(a: &Session, b: &Session, diff_a: Option<Diff>, diff_b: 
         schema_version: 1, execution_status: if b.execution.as_ref().is_some_and(|e| e.failed_turns == 0 && e.completed_turns + e.preserved_turns + e.skipped_turns >= e.requested_turns) { "completed".into() } else { "incomplete_or_failed".into() },
         overall_outcome: "inconclusive".into(), judge_assessment: "unassessed".into(), checks: b.evaluation.as_ref().and_then(|e| e.get("checks")).filter(|v| !v.is_null()).map(|v| serde_json::from_value(v.clone()).unwrap_or_else(|_| crate::checks::Results { schema_version: 1, definition_hash: String::new(), outcome: "error".into(), results: Vec::new() })),
         a: describe(a),
+        judge_error: if judge.is_none() { b.evaluation.as_ref().and_then(|e| e["judgeError"].as_str()).map(String::from) } else { None },
         b: describe(b),
         files: FileSets {
             only_a: fa.iter().filter(|f| !fb.contains(f)).cloned().collect(),
@@ -767,15 +770,22 @@ fn judge_once(system: &str, turns_block: &str, first: (&Session, Option<&Diff>),
     let evidence_first = citations("evidenceA", first.0, first.1);
     let evidence_second = citations("evidenceB", second.0, second.1);
     if evidence_first.is_empty() || evidence_second.is_empty() { uncertainty.push("missing or unverified evidence citations".into()); }
+    let score_first = num("scoreA")?;
+    let score_second = num("scoreB")?;
+    let invalid_first = invalid_list(obj.get("invalidA"));
+    let invalid_second = invalid_list(obj.get("invalidB"));
+    if invalid_first.is_empty() && invalid_second.is_empty()
+        && ((winner == "A" && score_first < score_second) || (winner == "B" && score_second < score_first)
+            || (winner == "tie" && (score_first - score_second).abs() > 1.0)) {
+        uncertainty.push("judge winner contradicts its scores".into());
+    }
     Ok(JudgeCall {
         evidence_first, evidence_second, uncertainty,
         winner: winner.to_string(),
-        score_first: num("scoreA")?,
-        score_second: num("scoreB")?,
+        score_first, score_second,
         summary: obj.get("summary").and_then(Value::as_str).unwrap_or("").to_string(),
         differences: obj.get("differences").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
-        invalid_first: invalid_list(obj.get("invalidA")),
-        invalid_second: invalid_list(obj.get("invalidB")),
+        invalid_first, invalid_second,
     })
 }
 
@@ -920,6 +930,7 @@ pub fn judge_sessions_with(a: &Session, b: &Session, diff_a: Option<&Diff>, diff
     let w_ab = modal(&ab_winners);
     let w_ba = modal(&ba_winners);
     let order_sensitive = w_ab != w_ba;
+    if ab_winners.iter().any(|w| w != &w_ab) || ba_winners.iter().any(|w| w != &w_ba) { uncertainty.push("repeated judge calls contradict one another".into()); }
     let winner = if order_sensitive { "tie".to_string() } else { w_ab.clone() };
     let first_slot_win_rate = if decided == 0 { 0.5 } else { first_slot_wins as f64 / decided as f64 };
     let position_bias = (first_slot_win_rate - 0.5).abs();
@@ -965,6 +976,7 @@ pub fn judge_sessions_with(a: &Session, b: &Session, diff_a: Option<&Diff>, diff
 impl Report {
     pub fn update_outcome(&mut self, threshold: f64) {
         self.judge_assessment = match &self.judge {
+            _ if self.judge_error.is_some() => "inconclusive",
             None => "unassessed",
             Some(j) if j.order_sensitive || j.reliable_but_biased || !j.uncertainty.is_empty() || j.evidence_a.is_empty() || j.evidence_b.is_empty() => "inconclusive",
             Some(j) if !j.invalid_b.is_empty() || j.score_b < threshold => "failed",

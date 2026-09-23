@@ -121,6 +121,7 @@ fn llm(prompt: &str) {
                 for label in ["## Run A","## Run B"] { let block = prompt.split(label).nth(1).unwrap().split("## Run ").next().unwrap(); assert!(block.contains("verification_evidence_marker")); assert!(block.contains("verified content from actual tool result")); }
                 json!({"winner":"tie","scoreA":9,"scoreB":9,"summary":"tool evidence present in both orders"})
             },
+            "judge-contradictory" => json!({"winner":"B","scoreA":9,"scoreB":3,"summary":"contradictory assessment"}),
             "judge-malformed" => json!({"winner":"invalid","scoreA":99,"scoreB":99}),
             "judge-both-pass" => json!({"winner":"tie","scoreA":9,"scoreB":9,"summary":"both pass"}),
             "judge-invalid-patch" => json!({"winner":"tie","scoreA":9,"scoreB":9,"invalidA":["requirement_violation"],"invalidB":["requirement_violation"]}),

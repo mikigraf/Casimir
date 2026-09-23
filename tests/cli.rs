@@ -67,7 +67,7 @@ fn checkpointed_original(repo: &Path) -> Session {
     original.model = Some("fake-model".into());
     original.cwd = Some(repo.display().to_string());
     let native = claude_code::prepare_fork(&original, 2, &uuid::Uuid::new_v4().to_string(), repo).unwrap();
-    let configuration_hash = casimir::checkpoint::hash(&serde_json::to_vec(&json!({"harness":Harness::ClaudeCode,"permissionMode":"preserve","sandbox":"preserve","extraArgs":[],"checksHash":null})).unwrap());
+    let configuration_hash = casimir::checkpoint::hash(&serde_json::to_vec(&json!({"harness":Harness::ClaudeCode,"model":"fake-model","permissionMode":"preserve","sandbox":"preserve","extraArgs":[],"checksHash":null})).unwrap());
     let id = casimir::checkpoint::capture(casimir::checkpoint::Capture { cwd: repo, run_dir: &tmp("checkpoint-source"), native: Some(&native), harness: Harness::ClaudeCode, version: Some("casimir-fixture 1.0.0".into()), turn: 2, expected_conversation_turns: 1, prompt: &user_turns(&original)[1].text, configuration_hash: &configuration_hash, limit: casimir::checkpoint::DEFAULT_LIMIT }).unwrap();
     original.checkpoints.insert(2, id);
     original.configuration_hash = Some(configuration_hash);
@@ -233,6 +233,9 @@ fn judge_schema_and_invalidity_are_enforced() {
     let options = RerunOpts { workspace: repo.display().to_string(), out_dir: Some(tmp("invalid-patch")), quiet: true, replicates: 2, judge: true, judge_llm: fake_llm("judge-invalid-patch"), ..Default::default() };
     let (_, matrix) = rerun_matrix(&original, &options, &mut no_log, &mut no_log).unwrap();
     assert!(matrix.unwrap().entries.iter().all(|e| !e.pass), "a high score cannot override an explicit invalidity finding");
+    let contradictory = judge_sessions(&original, &original, None, None, &fake_llm("judge-contradictory")).unwrap();
+    assert!(contradictory.uncertainty.iter().any(|u| u.contains("contradicts its scores")));
+    assert_eq!(compare_sessions(&original, &original, None, None, Some(contradictory)).judge_assessment, "inconclusive");
 }
 
 #[test]

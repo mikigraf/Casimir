@@ -27,6 +27,12 @@ jobs:
       - name: Run authenticated task suite
         if: runner.os == 'Windows'
         run: python scripts/acceptance.py --casimir target/release/casimir.exe --output .context/acceptance --allow-paid
+      - name: Run authenticated recovery and checkpoint workflows
+        if: runner.os != 'Windows'
+        run: python scripts/native-workflows.py --casimir target/release/casimir --output .context/native-workflows --allow-paid
+      - name: Run authenticated recovery and checkpoint workflows
+        if: runner.os == 'Windows'
+        run: python scripts/native-workflows.py --casimir target/release/casimir.exe --output .context/native-workflows --allow-paid
       # Raw logs and snapshots remain on the protected runner. No automatic public upload.
       - name: Record gate limitations
-        run: python -c "print('Task replay is one gate. Native checkpoint/resume, reviewed calibration and three independent pilots remain required before 1.0.')"
+        run: python -c "print('Task replay is one gate. All native workflows, reviewed calibration and three independent pilots must have passing evidence before 1.0.')"

@@ -64,7 +64,8 @@ impl Brief {
         read_json(path).with_context(|| format!("loading brief {}", path.display()))
     }
     pub fn save(&self, path: &Path) -> Result<()> {
-        write_json(path, self)
+        let mut brief = self.clone(); brief.schema_version = 1;
+        write_json(path, &brief)
     }
     /// Rubric text for the judge prompt.
     pub fn rubric_text(&self) -> String {

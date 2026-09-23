@@ -31,6 +31,7 @@ manifest or fabricate a historical checkpoint to make a fork proceed.
 
 Preview checkpoint reclamation with `casimir cleanup RUN --checkpoints`; add `--apply` to
 remove the selected run, its owned worktree, and checkpoint objects unreferenced by other
-registered runs/restores. Ordinary cleanup retains checkpoints. Manually copying a session
+registered runs/restores. Ordinary cleanup retains checkpoints; `cleanup RUN --checkpoints` can reclaim them later
+even after the run directory has been removed. Manually copying a session
 JSON file does not register a checkpoint reference and is not a complete backup. Managed
 bare Git restore caches are retained; the checkpoint purge does not remove them.

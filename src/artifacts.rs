@@ -12,7 +12,7 @@ pub struct Ownership {
     pub repository: Option<PathBuf>,
 }
 fn worktree_marker(path: &Path) -> Result<PathBuf> {
-    let output = std::process::Command::new("git").args(["rev-parse", "--absolute-git-dir"]).current_dir(path).output()?;
+    let output = crate::workspace::git_output(&["rev-parse", "--absolute-git-dir"], path)?;
     if !output.status.success() { bail!("owned worktree Git metadata is missing"); }
     Ok(PathBuf::from(String::from_utf8(output.stdout)?.trim()).join("casimir-owner"))
 }
@@ -47,7 +47,11 @@ pub fn cleanup(run: &Path, apply: bool) -> Result<serde_json::Value> {
     cleanup_with_checkpoints(run, apply, false)
 }
 pub fn cleanup_with_checkpoints(run: &Path, apply: bool, checkpoints: bool) -> Result<serde_json::Value> {
+    if checkpoints && std::fs::symlink_metadata(run).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return Ok(serde_json::json!({"schemaVersion":1,"preview":!apply,"run":run,"checkpoints":crate::checkpoint::cleanup_owner(run,apply)?,"note":"Run directory already removed; only registered checkpoint references are selected."}));
+    }
     let canonical = std::fs::canonicalize(run)?;
+    let _cleanup_lock = crate::util::RunLock::acquire_wait(&registry())?;
     let mut found = None;
     for entry in std::fs::read_dir(registry()).context("no owned artifact registry")? {
         let entry = entry?;
@@ -56,7 +60,6 @@ pub fn cleanup_with_checkpoints(run: &Path, apply: bool, checkpoints: bool) -> R
         if record.run == canonical { found = Some((entry.path(), record)); break; }
     }
     let (manifest, record) = found.context("run is not in the Casimir ownership registry; cleanup refused")?;
-    let _cleanup_lock = crate::util::RunLock::acquire(&registry())?;
     verify(&record)?;
     let _lock = crate::util::RunLock::acquire_cleanup(&canonical)?;
     verify(&record)?;

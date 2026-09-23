@@ -219,6 +219,12 @@ impl RunArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
+    /// Generate AB/BA judge predictions for the frozen 40-pair corpus (makes model calls)
+    PredictEvaluation {
+        #[arg(long)] corpus: PathBuf,
+        #[arg(short, long)] output: PathBuf,
+        #[command(flatten)] llm: LlmArgs,
+    },
     /// Score frozen evaluation predictions against independent reviews and adjudication
     Calibrate {
         #[arg(long)] corpus: PathBuf,
@@ -391,6 +397,12 @@ pub fn run() -> Result<i32> {
         _ => None,
     };
     match cli.command {
+        Cmd::PredictEvaluation { corpus, output, llm } => {
+            eprintln!("Preflight: 40 trace pairs, 80 ordered judge calls (up to 160 with JSON repair); no human labels are generated.");
+            let result = crate::calibration::predict(&corpus, &output, &llm.judge_opts())?;
+            println!("Predictions saved to {}", output.join("predictions.json").display());
+            if result["failures"].as_object().is_some_and(|failures| !failures.is_empty()) { return Ok(1); }
+        },
         Cmd::Calibrate { corpus, predictions, reviewer_a, reviewer_b, adjudication, output } => {
             let result = crate::calibration::score(&corpus, &predictions, &reviewer_a, &reviewer_b, &adjudication)?;
             if let Some(path) = output { crate::util::write_json(&path, &result)?; }

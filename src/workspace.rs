@@ -6,20 +6,24 @@ use std::process::Command;
 
 use crate::model::Session;
 
+pub(crate) fn git_output(args: &[&str], cwd: &Path) -> Result<crate::process::Output> {
+    let spool = tempfile::tempdir()?;
+    crate::process::capture(Command::new("git").args(args).current_dir(cwd), b"", std::time::Duration::from_secs(60), Some(&spool.path().join("git")))
+}
 fn git(args: &[&str], cwd: &Path) -> Result<String> {
-    let out = Command::new("git").args(args).current_dir(cwd).output()?;
+    let out = git_output(args, cwd)?;
     if !out.status.success() {
-        bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        bail!("git {} failed: {}", args.join(" "), out.stderr.trim());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn git_lenient(args: &[&str], cwd: &Path) -> String {
-    Command::new("git").args(args).current_dir(cwd).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    git_output(args, cwd).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
 }
 
 pub fn is_git_repo(dir: &Path) -> bool {
-    dir.exists() && Command::new("git").args(["rev-parse", "--is-inside-work-tree"]).current_dir(dir).output().is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+    dir.exists() && git_output(&["rev-parse", "--is-inside-work-tree"], dir).is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
 }
 
 pub fn repo_root(dir: &Path) -> Result<PathBuf> {
@@ -31,7 +35,7 @@ pub fn head_commit(dir: &Path) -> Result<String> {
 }
 
 pub fn commit_exists(sha: &str, dir: &Path) -> bool {
-    Command::new("git").args(["cat-file", "-e", &format!("{sha}^{{commit}}")]).current_dir(dir).output().is_ok_and(|o| o.status.success())
+    git_output(&["cat-file", "-e", &format!("{sha}^{{commit}}")], dir).is_ok_and(|o| o.status.success())
 }
 
 /// Best-effort commit the original session started from: the one recorded by the harness,
@@ -49,7 +53,7 @@ pub fn base_commit(session: &Session, dir: &Path) -> Result<(String, String)> {
     refs.push("HEAD");
     if let Some(start) = &session.started_at {
         for r in refs {
-            let out = Command::new("git").args(["rev-list", "-1", &format!("--before={start}"), r]).current_dir(dir).output()?;
+            let out = git_output(&["rev-list", "-1", &format!("--before={start}"), r], dir)?;
             let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if out.status.success() && !sha.is_empty() {
                 return Ok((sha, format!("last commit on {r} before session start")));
@@ -118,7 +122,7 @@ pub fn parse_patch(patch: &str) -> std::collections::BTreeMap<String, FileChange
 }
 
 fn last_commit_before(ts: &str, refname: &str, dir: &Path) -> Option<String> {
-    let out = Command::new("git").args(["rev-list", "-1", &format!("--before={ts}"), refname]).current_dir(dir).output().ok()?;
+    let out = git_output(&["rev-list", "-1", &format!("--before={ts}"), refname], dir).ok()?;
     let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if out.status.success() && !sha.is_empty() {
         Some(sha)

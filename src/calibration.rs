@@ -3,6 +3,77 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::Path;
 
+/// Run the production AB/BA judge on frozen trace evidence. Construction strata and human
+/// labels are deliberately excluded from its inputs. These are predictions, never reviews.
+pub fn predict(corpus_path: &Path, output: &Path, llm: &crate::llm::LlmOpts) -> Result<Value> {
+    use crate::{compare::{compare_sessions, judge_sessions_with, JudgeOpts}, model::{Event, EventKind, Execution, Harness, Session}};
+    let bytes = std::fs::read(corpus_path)?;
+    let corpus: Value = serde_json::from_slice(&bytes)?;
+    let cases = corpus["cases"].as_array().context("corpus cases missing")?;
+    let ids: std::collections::BTreeSet<_> = cases.iter().filter_map(|c| c["id"].as_str()).collect();
+    if corpus["schemaVersion"] != 1 || corpus["frozen"] != true || cases.len() != 40 || ids.len() != 40 {
+        bail!("prediction requires a frozen schemaVersion 1 corpus with 40 unique cases");
+    }
+    if ids.iter().any(|id| id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')) { bail!("unsafe corpus case ID"); }
+    let _lock = crate::util::RunLock::acquire(output)?;
+    if std::fs::read_dir(output)?.any(|entry| entry.map_or(true, |entry| entry.file_name() != ".lock")) { bail!("prediction output must be empty"); }
+    let hash = crate::checkpoint::hash(&bytes);
+    crate::util::atomic_write(&output.join("corpus.json"), &bytes)?;
+    let mut result = json!({"schemaVersion":1,"corpusHash":hash,"humanReviewed":false,"judgeModel":crate::llm::effective_model(llm),"labels":{},"failures":{}});
+    for case in cases {
+        let id = case["id"].as_str().unwrap();
+        let task = case["task"].as_str().context("case task missing")?;
+        let mut sessions = Vec::new();
+        for (trace_name, failed_key) in [("traceA","requiredCheckFailedA"),("traceB","requiredCheckFailedB")] {
+            let trace = &case[trace_name];
+            let mut session = Session::new(Harness::ClaudeCode);
+            session.events.push(Event::text(1,"",EventKind::User,task));
+            if let Some(files) = trace["files"].as_object() {
+                for (name,content) in files {
+                    session.events.push(Event::tool_call(1,"",name,"Write",json!({"file_path":name,"content":content})));
+                }
+            }
+            if let Some(evidence) = trace["toolEvidence"].as_array() {
+                for (index,record) in evidence.iter().enumerate() {
+                    let tool_id = format!("check-{index}");
+                    session.events.push(Event::tool_call(1,"",&tool_id,"Bash",json!({"command":record["command"]})));
+                    session.events.push(Event::tool_result(1,"",&tool_id,Some("Bash".into()),record["output"].as_str().unwrap_or(""),record["exitStatus"].as_i64().is_some_and(|n| n != 0)));
+                }
+            }
+            session.events.push(Event::text(1,"",EventKind::Assistant,trace["finalMessage"].as_str().unwrap_or("")));
+            session.execution = Some(Execution { requested_turns:1, completed_turns:1, ..Default::default() });
+            if case[failed_key] == true {
+                session.evaluation = Some(json!({"checks":{"schemaVersion":1,"definitionHash":hash,"outcome":"failed","results":[]}}));
+            }
+            sessions.push(session);
+        }
+        let directory = output.join(id);
+        crate::util::private_dir(&directory)?;
+        let mut options = llm.clone(); options.recording_dir = Some(directory.join("llm"));
+        let judgement = judge_sessions_with(&sessions[0], &sessions[1], None, None, &JudgeOpts::new(options));
+        let label = match judgement {
+            Ok(judge) => {
+                let report_b = compare_sessions(&sessions[0],&sessions[1],None,None,Some(judge.clone()));
+                let mut swapped = judge.clone();
+                std::mem::swap(&mut swapped.score_a,&mut swapped.score_b);
+                std::mem::swap(&mut swapped.invalid_a,&mut swapped.invalid_b);
+                std::mem::swap(&mut swapped.evidence_a,&mut swapped.evidence_b);
+                let report_a = compare_sessions(&sessions[1],&sessions[0],None,None,Some(swapped));
+                crate::util::write_json(&directory.join("report.json"),&report_b)?;
+                let winner = if report_a.overall_outcome == "inconclusive" || report_b.overall_outcome == "inconclusive" { "inconclusive" } else { &judge.winner };
+                json!({"winner":winner,"outcomeA":report_a.overall_outcome,"outcomeB":report_b.overall_outcome})
+            },
+            Err(error) => {
+                result["failures"][id] = json!(crate::privacy::redact(&error.to_string()));
+                json!({"winner":"inconclusive","outcomeA":if case["requiredCheckFailedA"]==true {"failed"} else {"inconclusive"},"outcomeB":if case["requiredCheckFailedB"]==true {"failed"} else {"inconclusive"}})
+            },
+        };
+        result["labels"][id] = label;
+        crate::util::write_json(&output.join("predictions.json"), &result)?;
+    }
+    Ok(result)
+}
+
 pub fn score(corpus: &Path, predictions: &Path, reviewer_a: &Path, reviewer_b: &Path, adjudication: &Path) -> Result<Value> {
     let bytes = std::fs::read(corpus)?;
     let hash = crate::checkpoint::hash(&bytes);

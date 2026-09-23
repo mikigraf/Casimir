@@ -291,7 +291,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     let c = colors();
     let harness = o.harness.unwrap_or(original.harness());
     let same_harness = harness == original.harness();
-    let model = o.model.clone().or_else(|| if same_harness { original.model.clone() } else { None });
+    let model = recovery.as_ref().and_then(|r| r.session.model.clone()).or_else(|| o.model.clone()).or_else(|| if same_harness { original.model.clone() } else { None });
     let run_id = o.run_id.clone().unwrap_or_else(|| make_run_id(original, harness, model.as_deref()));
     let turns = user_turns(original);
     if turns.is_empty() {
@@ -397,7 +397,8 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     let mut cost = session.cost_usd.unwrap_or(0.0);
     let mut saw_cost = session.cost_usd.is_some();
     let mut sim_state: crate::simulate::SimState = recovery.as_ref().map(|r| r.simulator.clone()).unwrap_or_default();
-    let configuration_hash = crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":harness,"permissionMode":permission_mode,"sandbox":sandbox,"extraArgs":o.extra_args,"checksHash":frozen_checks.as_ref().map(|(_, hash)| hash)}))?);
+    let configuration_for = |model: Option<&str>| -> Result<String> { Ok(crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":harness,"model":model,"permissionMode":permission_mode,"sandbox":sandbox,"extraArgs":o.extra_args,"checksHash":frozen_checks.as_ref().map(|(_, hash)| hash)}))?)) };
+    let mut configuration_hash = configuration_for(session.model.as_deref())?;
     if recovery.is_some() && checkpoint.as_ref().is_some_and(|cp| cp.configuration_hash != configuration_hash) { bail!("recovery configuration differs from its checkpoint"); }
     let diff_a = original_diff_for(original, o);
     let brief = resolve_brief(original, o, diff_a.as_ref(), &run_dir, log)?;
@@ -554,6 +555,8 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
         }
         if res.model.is_some() {
             session.model = res.model.clone(); // what the harness actually reported beats what we asked for
+            configuration_hash = configuration_for(session.model.as_deref())?;
+            session.configuration_hash = Some(configuration_hash.clone());
         }
         if let Some(cu) = res.cost_usd {
             cost += cu;
@@ -624,6 +627,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
 
     let check_results = frozen_checks.as_ref().map(|(definition, hash)| crate::checks::execute(definition, hash, &ws.dir, &run_dir)).transpose()?;
     let mut judge = None;
+    let mut judge_error = None;
     if o.judge {
         let jo = JudgeOpts { llm: o.judge_llm.clone(), repeats: o.judge_repeats.max(1), brief: brief.clone(), model_a: original.model.clone(), model_b: session.model.clone() };
         log(&format!("{}asking judge ({}) in both candidate orders{}…{}", c.magenta, effective_model(&o.judge_llm), if jo.repeats > 1 { format!(", {} repeats each", jo.repeats) } else { String::new() }, c.reset));
@@ -634,11 +638,12 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
                 }
                 judge = Some(j)
             }
-            Err(err) => log(&format!("{}judge failed: {err}{}", c.red, c.reset)),
+            Err(err) => { judge_error = Some(crate::privacy::redact(&err.to_string())); log(&format!("{}judge failed: {err}{}", c.red, c.reset)); },
         }
     }
     let mut report = compare_sessions(original, &session, diff_a, Some(diff.clone()), judge);
     report.checks = check_results;
+    report.judge_error = judge_error;
     report.update_outcome(o.pass_threshold);
     if o.judge {
         if let Some(b) = &brief {
@@ -650,7 +655,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     }
     fs::write(run_dir.join("report.md"), render_compare_markdown(&report, "original", "rerun"))?;
     write_json(&run_dir.join("report.json"), &report)?;
-    session.evaluation = Some(json!({"outcome":report.overall_outcome,"execution":report.execution_status,"checks":report.checks,"judgeAssessment":report.judge_assessment,"judgeModel":if o.judge {Some(effective_model(&o.judge_llm))} else {None},"passThreshold":o.pass_threshold,"rubricHash":brief.as_ref().map(|b| crate::checkpoint::hash(b.rubric_text().as_bytes()))}));
+    session.evaluation = Some(json!({"outcome":report.overall_outcome,"execution":report.execution_status,"checks":report.checks,"judgeAssessment":report.judge_assessment,"judgeError":report.judge_error,"judgeModel":if o.judge {Some(effective_model(&o.judge_llm))} else {None},"passThreshold":o.pass_threshold,"rubricHash":brief.as_ref().map(|b| crate::checkpoint::hash(b.rubric_text().as_bytes()))}));
     write_json(&session_path, &session)?;
     if session.execution.as_ref().is_some_and(|e| e.failed_turns == 0) { journal.session = session.clone(); }
     journal.state = if session.execution.as_ref().is_some_and(|e| e.failed_turns > 0) { "failed".into() } else { "completed".into() };
@@ -1325,7 +1330,7 @@ pub fn attribute(original: &Session, o: &RerunOpts, turns: &[u32], log: &mut dyn
         bail!("attribution withheld: supply the original frozen --brief; rubric evidence is missing or differs");
     }
     let checks_hash = o.checks.as_ref().map(fs::read).transpose()?.map(|bytes| crate::checkpoint::hash(&bytes));
-    let configuration_hash = crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":original.harness(),"permissionMode":o.permission_mode.as_deref().unwrap_or("preserve"),"sandbox":o.sandbox.as_deref().unwrap_or("preserve"),"extraArgs":o.extra_args,"checksHash":checks_hash}))?);
+    let configuration_hash = crate::checkpoint::hash(&serde_json::to_vec(&json!({"harness":original.harness(),"model":original.model,"permissionMode":o.permission_mode.as_deref().unwrap_or("preserve"),"sandbox":o.sandbox.as_deref().unwrap_or("preserve"),"extraArgs":o.extra_args,"checksHash":checks_hash}))?);
     if original.configuration_hash.as_deref() != Some(&configuration_hash) { bail!("attribution withheld: harness permissions, arguments, or executable checks differ from original"); }
     if o.user_mode != "verbatim" || o.sim_models.len() > 1 { bail!("attribution requires verbatim user turns to avoid mixing simulator effects with turn effects"); }
     let n = user_turns(original).len();

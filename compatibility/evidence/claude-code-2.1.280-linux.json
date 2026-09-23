@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "harness": "claude-code",
+  "version": "2.1.280",
+  "platform": "linux",
+  "scope": "Native transcript format and local orchestration validation; not the full release acceptance gate",
+  "baseCommit": "8f9351a63f67ccb880db5a9f6e575779dae2cb89",
+  "candidateChanges": "Platform-scoped compatibility gate enabled for this validation build; production data and no fixture substitution",
+  "status": "passed",
+  "workflows": [
+    "replay",
+    "resume",
+    "checkpoint"
+  ],
+  "records": [
+    {
+      "harness": "claude-code",
+      "replay": "passed",
+      "checkpoint": "passed",
+      "resume": "passed",
+      "sourceUnchanged": true
+    }
+  ],
+  "summarySha256": "475e70cb50154aaf7ba36fa8d0637c184b12c70e7a3df267ea48441df0f6cea2",
+  "artifacts": {
+    "replay/session.json": "1b4e4812e794eff6659b5d40889ff82efbb3ed5c12587bc9ad062c66d26719be",
+    "replay/report.json": "04d9ac3c1cb7d607953d1b4ab1dbb6da317934b04a04551521d556864b384992",
+    "replay/recovery.json": "9d6eafcb1a52066caa011a79bd381594ebd2368fecdf8e5c5d3e9df01267bc7a",
+    "fork/session.json": "18b620b5135815dbfdc2d715e31a7f5f7051a6e00f6e62abab18d3579ceeaf63",
+    "fork/report.json": "89a142e68afd47190750a3da70152ab61e7c4ddf52ccd3eb624fef514da155c8",
+    "fork/recovery.json": "b0d72d5642e11564f0a1ba06c760c3d309b9fd9d1ec14ad1b33a8e049e5fd444",
+    "interrupted/session.json": "921ac50eccac702916c50e36220085d9598d638e875e29de3da4c877eeef7ea4",
+    "interrupted/report.json": "058aae9184f1425c57babd214ac6b4f2506571833875a67a28e7dbe5490f8709",
+    "interrupted/recovery.json": "a8f1b7aa7f58760e45f409f8877ff4d883843b53bc0c721c0be64fd57b7a41fa"
+  }
+}

@@ -282,7 +282,7 @@ pub fn require_compatible(checkpoint: &Checkpoint) -> Result<()> {
     if checkpoint.conversation.is_none() && checkpoint.turn == 1 { return Ok(()); }
     let manifest: serde_json::Value = serde_json::from_str(include_str!("../compatibility/harnesses.json"))?;
     let validated = manifest["harnesses"].as_array().unwrap().iter().any(|h|
-        h["id"] == checkpoint.harness.as_str() && h["version"].as_str() == checkpoint.harness_version.as_deref() && h["checkpointValidated"] == true);
+        h["id"] == checkpoint.harness.as_str() && h["version"].as_str() == checkpoint.harness_version.as_deref() && h["checkpointValidated"] == true && h["checkpointPlatforms"].as_array().is_some_and(|platforms| platforms.iter().any(|p| p == std::env::consts::OS)));
     if validated && crate::doctor::harness_version(checkpoint.harness) != checkpoint.harness_version { bail!("installed harness version does not match checkpoint compatibility version"); }
     if !validated { bail!("native transcript format/version has not passed checkpoint compatibility validation; checkpoint operations are refused"); }
     Ok(())
@@ -375,7 +375,11 @@ fn ensure_repository(checkpoint: &Checkpoint) -> Result<PathBuf> {
 #[serde(rename_all = "camelCase")]
 struct References { schema_version: u32, owner: PathBuf, checkpoints: BTreeSet<String> }
 fn owner_path(path: &Path) -> Result<PathBuf> {
-    Ok(fs::canonicalize(path).unwrap_or(if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) }))
+    if let Ok(path) = fs::canonicalize(path) { return Ok(path); }
+    if let Some((parent, name)) = path.parent().zip(path.file_name()) {
+        if let Ok(parent) = fs::canonicalize(parent) { return Ok(parent.join(name)); }
+    }
+    Ok(if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) })
 }
 fn reference_path(owner: &Path) -> Result<PathBuf> {
     Ok(root().join("references").join(format!("{}.json", hash(&serde_json::to_vec(&owner_path(owner)?)?))))

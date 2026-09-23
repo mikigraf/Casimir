@@ -18,3 +18,11 @@ replay pass into a complete platform acceptance pass.
 
 Keep output private. Upload only redacted evidence summaries to public CI. A protected
 self-hosted runner must not be shared with untrusted pull-request jobs.
+
+Run `python scripts/native-workflows.py --casimir PATH --output PRIVATE_DIRECTORY --allow-paid`
+for native replay/fork/recovery evidence. It interrupts the second turn after a durable first
+turn, verifies that implicit retry is refused, explicitly retries in a fresh attempt, checks
+that the first turn is not repeated, and verifies completed resume is a no-op. The optional
+`--harness claude-code` or `--harness codex` is useful for version validation; a subset result
+cannot satisfy a release gate requiring both. The checked-in compatibility manifest must
+validate the exact harness version **and platform** before native continuation is enabled.

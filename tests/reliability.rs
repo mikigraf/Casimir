@@ -8,6 +8,7 @@ fn setup() {
         let home = std::env::temp_dir().join(format!("casimir-reliability-{}",std::process::id()));
         std::env::set_var("CASIMIR_HOME", &home);
         std::env::set_var("CASIMIR_CLAUDE_BIN", fixture::executable("fake-claude"));
+        std::env::set_var("CASIMIR_LLM_CMD", fixture::executable("fake-llm"));
         std::env::set_var("CLAUDE_CONFIG_DIR", home.join("claude"));
     });
 }
@@ -161,6 +162,10 @@ fn cleanup_previews_and_preserves_original_and_unowned_directories() {
     assert!(casimir::artifacts::cleanup(repo.path(),true).is_err());
     assert!(!repo.path().join(".lock").exists(), "unowned cleanup must not modify the source");
     casimir::artifacts::cleanup(output.path(),true).unwrap();assert!(!output.path().exists());assert!(!run.workspace.dir.exists());assert!(repo.path().join(".git").exists());
+    let _guard = CHECKPOINT_INTEGRITY_TEST.lock().unwrap();
+    let preview=casimir::artifacts::cleanup_with_checkpoints(output.path(),false,true).unwrap();
+    assert!(preview["checkpoints"]["manifests"].as_u64().unwrap()>0);
+    casimir::artifacts::cleanup_with_checkpoints(output.path(),true,true).unwrap();
 }
 #[test]
 fn shared_exports_redact_credentials_and_mark_redaction() {
@@ -303,4 +308,30 @@ fn signal_cancellation_preserves_ambiguous_journal_and_reaps_children() {
     let journal:serde_json::Value=util::read_json(&run.join("recovery.json")).unwrap();assert_eq!(journal["active"],true);
     assert!(casimir::recovery::resume(&run,false,&mut |_|{},&mut |_|{}).is_err());
     assert!(!repo.path().join("out.txt").exists());
+}
+
+#[test]
+fn frozen_predictions_are_not_human_reviews_and_preserve_required_failures() {
+    setup();let output=tempfile::tempdir().unwrap();let corpus=Path::new(env!("CARGO_MANIFEST_DIR")).join("acceptance/evaluation/corpus.json");
+    let options=casimir::llm::LlmOpts {backend:"cmd".into(),model:Some("judge-consistent".into()),..Default::default()};
+    let result=casimir::calibration::predict(&corpus,output.path(),&options).unwrap();
+    assert_eq!(result["humanReviewed"],false);assert_eq!(result["labels"].as_object().unwrap().len(),40);
+    let original:serde_json::Value=util::read_json(&corpus).unwrap();
+    for case in original["cases"].as_array().unwrap() {
+        for suffix in ["A","B"] {
+            if case[format!("requiredCheckFailed{suffix}")]==true {assert_eq!(result["labels"][case["id"].as_str().unwrap()][format!("outcome{suffix}")],"failed");}
+        }
+    }
+    assert_eq!(result["corpusHash"],checkpoint::hash(&std::fs::read(&corpus).unwrap()));
+    assert!(casimir::calibration::predict(&corpus,output.path(),&options).is_err(),"existing evidence cannot be overwritten");
+}
+
+#[test]
+fn failed_judge_keeps_successful_checks_inconclusive() {
+    let checks=casimir::checks::Results {schema_version:1,definition_hash:"frozen".into(),outcome:"passed".into(),results:vec![]};
+    let mut session=Session::new(Harness::ClaudeCode);
+    session.execution=Some(casimir::model::Execution {requested_turns:1,completed_turns:1,..Default::default()});
+    session.evaluation=Some(json!({"checks":checks,"judgeError":"HTTP 429"}));
+    let report=casimir::compare::compare_sessions(&session,&session,None,None,None);
+    assert_eq!(report.judge_assessment,"inconclusive");assert_eq!(report.overall_outcome,"inconclusive");
 }

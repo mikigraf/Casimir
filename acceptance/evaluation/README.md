@@ -39,3 +39,15 @@ the gate regardless of aggregate agreement. Human review is still an external pr
 Simulator and attribution acceptance must additionally use the maintained cases in
 `review-cases.json`, with independently recorded human decisions. Their mere presence is
 not validation.
+
+Generate predictions separately using the production AB/BA judge:
+
+```sh
+casimir predict-evaluation --corpus acceptance/evaluation/corpus.json -o /private/predictions --judge-model MODEL --llm claude-cli
+```
+
+This makes 80 ordered judge calls (up to 160 with JSON-repair retries). It excludes construction
+strata and human labels from model inputs, freezes the corpus bytes, retains per-case evidence,
+and marks predictions `humanReviewed: false`. Model/transport failures remain inconclusive;
+required-check failures cannot become passes. Use `predictions/predictions.json` when scoring.
+These generated predictions cannot replace independent human review.
