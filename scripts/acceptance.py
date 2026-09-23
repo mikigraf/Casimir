@@ -14,17 +14,23 @@ def permission_args(harness, unrestricted):
     if not unrestricted:return []
     return ['--allow-unrestricted',*(['--permission-mode','bypassPermissions'] if harness=='claude-code' else ['--sandbox','danger-full-access'])]
 
+def coding_permission_args(harness, unrestricted):
+    if unrestricted:return permission_args(harness, True)
+    return ['--permission-mode','acceptEdits'] if harness=='claude-code' else ['--sandbox','workspace-write']
+
 def write(path, value):path.write_text(json.dumps(value,indent=2)+'\n')
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--casimir',type=pathlib.Path,required=True);parser.add_argument('--output',type=pathlib.Path,required=True)
-    parser.add_argument('--tasks',type=pathlib.Path,default=pathlib.Path('acceptance/live/tasks.json'));parser.add_argument('--allow-paid',action='store_true');parser.add_argument('--allow-unrestricted',action='store_true')
+    parser.add_argument('--tasks',type=pathlib.Path,default=pathlib.Path('acceptance/live/tasks.json'));parser.add_argument('--allow-subscription-usage','--allow-paid',dest='allow_paid',action='store_true');parser.add_argument('--allow-unrestricted',action='store_true')
+    parser.add_argument('--harness',action='append',choices=['claude-code','codex'],help='Subset for provider validation; the release gate requires both')
     args=parser.parse_args()
-    if not args.allow_paid:parser.error('authenticated acceptance requires explicit --allow-paid')
+    if not args.allow_paid:parser.error('authenticated acceptance requires explicit --allow-subscription-usage')
     binary=str(args.casimir.resolve());out=args.output.resolve()
     if out.exists() and any(out.iterdir()):parser.error('output must be empty')
     out.mkdir(parents=True,exist_ok=True)
     doctor=json.loads(command([binary,'doctor','--json']).stdout);write(out/'doctor.json',doctor)
-    missing=[h['id'] for h in doctor['harnesses'] if h['id'] in ['claude-code','codex'] and h['authentication']!='authenticated']
+    harnesses=args.harness or ['claude-code','codex']
+    missing=[h['id'] for h in doctor['harnesses'] if h['id'] in harnesses and not (h.get('subscriptionReady') and h.get('runtimeReady'))]
     if missing:
         write(out/'acceptance.json',{'schemaVersion':1,'status':'blocked','missingAuthentication':missing,'fixtureSubstitution':False});return 1
     tasks=json.loads(args.tasks.read_text())['tasks']
@@ -39,10 +45,10 @@ def main():
         write(root/'input.json',session);checker=root/'checker.py';checker.write_text(task['checker'])
         checks=root/'checks.json';write(checks,{'schemaVersion':1,'checks':[{'executable':sys.executable,'args':[str(checker)],'timeoutSecs':60,'expectedExitStatus':0}]})
         checker_hash=hashlib.sha256(checker.read_bytes()).hexdigest()
-        for harness in ['claude-code','codex']:
+        for harness in harnesses:
             for replicate in [1,2]:
                 run=root/(harness+'-'+str(replicate));argv=[binary,'rerun',str(root/'input.json'),'--harness',harness,'--workspace',str(repo),'--replicates','1','--checks',str(checks),'-o',str(run),'--quiet']
-                argv+=permission_args(harness,args.allow_unrestricted)
+                argv+=coding_permission_args(harness,args.allow_unrestricted)
                 result=command(argv,output=root/(harness+'-'+str(replicate)+'.log'))
                 report=json.loads((run/'report.json').read_text()) if (run/'report.json').exists() else {}
                 valid=valid_report(result.returncode,report)
@@ -52,13 +58,14 @@ def main():
                 if replicate==1 and valid:saved[(task['id'],harness)]=(run,repo,checks)
                 write(out/'progress.json',{'schemaVersion':1,'records':records,'issues':issues})
     directions=[]
-    for source,target in [('claude-code','codex'),('codex','claude-code')]:
+    for source,target in [('claude-code','codex'),('codex','claude-code')] if len(harnesses)==2 else []:
         candidate=saved.get((tasks[0]['id'],source))
         if candidate:
             source_run,repo,checks=candidate;run=out/('cross-'+source+'-'+target)
-            result=command([binary,'rerun',str(source_run),'--harness',target,'--workspace',str(repo),'--replicates','1','--checks',str(checks),'-o',str(run),'--quiet',*permission_args(target,args.allow_unrestricted)],output=out/('cross-'+source+'-'+target+'.log'))
+            result=command([binary,'rerun',str(source_run),'--harness',target,'--workspace',str(repo),'--replicates','1','--checks',str(checks),'-o',str(run),'--quiet',*coding_permission_args(target,args.allow_unrestricted)],output=out/('cross-'+source+'-'+target+'.log'))
             report=json.loads((run/'report.json').read_text()) if (run/'report.json').exists() else {}
             if valid_report(result.returncode,report) and not command(['git','status','--porcelain'],repo).stdout.strip():directions.append(source+'->'+target)
-    summary={'schemaVersion':1,'commit':command(['git','rev-parse','HEAD']).stdout.strip(),'platform':platform.system().lower(),'status':'passed' if not issues and len(directions)==2 else 'failed','linuxTaskCount':len(tasks),'linuxReplicatesPerHarnessPerTask':2,'harnesses':['claude-code','codex'],'replayDirections':directions,'records':records,'issues':issues,'nativeCheckpointResumeGate':'pending separate authenticated workflow evidence','modelFailuresAllowed':True,'fixtureSubstitution':False}
-    write(out/'acceptance.json',summary);return int(summary['status']!='passed')
+    status='passed' if not issues and len(directions)==2 else ('partial' if not issues and len(harnesses)==1 else 'failed')
+    summary={'schemaVersion':1,'commit':command(['git','rev-parse','HEAD']).stdout.strip(),'platform':platform.system().lower(),'status':status,'linuxTaskCount':len(tasks),'linuxReplicatesPerHarnessPerTask':2,'harnesses':harnesses,'replayDirections':directions,'records':records,'issues':issues,'nativeCheckpointResumeGate':'pending separate authenticated workflow evidence','modelFailuresAllowed':True,'fixtureSubstitution':False}
+    write(out/'acceptance.json',summary);return int(status=='failed')
 if __name__=='__main__':sys.exit(main())

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "harness": "codex",
+  "version": "0.156.1",
+  "platform": "linux",
+  "scope": "Authenticated native transcript and local orchestration validation; not full release acceptance",
+  "status": "passed",
+  "workflows": [
+    "replay",
+    "checkpoint",
+    "resume"
+  ],
+  "records": [
+    {
+      "harness": "codex",
+      "replay": "passed",
+      "checkpoint": "passed",
+      "resume": "passed",
+      "sourceUnchanged": true
+    }
+  ],
+  "summarySha256": "df0bdf2a6b4f7a66cc91b54a1472fc4dc5bb473fdc63ad117486979e9401c6e5",
+  "artifacts": {
+    "replay/session.json": "2f2fd9673bc93a88e22843ce62095626629ad6942f5c81435bf157130d86e0a9",
+    "replay/report.json": "c96d1841760a3cec8b0fbb2fe5382647f403e24c3df313fe53bc311191acbe07",
+    "replay/recovery.json": "7947279249b1c0165bc5af6e2f22b7f3f607c2ecd4659d307d01fbf2dd8ce5df",
+    "fork/session.json": "3ad4cdd93ae36fb4b1777020a5112eb446aea5f63788525a17f7cbd52a2f557d",
+    "fork/report.json": "2b4bb7a289ffdc5831d525c85bc283974a7de66ae329129b76c1be30cb5a22a7",
+    "fork/recovery.json": "7771665988d5c629cb7f9fc713dde0bb504c6e12ee759174b664567f62c4ae00",
+    "interrupted/recovery.json": "b0b5dbb276dca5f7e3c2a51bd9d0d873ef1eaace9c0a63d039eda2d63c4f2c23",
+    "resumed/report.json": "9033e834782d5d8746e2768658ca924649e1af2fdb78a401ede1a1d5f553129f"
+  },
+  "permissionMode": "workspace-write",
+  "executableCheckOutcomes": {
+    "replay": "passed",
+    "fork": "passed",
+    "resumedAttempt": "passed"
+  },
+  "environmentNote": "Official @openai/codex 0.156.1 under a process with Linux ambient capabilities dropped; Codex sandbox remained enabled."
+}

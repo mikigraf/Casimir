@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 
 use super::{RunOpts, RunResult, SessionSummary};
 use crate::model::{Event, EventKind, Harness, Session, Usage};
-use crate::util::{clean_command, first_line, home_dir, jstr, ju64, now_iso, read_jsonl, read_jsonl_head, truncate, walk};
+use crate::util::{first_line, home_dir, jstr, ju64, now_iso, read_jsonl, read_jsonl_head, truncate, walk};
 
 pub fn config_dir() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".claude"))
@@ -376,7 +376,7 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     if let Some(cwd) = &opts.cwd {
         cmd.current_dir(cwd);
     }
-    clean_command(&mut cmd);
+    crate::util::subscription_command(&mut cmd, Harness::ClaudeCode);
     let mut process = crate::process::Process::spawn(&mut cmd, opts.prompt.as_bytes(),
         std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)), opts.spool.as_deref())?;
 

@@ -124,7 +124,7 @@ pub fn render_header(session: &Session) -> String {
         "  turns: {}  assistant msgs: {}  tool calls: {} ({} errors)  files touched: {}",
         s.turns, s.assistant_messages, s.tool_calls, s.tool_errors, s.files_touched
     ));
-    let cost = s.cost_usd.map(|c| format!("  cost ${c:.4}")).unwrap_or_else(|| "  cost unknown".into());
+    let cost = s.cost_usd.map(|c| format!("  provider cost estimate ${c:.4}")).unwrap_or_else(|| "  provider cost estimate unknown".into());
     lines.push(format!("  tokens: in {}  out {}  cache read {}{}", fmt_num(s.usage.input), fmt_num(s.usage.output), fmt_num(s.usage.cache_read), cost));
     if let Some(p) = &session.path {
         lines.push(format!("  {}{}{}", c.dim, p, c.reset));
@@ -162,7 +162,7 @@ pub fn render_stats(session: &Session) -> String {
         ("output tokens", fmt_num(s.usage.output)),
         ("cache read tokens", fmt_num(s.usage.cache_read)),
         ("cache write tokens", fmt_num(s.usage.cache_write)),
-        ("cost (USD)", s.cost_usd.map(|c| format!("{c:.4}")).unwrap_or_else(|| "unknown".into())),
+        ("provider cost estimate (USD)", s.cost_usd.map(|c| format!("{c:.4}")).unwrap_or_else(|| "unknown".into())),
     ];
     let w = rows.iter().map(|r| r.0.len()).max().unwrap_or(0);
     let mut lines: Vec<String> = rows.iter().map(|(k, v)| format!("{}  {v}", pad(k, w))).collect();

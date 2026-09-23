@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from acceptance import command, permission_args, valid_report, write
+from acceptance import coding_permission_args, command, permission_args, valid_report, write
 
 
 def read(path):
@@ -43,11 +43,11 @@ def main():
     parser.add_argument('--output', type=pathlib.Path, required=True)
     parser.add_argument('--harness', action='append', choices=['claude-code', 'codex'], help='Subset for compatibility validation; releases require both')
     parser.add_argument('--claude-permission-mode', choices=['preserve', 'acceptEdits'], default='preserve')
-    parser.add_argument('--allow-paid', action='store_true')
+    parser.add_argument('--allow-subscription-usage', '--allow-paid', dest='allow_paid', action='store_true')
     parser.add_argument('--allow-unrestricted', action='store_true')
     args = parser.parse_args()
     if not args.allow_paid:
-        parser.error('authenticated acceptance requires explicit --allow-paid')
+        parser.error('authenticated acceptance requires explicit --allow-subscription-usage')
     binary = str(args.casimir.resolve())
     root = args.output.resolve()
     if root.exists() and any(root.iterdir()):
@@ -56,7 +56,7 @@ def main():
     harnesses = args.harness or ['claude-code', 'codex']
     doctor = json.loads(command([binary, 'doctor', '--json']).stdout)
     write(root / 'doctor.json', doctor)
-    missing = [h['id'] for h in doctor['harnesses'] if h['id'] in harnesses and h['authentication'] != 'authenticated']
+    missing = [h['id'] for h in doctor['harnesses'] if h['id'] in harnesses and not (h.get('subscriptionReady') and h.get('runtimeReady'))]
     if missing:
         write(root / 'native-workflows.json', {'schemaVersion': 1, 'status': 'blocked', 'missingAuthentication': missing, 'fixtureSubstitution': False})
         return 1
@@ -80,6 +80,8 @@ def main():
         checks = directory / 'checks.json'
         write(checks, {'schemaVersion': 1, 'checks': [{'executable': sys.executable, 'args': [str(checker)], 'timeoutSecs': 60, 'expectedExitStatus': 0}]})
         options = ['--replicates', '1', '--harness', harness, '--workspace', str(repo), '--checks', str(checks), '--quiet', *permission_args(harness, args.allow_unrestricted)]
+        if harness == 'codex' and not args.allow_unrestricted:
+            options += coding_permission_args(harness, False)
         if harness == 'claude-code' and args.claude_permission_mode != 'preserve' and not args.allow_unrestricted:
             options += ['--permission-mode', args.claude_permission_mode]
         normal = directory / 'replay'

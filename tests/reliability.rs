@@ -13,6 +13,29 @@ fn setup() {
         std::env::set_var("CLAUDE_CONFIG_DIR", home.join("claude"));
     });
 }
+
+#[test]
+fn subscription_subprocesses_discard_api_overrides_but_keep_subscription_login() {
+    setup();
+    let fixture = fixture::executable("supervisor");
+    for (harness, forbidden, retained) in [
+        (Harness::ClaudeCode, "anthropicApiKey", "claudeOauth"),
+        (Harness::Codex, "codexApiKey", "codexAccessToken"),
+    ] {
+        let mut command = Command::new(&fixture);
+        command.args(["--supervisor", "subscription-env"])
+            .env("ANTHROPIC_API_KEY", "invalid-api-key")
+            .env("CODEX_API_KEY", "invalid-api-key")
+            .env("CLAUDE_CODE_OAUTH_TOKEN", "subscription-token")
+            .env("CODEX_ACCESS_TOKEN", "subscription-token");
+        util::subscription_command(&mut command, harness);
+        let dir = tempfile::tempdir().unwrap();
+        let output = process::capture(&mut command, b"", Duration::from_secs(5), Some(dir.path())).unwrap();
+        let environment: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(environment[forbidden], false);
+        assert_eq!(environment[retained], true);
+    }
+}
 fn repo() -> tempfile::TempDir {
     setup(); let dir = tempfile::tempdir().unwrap();
     for args in [vec!["init","-q"],vec!["-c","user.name=fixture","-c","user.email=f@f","commit","--allow-empty","-qm","initial"]] {
@@ -123,6 +146,8 @@ fn permissions_default_to_preserve_and_passthrough_bypass_needs_consent() {
         opts.allow_unrestricted=true; assert!(adapters::validate_permissions(&opts).is_ok());
     }
     let opts=adapters::RunOpts {extra_args:vec!["--api-key=secret".into()],allow_unrestricted:true,..Default::default()}; assert!(adapters::validate_permissions(&opts).is_err());
+    let opts=adapters::RunOpts {extra_args:vec!["forced_login_method=api".into()],..Default::default()};
+    assert!(adapters::run_turn(Harness::Codex,&opts,&mut |_|{}).is_err());
 }
 #[test]
 fn failed_checks_cannot_be_overridden_by_judge_and_are_frozen() {

@@ -5,6 +5,16 @@ login-status commands cannot guarantee a token has not expired or been revoked. 
 using the provider CLI, then retry deliberately. Casimir does not automatically resend a
 possibly executed prompt on authentication errors, rate limits or timeouts.
 
+For subscription runs, look for `subscriptionReady: true` for the chosen harness. Use
+`claude auth login` or `codex login`; on a headless Codex machine, `codex login --device-auth`
+can complete a supported browser sign-in. An API-key login is reported separately and does
+not satisfy the subscription gate. API-key environment variables are omitted from provider
+CLI subprocesses; choose the explicit `--llm api` backend for direct Anthropic API calls.
+On Linux, `runtimeReady: false` for Codex means a local sandbox self-test failed before any
+model call. Install a working `bubblewrap` and check whether your container grants unusual
+ambient Linux capabilities; the sandbox must work with the permissions of the process running
+Casimir. Do not disable the sandbox to make a failing readiness check pass.
+
 A locked run has another active owner. Wait for it to finish or interrupt that process. Do not
 delete the lock file while a process is active; the OS releases the lock on process exit.
 

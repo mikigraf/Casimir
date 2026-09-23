@@ -15,7 +15,8 @@ fn arg<'a>(args: &'a [String], key: &str) -> Option<&'a str> { args.iter().posit
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") { println!("casimir-fixture 1.0.0"); return; }
-    if args.first().is_some_and(|s| s == "login" || s == "auth") { emit(json!({"loggedIn":true})); return; }
+    if args.first().is_some_and(|s| s == "login") { eprintln!("Logged in using ChatGPT"); return; }
+    if args.first().is_some_and(|s| s == "auth") { emit(json!({"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"})); return; }
     if let Some(mode) = arg(&args, "--supervisor") {
         match mode {
             "hang" => loop { std::thread::sleep(std::time::Duration::from_secs(60)); },
@@ -32,6 +33,14 @@ fn main() {
             "oversize" => { print!("{}", "x".repeat(5 * 1024 * 1024)); return; },
             "fail" => std::process::exit(17),
             "args" => { emit(json!(args)); return; },
+            "subscription-env" => {
+                emit(json!({
+                    "anthropicApiKey":std::env::var_os("ANTHROPIC_API_KEY").is_some(),
+                    "codexApiKey":std::env::var_os("CODEX_API_KEY").is_some(),
+                    "claudeOauth":std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some(),
+                    "codexAccessToken":std::env::var_os("CODEX_ACCESS_TOKEN").is_some()
+                })); return;
+            },
             _ => panic!("unknown supervisor fixture mode"),
         }
     }

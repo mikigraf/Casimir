@@ -34,6 +34,61 @@ fn probe(bin: &Path, args: &[&str]) -> Result<crate::process::Output> {
     crate::process::capture(Command::new(bin).args(args), b"", Duration::from_secs(15), Some(&temp.path().join("probe")))
 }
 
+fn probe_subscription(bin: &Path, args: &[&str], harness: crate::model::Harness) -> Result<crate::process::Output> {
+    let temp = tempfile::tempdir()?;
+    let mut command = Command::new(bin);
+    command.args(args);
+    crate::util::subscription_command(&mut command, harness);
+    crate::process::capture(&mut command, b"", Duration::from_secs(15), Some(&temp.path().join("probe")))
+}
+
+#[cfg(target_os = "linux")]
+fn codex_sandbox_probe(bin: &Path) -> bool {
+    let Ok(temp) = tempfile::tempdir() else { return false; };
+    let mut command = Command::new(bin);
+    command.args(["sandbox", "--", "/usr/bin/true"]).current_dir(temp.path());
+    crate::util::subscription_command(&mut command, crate::model::Harness::Codex);
+    crate::process::capture(&mut command, b"", Duration::from_secs(8), Some(&temp.path().join("sandbox")))
+        .is_ok_and(|output| output.status.success())
+}
+
+fn subscription_method(harness: crate::model::Harness, output: &crate::process::Output) -> &'static str {
+    if !output.status.success() { return "not_authenticated"; }
+    match harness {
+        crate::model::Harness::ClaudeCode => {
+            let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else { return "unknown"; };
+            if value.get("loggedIn").and_then(Value::as_bool) != Some(true) { return "not_authenticated"; }
+            match value.get("authMethod").and_then(Value::as_str) {
+                Some("oauth_token" | "oauth") => "subscription",
+                Some("api_key") => "api_key",
+                _ => "unknown",
+            }
+        }
+        crate::model::Harness::Codex => {
+            // Codex currently writes `login status` to stderr even on success.
+            let status = format!("{} {}", String::from_utf8_lossy(&output.stdout), output.stderr).to_ascii_lowercase();
+            if status.contains("not logged in") || status.contains("signed out") { return "not_authenticated"; }
+            if status.contains("chatgpt") {
+                "subscription"
+            } else if status.contains("api key") || status.contains("api-key") {
+                "api_key"
+            } else { "unknown" }
+        }
+        _ => "unknown",
+    }
+}
+
+pub fn subscription_ready(harness: crate::model::Harness) -> bool {
+    let (name, variable, args) = match harness {
+        crate::model::Harness::ClaudeCode => ("claude", "CASIMIR_CLAUDE_BIN", &["auth", "status", "--json"][..]),
+        crate::model::Harness::Codex => ("codex", "CASIMIR_CODEX_BIN", &["login", "status"][..]),
+        _ => return false,
+    };
+    let name = std::env::var_os(variable).unwrap_or_else(|| name.into());
+    executable(&name).and_then(|bin| probe_subscription(&bin, args, harness).ok())
+        .is_some_and(|output| subscription_method(harness, &output) == "subscription")
+}
+
 pub fn report() -> Value {
     let harnesses: Vec<Value> = [
         ("claude-code", "claude", "CASIMIR_CLAUDE_BIN", vec!["auth", "status", "--json"]),
@@ -45,20 +100,22 @@ pub fn report() -> Value {
         let path = executable(&name);
         let version = path.as_ref().and_then(|p| probe(p, &["--version"]).ok())
             .filter(|o| o.status.success()).map(|o| crate::util::truncate(String::from_utf8_lossy(&o.stdout).trim(), 120));
-        let auth = path.as_ref().filter(|_| !auth_args.is_empty()).map(|p| match probe(p, &auth_args) {
-            Ok(output) => {
-                let parsed: Option<Value> = serde_json::from_slice(&output.stdout).ok();
-                if let Some(logged_in) = parsed.as_ref().and_then(|v| v.get("loggedIn")).and_then(Value::as_bool) {
-                    if logged_in { "authenticated" } else { "not_authenticated" }
-                } else if output.status.success() && id == "codex" {
-                    "authenticated"
-                } else { "unknown_or_not_authenticated" }
-            },
-            Err(_) => "unknown",
+        let method = path.as_ref().filter(|_| !auth_args.is_empty()).map(|p| {
+            let harness = if id == "codex" { crate::model::Harness::Codex } else { crate::model::Harness::ClaudeCode };
+            probe_subscription(p, &auth_args, harness).map(|output| subscription_method(harness, &output)).unwrap_or("unknown")
         }).unwrap_or("unknown");
+        let auth = match method { "subscription" | "api_key" => "authenticated", "not_authenticated" => "not_authenticated", _ => "unknown_or_not_authenticated" };
+        #[cfg(target_os = "linux")]
+        let sandbox_ready = if id == "codex" { path.as_ref().is_some_and(|p| codex_sandbox_probe(p)) } else { true };
+        #[cfg(not(target_os = "linux"))]
+        let sandbox_ready = true;
+        let runtime_ready = path.is_some() && sandbox_ready;
         json!({"id":id,"executable":path,"version":version,"authentication":auth,
+            "authenticationMethod":method,"subscriptionReady":method=="subscription","runtimeReady":runtime_ready,
+            "sandboxProbe":if id=="codex" && cfg!(target_os="linux") {Some(if sandbox_ready {"passed"} else {"failed"})} else {None},
             "support":if matches!(id,"copilot"|"gemini") {"experimental"} else {"candidate"},
             "permissions": {"default":"preserve harness configuration", "osSandbox": match id {
+                "codex" if cfg!(target_os="linux") && !sandbox_ready => "native Linux sandbox self-test failed; check bubblewrap and process capabilities",
                 "codex" => "native sandbox available; configuration dependent",
                 "claude-code" if cfg!(windows) => "not available on native Windows",
                 "claude-code" => "platform sandbox available; configuration dependent",

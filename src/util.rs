@@ -313,6 +313,25 @@ pub fn clean_command(cmd: &mut std::process::Command) {
     }
 }
 
+/// Make a provider CLI use its saved subscription login, even when the parent
+/// shell also has API credentials configured for unrelated work.
+pub fn subscription_command(cmd: &mut std::process::Command, harness: crate::model::Harness) {
+    clean_command(cmd);
+    match harness {
+        crate::model::Harness::ClaudeCode => {
+            for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"] {
+                cmd.env_remove(key);
+            }
+        }
+        crate::model::Harness::Codex => {
+            for key in ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE"] {
+                cmd.env_remove(key);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn is_tty() -> bool {
     static TTY: OnceLock<bool> = OnceLock::new();
     *TTY.get_or_init(|| std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none())

@@ -2,9 +2,10 @@
 //!
 //! Backends:
 //!   api        — Anthropic Messages API over HTTPS in process;
-//!                credentials from ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile
+//!                credentials from an explicitly supplied ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN
 //!   claude-cli — `claude -p` with tools disabled; reuses the local Claude Code login
-//!   auto       — api when Anthropic credentials are visible, otherwise claude-cli
+//!   codex-cli  — `codex exec --json` with read-only permissions; reuses the local ChatGPT login
+//!   auto       — a logged-in subscription CLI (Claude first, then Codex); never an API key
 //!   cmd        — run $CASIMIR_LLM_CMD with the prompt on stdin and the system prompt in
 //!                $CASIMIR_LLM_SYSTEM; the reply is its stdout (for tests and custom gateways)
 use anyhow::{bail, Context, Result};
@@ -14,7 +15,8 @@ use std::process::Command;
 use std::time::Duration;
 use serde::{Serialize, Deserialize};
 
-use crate::util::{clean_command, extract_json, home_dir};
+use crate::util::extract_json;
+use crate::model::Harness;
 
 pub const DEFAULT_MODEL: &str = "claude-opus-5";
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -43,22 +45,16 @@ struct Completion { text: String, usage: Option<Value>, cost_usd: Option<f64>, m
 enum Credential {
     ApiKey(String),
     Bearer(String),
-    OAuth(String),
-}
-
-fn has_api_credentials() -> bool {
-    std::env::var_os("ANTHROPIC_API_KEY").is_some() || std::env::var_os("ANTHROPIC_AUTH_TOKEN").is_some() || home_dir().join(".config/anthropic").exists()
 }
 
 pub fn pick_backend(requested: &str) -> String {
     if requested != "auto" && !requested.is_empty() {
         return requested.to_string();
     }
-    if has_api_credentials() {
-        "api".into()
-    } else {
-        "claude-cli".into()
-    }
+    if crate::doctor::subscription_ready(Harness::ClaudeCode) { return "claude-cli".into(); }
+    if crate::doctor::subscription_ready(Harness::Codex) { return "codex-cli".into(); }
+    // Keep the failure tied to a concrete provider with actionable login guidance.
+    "claude-cli".into()
 }
 
 fn resolve_auth() -> Result<Credential> {
@@ -72,15 +68,7 @@ fn resolve_auth() -> Result<Credential> {
             return Ok(Credential::Bearer(t));
         }
     }
-    // `ant auth login` profile: short-lived token, sent as Bearer with the oauth beta header
-    let credential_output = tempfile::tempdir()?;
-    if let Ok(out) = crate::process::capture(Command::new("ant").args(["auth", "print-credentials", "--access-token"]), b"", Duration::from_secs(30), Some(&credential_output.path().join("auth"))) {
-        let tok = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if out.status.success() && !tok.is_empty() {
-            return Ok(Credential::OAuth(tok));
-        }
-    }
-    bail!("no Anthropic credentials: set ANTHROPIC_API_KEY, run `ant auth login`, or use --llm claude-cli")
+    bail!("the optional Anthropic API backend needs ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN; subscription users should use --llm auto")
 }
 
 fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
@@ -95,16 +83,12 @@ fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeou
 }
 
 fn request_api(auth: Credential, url: &str, body: Value, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
-    let mut betas = vec!["server-side-fallback-2026-07-01"];
+    let betas = ["server-side-fallback-2026-07-01"];
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(timeout)).redirects(0).build();
     let mut request = agent.post(url).set("content-type", "application/json").set("anthropic-version", "2023-06-01");
     match &auth {
         Credential::ApiKey(k) => request = request.set("x-api-key", k),
         Credential::Bearer(t) => request = request.set("Authorization", &format!("Bearer {t}")),
-        Credential::OAuth(t) => {
-            betas.push("oauth-2025-04-20");
-            request = request.set("Authorization", &format!("Bearer {t}"));
-        }
     }
     let response = request.set("anthropic-beta", &betas.join(",")).send_json(body)
         .map_err(|e| match e {
@@ -141,7 +125,7 @@ fn complete_cli(system: &str, prompt: &str, model: &str, timeout: u64, spool: &s
     let working = tempfile::tempdir()?;
     cmd.current_dir(working.path());
     cmd.args(["-p", "--safe-mode", "--output-format", "json", "--tools", "", "--no-session-persistence", "--model", model, "--system-prompt-file"]).arg(std::fs::canonicalize(&system_file)?);
-    clean_command(&mut cmd);
+    crate::util::subscription_command(&mut cmd, Harness::ClaudeCode);
     let out = crate::process::capture(&mut cmd, prompt.as_bytes(), Duration::from_secs(timeout), Some(&spool.join("process")))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     if !out.status.success() {
@@ -153,6 +137,36 @@ fn complete_cli(system: &str, prompt: &str, model: &str, timeout: u64, spool: &s
         bail!("claude -p error: {}", parsed.get("result").and_then(Value::as_str).unwrap_or(""));
     }
     Ok(Completion { text: parsed.get("result").and_then(Value::as_str).unwrap_or("").to_string(), usage: parsed.get("usage").cloned(), cost_usd: parsed.get("total_cost_usd").and_then(Value::as_f64), model: parsed.get("model").and_then(Value::as_str).map(String::from) })
+}
+
+fn complete_codex_cli(system: &str, prompt: &str, model: Option<&str>, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
+    let bin = std::env::var("CASIMIR_CODEX_BIN").unwrap_or_else(|_| "codex".into());
+    let working = tempfile::tempdir()?;
+    let mut cmd = Command::new(&bin);
+    cmd.current_dir(working.path()).args(["exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never", "-c", "forced_login_method=chatgpt"]);
+    if let Some(model) = model { cmd.args(["--model", model]); }
+    cmd.arg("-");
+    crate::util::subscription_command(&mut cmd, Harness::Codex);
+    let input = format!("Follow these evaluation instructions. Do not use tools or access files. Return only the requested answer.\n\n<evaluation_instructions>\n{system}\n</evaluation_instructions>\n\n<input>\n{prompt}\n</input>\n");
+    let out = crate::process::capture(&mut cmd, input.as_bytes(), Duration::from_secs(timeout), Some(&spool.join("process")))?;
+    if !out.status.success() { bail!("codex exec failed: {}", crate::util::stderr_error_line(&out.stderr, "check `codex login status` and your subscription")); }
+    let mut final_text = None;
+    let mut usage = None;
+    let mut completed = false;
+    for line in out.stdout.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
+        let value: Value = serde_json::from_slice(line).context("malformed Codex JSON stream; raw bytes retained privately")?;
+        match value.get("type").and_then(Value::as_str) {
+            Some("item.completed") if value.get("item").and_then(|item| item.get("type")).and_then(Value::as_str) == Some("agent_message") => {
+                final_text = value.get("item").and_then(|item| item.get("text")).and_then(Value::as_str).map(String::from);
+            }
+            Some("turn.completed") => { completed = true; usage = value.get("usage").cloned(); }
+            Some("turn.failed") | Some("error") => bail!("Codex judge/simulator call failed; inspect private process log"),
+            _ => {}
+        }
+    }
+    if !completed { bail!("Codex judge/simulator call ended without turn.completed; inspect private process log"); }
+    let text = final_text.filter(|text| !text.trim().is_empty()).context("Codex returned no final agent message")?;
+    Ok(Completion { text, usage, cost_usd: None, model: model.map(String::from) })
 }
 
 fn complete_cmd(system: &str, prompt: &str, model: &str, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
@@ -168,25 +182,33 @@ fn complete_cmd(system: &str, prompt: &str, model: &str, timeout: u64, spool: &s
 
 /// Effective model name for the selected backend (what will be recorded in reports).
 pub fn effective_model(o: &LlmOpts) -> String {
-    o.model.clone().unwrap_or_else(|| DEFAULT_MODEL.into())
+    o.model.clone().unwrap_or_else(|| if pick_backend(&o.backend) == "codex-cli" { "codex-cli-default".into() } else { DEFAULT_MODEL.into() })
 }
 
 /// Text completion through the selected backend.
 pub fn complete(system: &str, prompt: &str, o: &LlmOpts) -> Result<String> {
     let model = effective_model(o);
     let backend = pick_backend(&o.backend);
+    if backend == "claude-cli" && !crate::doctor::subscription_ready(Harness::ClaudeCode) {
+        bail!("Claude Code subscription login is required: run `claude auth login` or select --llm codex-cli after `codex login`");
+    }
+    if backend == "codex-cli" && !crate::doctor::subscription_ready(Harness::Codex) {
+        bail!("Codex subscription login is required: run `codex login` or select --llm claude-cli after `claude auth login`");
+    }
     let spool = o.recording_dir.clone().unwrap_or_else(|| crate::util::casimir_home().join("llm")).join(uuid::Uuid::new_v4().to_string());
     crate::util::private_dir(&spool)?;
     let start = std::time::Instant::now();
     let result = match backend.as_str() {
         "api" => complete_api(system, prompt, &model, o.max_tokens, o.timeout_secs, &spool),
         "claude-cli" => complete_cli(system, prompt, &model, o.timeout_secs, &spool),
+        "codex-cli" => complete_codex_cli(system, prompt, o.model.as_deref(), o.timeout_secs, &spool),
         "cmd" => complete_cmd(system, prompt, &model, o.timeout_secs, &spool),
         other => bail!("unknown llm backend {other}"),
     };
     crate::util::write_json(&spool.join("call.json"), &json!({"schemaVersion":1,"backend":backend,"requestedModel":model,"durationMs":start.elapsed().as_millis(),
         "execution":if result.is_ok(){"completed"}else{"failed"},"model":result.as_ref().ok().and_then(|r|r.model.clone()),
-        "usage":result.as_ref().ok().and_then(|r|r.usage.clone()),"costUsd":result.as_ref().ok().and_then(|r|r.cost_usd)}))?;
+        "usage":result.as_ref().ok().and_then(|r|r.usage.clone()),"costUsd":result.as_ref().ok().and_then(|r|r.cost_usd),
+        "costBasis":if backend=="claude-cli" {"provider_client_estimate"} else if backend=="codex-cli" {"unknown"} else {"provider_reported_or_unknown"}}))?;
     Ok(result?.text)
 }
 

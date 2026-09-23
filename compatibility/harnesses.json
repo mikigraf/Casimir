@@ -23,6 +23,16 @@
       "evidence": "Installed version recorded; authenticated acceptance pending"
     },
     {
+      "id": "codex",
+      "version": "0.156.1",
+      "support": "candidate",
+      "streamProtocol": "exec-json",
+      "nativeTranscript": "rollout-jsonl",
+      "checkpointValidated": true,
+      "evidence": "compatibility/evidence/codex-0.156.1-linux.json: authenticated replay, checkpoint fork, interrupted second-turn recovery and completed resume no-op; full release acceptance remains pending",
+      "checkpointPlatforms": ["linux"]
+    },
+    {
       "id": "copilot",
       "support": "experimental",
       "checkpointValidated": false
@@ -58,7 +68,7 @@
     }
   ],
   "platforms": {
-    "linux": "Claude 2.1.280 native checkpoint/recovery validated; Codex and full acceptance pending",
+    "linux": "Claude 2.1.280 and Codex 0.156.1 native checkpoint/recovery validated; full acceptance pending",
     "macos": "acceptance pending",
     "windows": "acceptance pending; Codex has a native sandbox; Claude Code has no native OS sandbox"
   }

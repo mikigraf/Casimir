@@ -6,9 +6,12 @@ personal data. Unix storage directories use mode 0700 and newly written metadata
 0600. On Windows, private storage and atomic metadata receive a protected ACL granting access to
 the object owner and SYSTEM. This does not isolate a harness running as the same user.
 
-Provider credentials are obtained from environment variables or provider credential stores.
-The direct Anthropic backend uses in-process HTTPS with redirects disabled. Doctor reports
-status, not credential contents, and makes no model completions.
+Provider CLI runs use saved subscription credentials or subscription OAuth environment tokens.
+Casimir removes API-key and alternate API endpoint overrides from these subprocesses so they
+cannot silently use metered API credentials from the parent shell. The optional direct
+Anthropic backend uses an explicitly supplied API credential and in-process HTTPS with redirects
+disabled. Doctor reports status and login method, not credential contents, and makes no model
+completions.
 
 Use `casimir export RUN --share -o shared.json` (or Markdown) for sharing. Sharing exports
 redact known credential patterns, sensitive structured keys, and credential values currently
@@ -23,5 +26,7 @@ Windows implementation reference: [Microsoft security information flags](https:/
 
 Claude-backed judge, simulator and brief helpers use a temporary working directory and
 `--safe-mode` to disable ambient project/user customizations while retaining authentication.
-Their system prompts are private files, not command-line text. This helper isolation does not
-alter the permission settings or configuration of the coding harness being evaluated.
+Their system prompts are private files, not command-line text. Codex-backed helpers use
+`codex exec` in a temporary directory with a read-only sandbox, ignored user configuration and
+rules, and no persisted rollout. Helper isolation does not alter the permission settings or
+configuration of the coding harness being evaluated.

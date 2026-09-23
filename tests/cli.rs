@@ -86,6 +86,17 @@ fn nested_harness_cleanup_preserves_authentication_and_configuration() {
 }
 
 #[test]
+fn doctor_recognizes_subscription_login_on_codex_stderr() {
+    setup_env();
+    let report = casimir::doctor::report();
+    for id in ["claude-code", "codex"] {
+        let harness = report["harnesses"].as_array().unwrap().iter().find(|h| h["id"] == id).unwrap();
+        assert_eq!(harness["authenticationMethod"], "subscription");
+        assert_eq!(harness["subscriptionReady"], true);
+    }
+}
+
+#[test]
 fn simulator_cannot_claim_verbatim_or_goals_met_with_invalid_output() {
     setup_env();
     let original = claude_code::parse_file(&fx("claude-code.jsonl")).unwrap();
@@ -435,6 +446,7 @@ fn claude_code_stats_dedupe_usage_and_exclude_subagents() {
 
 #[test]
 fn codex_parses_rollout_skips_injected_context_maps_tools_and_usage() {
+    assert!(codex::is_injected("<recommended_plugins>host recommendations</recommended_plugins>"));
     let s = codex::parse_file(&fx("codex.jsonl")).unwrap();
     assert_eq!(s.harness, Some(Harness::Codex));
     assert_eq!(s.id, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");

@@ -6,20 +6,25 @@ source repository, freezes an external checker, runs both supported harnesses tw
 source checkout immutability and outcome reporting, and exercises cross-harness replay in both
 directions. Model task failures are recorded and allowed; orchestration failures fail the gate.
 
-This suite costs provider usage. Invocation requires `--allow-paid`. Configure the pinned
-provider versions and their own login state on a protected machine first. Permission defaults
-are preserved; `--allow-unrestricted` is a separate explicit opt-in for test repositories.
+This suite consumes provider subscription usage. Invocation requires
+`--allow-subscription-usage`. Configure the pinned provider versions and their own subscription
+login state on a protected machine first. The driver explicitly grants Claude `acceptEdits` and
+Codex `workspace-write` in its disposable task repositories. Ordinary Casimir runs preserve
+provider permission settings; `--allow-unrestricted` is a separate opt-in for the test driver.
 
 Linux requires all 40 task attempts. Native macOS and Windows additionally require recorded
 authenticated checkpoint, fork and interrupted-resume workflows. A missing compatible
 checkpoint blocks those workflows; fixtures cannot certify the native transcript format.
 The live driver reports these workflow requirements separately and does not turn a basic
 replay pass into a complete platform acceptance pass.
+Use `--harness claude-code` or `--harness codex` to collect real partial provider evidence when
+only one subscription login is available. A subset is labelled `partial` and cannot satisfy
+the full release gate.
 
 Keep output private. Upload only redacted evidence summaries to public CI. A protected
 self-hosted runner must not be shared with untrusted pull-request jobs.
 
-Run `python scripts/native-workflows.py --casimir PATH --output PRIVATE_DIRECTORY --allow-paid`
+Run `python scripts/native-workflows.py --casimir PATH --output PRIVATE_DIRECTORY --claude-permission-mode acceptEdits --allow-subscription-usage`
 for native replay/fork/recovery evidence. It interrupts the second turn after a durable first
 turn, verifies that implicit retry is refused, explicitly retries in a fresh attempt, checks
 that the first turn is not repeated, and verifies completed resume is a no-op. The optional

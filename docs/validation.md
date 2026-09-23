@@ -5,7 +5,7 @@ or statistical power for research conclusions.
 
 ## Automated checks
 
-- 53 Rust tests cover four log parsers, subprocess protocols, resume, worktree isolation,
+- 54 CLI integration tests plus 25 reliability tests and 3 HTTP tests cover four log parsers, subprocess protocols, resume, worktree isolation,
   recorded commits and untracked edits, saved-reference reuse, forks, simulator decisions,
   AB/BA judging with recorded tool evidence, controls, attribution, record envelopes, and blinded-pair export/scoring.
 - Empty, truncated, and failed harness streams cannot count as completed turns. Gemini's
@@ -43,16 +43,32 @@ Another control actually omitted the requested post-edit verification and was co
 the smoke test checks that such outcomes are reported consistently, rather than requiring every
 model attempt to succeed.
 
-`scripts/smoke-claude.py` reproduces the live workflow and checks actual artifact contents. It uses
-one replicate per group to keep the integration check small; that is insufficient to estimate
-model differences. Native transcript forks remain experimental and do not restore uncommitted
-prefix changes automatically.
+`scripts/smoke-claude.py` reproduces the earlier live workflow and checks actual artifact
+contents. It uses one replicate per group to keep the integration check small; that is
+insufficient to estimate model differences. Current checkpoint forks require a verified Casimir
+workspace/conversation snapshot and a version/platform entry in the compatibility manifest.
+
+The subscription transport update was checked with authenticated Claude Code 2.1.280 on Linux:
+replay, checkpoint fork and explicit interrupted-turn recovery passed executable checks, and the
+source checkout remained unchanged. A separate real judge call with an invalid
+`ANTHROPIC_API_KEY` in the parent shell still selected `claude-cli`, completed both AB/BA calls,
+and recorded provider usage. That one candidate pair is an integration check, not a calibrated
+evaluation result. The 10-task, two-replicate Claude Linux acceptance subset also completed
+without orchestration failures; this is partial release evidence because the Codex half and
+cross-harness directions require a combined run.
+
+An authenticated ChatGPT subscription with official Codex CLI 0.156.1 also passed Linux replay,
+checkpoint fork, explicit interrupted-turn recovery and completed-resume no-op. The source checkout
+remained unchanged and executable checks passed in all completed branches. The machine had unusual
+ambient Linux capabilities, so the validation process dropped those capabilities before Codex
+started; Codex's workspace sandbox stayed enabled. Only this version/platform has a native
+checkpoint compatibility entry. The private artifacts are summarized by hashes in
+[`compatibility/evidence/codex-0.156.1-linux.json`](../compatibility/evidence/codex-0.156.1-linux.json).
 
 ## Provider and evaluation limits
 
-- Codex 0.155.1 is installed but is not authenticated here. Its parsing, rerun/resume protocol,
-  token accumulation, native transcript preparation, and failures are fixture-tested; a successful
-  provider-backed Codex run or fork has not been verified here.
+- Codex 0.155.1 remains unvalidated for native checkpoint forks; 0.156.1 has authenticated Linux
+  evidence only. macOS and Windows compatibility still needs platform-specific acceptance.
 - Copilot and Gemini executables are absent here. Their parsers and two-turn subprocess/resume
   workflows are fixture-tested, including completion and failure handling. Protocol checks use
   the [Copilot CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
@@ -60,6 +76,6 @@ prefix changes automatically.
 - The live simulator kept the follow-up verbatim, as expected for this small task. Adaptation,
   skipped-turn alignment, malformed replies, retries, and blinded human-pair scoring are covered
   by fixtures, not human calibration. The direct Anthropic API backend was not exercised live.
-- Executable file assertions validate this smoke task. Casimir does not yet provide general
-  task-specific outcome oracles or a full environment checkpoint. See the
-  [research audit](research.md) for the scope of its scientific claims.
+- User-defined executable checks supply task-specific outcome evidence. Checkpoints restore
+  the recorded repository workspace and conversation, not external services, files or process
+  memory. See [checkpoint coverage](checkpoints.md) and the [research audit](research.md).

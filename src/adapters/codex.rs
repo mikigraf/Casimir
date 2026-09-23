@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 
 use super::{RunOpts, RunResult, SessionSummary};
 use crate::model::{Event, EventKind, Harness, Session, Usage};
-use crate::util::{clean_command, first_line, home_dir, ju64, now_iso, read_jsonl, read_jsonl_head, truncate, walk};
+use crate::util::{first_line, home_dir, ju64, now_iso, read_jsonl, read_jsonl_head, truncate, walk};
 
 pub fn codex_home() -> PathBuf {
     std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".codex"))
@@ -32,6 +32,7 @@ const INJECTED_PREFIXES: &[&str] = &[
     "<turn_aborted>",
     "<context_window_guidance>",
     "<mcp_instructions>",
+    "<recommended_plugins>",
     "# AGENTS.md instructions",
 ];
 
@@ -438,6 +439,7 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     }
     args.extend(sandbox_args(opts.sandbox.as_deref()));
     args.extend(opts.extra_args.iter().cloned());
+    args.extend(["-c".into(), "forced_login_method=chatgpt".into()]);
     match &opts.resume {
         Some(r) => args.extend(["resume".into(), r.clone(), "-".into()]),
         None => args.push("-".into()),
@@ -448,7 +450,7 @@ pub fn run_turn(opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunR
     if let Some(cwd) = &opts.cwd {
         cmd.current_dir(cwd);
     }
-    clean_command(&mut cmd);
+    crate::util::subscription_command(&mut cmd, Harness::Codex);
     let mut process = crate::process::Process::spawn(&mut cmd, opts.prompt.as_bytes(),
         std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(900)), opts.spool.as_deref())?;
 

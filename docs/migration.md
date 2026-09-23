@@ -4,6 +4,12 @@ Existing unversioned session/run JSON remains readable. New session, report, che
 recovery, check, doctor, sharing, brief, pair, matrix, attribution, and ownership documents carry `schemaVersion: 1`.
 Legacy runs have no durable recovery commit record and cannot safely use `resume`.
 
+`--llm auto` now selects an authenticated Claude Code subscription or, if unavailable, an
+authenticated Codex subscription. It no longer selects the Anthropic API when a key appears
+in the shell. Choose `--llm api` explicitly for the old direct API path. `--llm codex-cli` is
+available for judging and simulation; an unspecified Codex helper model uses the CLI default,
+which should be pinned with `--llm-model` when comparisons require a stable model.
+
 A successful subprocess no longer means task success. Reports distinguish execution,
 executable checks, judge assessment, and overall task outcome. Missing evaluation evidence,
 unverified citations, contradictory orderings, and infrastructure problems yield an

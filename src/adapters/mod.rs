@@ -87,6 +87,14 @@ pub fn prepare_fork(h: Harness, original: &Session, up_to_turn: u32, new_id: &st
 
 pub fn run_turn(h: Harness, opts: &RunOpts, on_event: &mut dyn FnMut(&Event)) -> Result<RunResult> {
     validate_permissions(opts)?;
+    if h == Harness::Codex && opts.extra_args.iter().any(|arg| {
+        let lower = arg.to_ascii_lowercase();
+        lower == "--oss" || lower == "--local-provider" || lower.contains("forced_login_method") || lower.contains("model_provider")
+    }) { bail!("Codex subscription runs cannot override the provider or login method through passthrough arguments"); }
+    if matches!(h, Harness::ClaudeCode | Harness::Codex) && !crate::doctor::subscription_ready(h) {
+        bail!("{} subscription login is required: run `{}` and check `casimir doctor --json`", h,
+            if h == Harness::Codex { "codex login" } else { "claude auth login" });
+    }
     match h {
         Harness::ClaudeCode => claude_code::run_turn(opts, on_event),
         Harness::Codex => codex::run_turn(opts, on_event),

@@ -66,25 +66,25 @@ pub struct LlmArgs {
     #[arg(long, default_value_t = 300)]
     pub llm_timeout: u64,
     /// Default backend for the user simulator and judge
-    #[arg(long, default_value = "auto", value_parser = ["auto", "api", "claude-cli", "cmd"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "api", "claude-cli", "codex-cli", "cmd"])]
     pub llm: String,
-    /// Default model for the user simulator and judge (default claude-opus-5)
+    /// Default model for the user simulator and judge (Claude Opus 5, or the Codex CLI default)
     #[arg(long)]
     pub llm_model: Option<String>,
     /// Judge model (overrides --llm-model for the judge only)
     #[arg(long)]
     pub judge_model: Option<String>,
     /// Judge backend (overrides --llm for the judge only)
-    #[arg(long, value_parser = ["auto", "api", "claude-cli", "cmd"])]
+    #[arg(long, value_parser = ["auto", "api", "claude-cli", "codex-cli", "cmd"])]
     pub judge_llm: Option<String>,
 }
 
 impl LlmArgs {
     fn opts(&self) -> LlmOpts {
-        LlmOpts { timeout_secs: self.llm_timeout, model: self.llm_model.clone(), backend: self.llm.clone(), ..Default::default() }
+        LlmOpts { timeout_secs: self.llm_timeout, model: self.llm_model.clone(), backend: crate::llm::pick_backend(&self.llm), ..Default::default() }
     }
     fn judge_opts(&self) -> LlmOpts {
-        LlmOpts { timeout_secs: self.llm_timeout, model: self.judge_model.clone().or_else(|| self.llm_model.clone()), backend: self.judge_llm.clone().unwrap_or_else(|| self.llm.clone()), ..Default::default() }
+        LlmOpts { timeout_secs: self.llm_timeout, model: self.judge_model.clone().or_else(|| self.llm_model.clone()), backend: crate::llm::pick_backend(self.judge_llm.as_deref().unwrap_or(&self.llm)), ..Default::default() }
     }
 }
 
@@ -132,7 +132,7 @@ pub struct RunArgs {
     #[arg(long = "sim-model")]
     pub sim_model: Vec<String>,
     /// Simulator backend (overrides --llm for the simulator only)
-    #[arg(long, value_parser = ["auto", "api", "claude-cli", "cmd"])]
+    #[arg(long, value_parser = ["auto", "api", "claude-cli", "codex-cli", "cmd"])]
     pub sim_llm: Option<String>,
     /// Replicate reruns per group (default: 3 with --judge, --control, fork or attribute; else 1)
     #[arg(long)]
@@ -175,7 +175,7 @@ impl RunArgs {
     fn opts(&self, forcing_replicates: bool) -> Result<RerunOpts> {
         let mut sim = self.llm.opts();
         if let Some(b) = &self.sim_llm {
-            sim.backend = b.clone();
+            sim.backend = crate::llm::pick_backend(b);
         }
         Ok(RerunOpts {
             checks: self.checks.clone(),
@@ -422,7 +422,7 @@ pub fn run() -> Result<i32> {
             let report = crate::doctor::report();
             if as_json { println!("{}", serde_json::to_string_pretty(&report)?); } else {
                 println!("Casimir setup: {} {}", std::env::consts::OS, std::env::consts::ARCH);
-                for harness in report["harnesses"].as_array().unwrap() { println!("{}: version={} auth={} executable={}", harness["id"], harness["version"], harness["authentication"], harness["executable"]); }
+                for harness in report["harnesses"].as_array().unwrap() { println!("{}: version={} auth={} method={} subscriptionReady={} runtimeReady={} executable={}", harness["id"], harness["version"], harness["authentication"], harness["authenticationMethod"], harness["subscriptionReady"], harness["runtimeReady"], harness["executable"]); }
                 println!("Storage writable: {}. Git: {}", report["storage"]["writable"], report["git"]);
                 println!("Worktrees do not provide process isolation. No paid model calls made.");
             }

@@ -408,7 +408,7 @@ fn rows(r: &Report) -> Vec<(&'static str, String, String)> {
         ("input tokens", fmt_num(a.usage.input), fmt_num(b.usage.input)),
         ("output tokens", fmt_num(a.usage.output), fmt_num(b.usage.output)),
         ("cache read tokens", fmt_num(a.usage.cache_read), fmt_num(b.usage.cache_read)),
-        ("cost (USD)", cost(a.cost_usd), cost(b.cost_usd)),
+        ("provider cost estimate (USD)", cost(a.cost_usd), cost(b.cost_usd)),
         ("final message chars", a.final_message_chars.to_string(), b.final_message_chars.to_string()),
     ]);
     rows

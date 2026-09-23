@@ -5,15 +5,16 @@
 > [privacy](docs/privacy.md), and [troubleshooting](docs/troubleshooting.md).
 
 Replay, rerun, and compare coding-agent sessions recorded by **Claude Code**, **OpenAI Codex**,
-**GitHub Copilot CLI**, and **Gemini CLI**. Written in Rust; a single binary with no runtime
-dependencies beyond `git`; the optional Anthropic API backend uses in-process HTTPS.
+**GitHub Copilot CLI**, and **Gemini CLI**. Claude Code and Codex are the supported targets;
+Copilot and Gemini are experimental. Written in Rust; the single binary needs Git and the chosen
+provider CLI for live experiments. The optional Anthropic API backend uses in-process HTTPS.
 
-These harnesses write a complete transcript of every session to disk. `casimir` reads those logs,
+These harnesses record local session transcripts. `casimir` reads those logs,
 normalizes them into one event model, and lets you:
 
 - **list / show / play** any past session as a readable transcript, with the original pacing;
-- **rerun** a session's user turns against a different model or a different harness, in a fresh git
-  worktree checked out at the commit the original session started from;
+- **rerun** a session's user turns against a different model or harness in a fresh Git worktree;
+  verified Casimir checkpoints restore the recorded workspace and conversation for forks;
 - **simulate the user** for follow-up turns when the rerun diverges from the original, so the
   replay keeps pursuing the same goals instead of replying to things that never happened;
 - **compare** two sessions (or a session and its rerun): tool usage, files touched, tokens, cost,
@@ -28,7 +29,7 @@ where Casimir uses approximations rather than reproducing a paper’s method.
 ## Install
 
 ```
-cargo install --path .        # puts `casimir` on your PATH
+cargo install --path . --locked  # puts `casimir` on your PATH
 # or
 cargo build --release         # binary at target/release/casimir
 ```
@@ -63,7 +64,7 @@ casimir rerun <session> [--harness H] [--model M] [--user verbatim|simulate]
                         [--replicates N] [--control] [--sim-model M ...] [--sim-llm B]
                         [--judge] [--judge-model M] [--judge-llm B] [--judge-repeats N]
                         [--brief FILE] [--pass-threshold 7]
-                        [--llm auto|api|claude-cli|cmd] [--llm-model M]
+                        [--llm auto|claude-cli|codex-cli|api|cmd] [--llm-model M]
                         [--original-diff RUN_DIR] [-o DIR] [--dry-run]
                         [-- extra args for the harness CLI]
 casimir fork <session> --at-turn N [--message "..."] [rerun options]
@@ -309,13 +310,27 @@ redirect, or new requirement. For occasional human checks, `casimir pairs` expor
 original-versus-simulated message pairs with a separate key, and `casimir pairs-score` reports the
 Turing pass rate with a Wilson interval (0.5 means indistinguishable).
 
-The simulator (`--sim-model`, `--sim-llm`) and the judge (`--judge-model`, `--judge-llm`) are
-configured independently and default to `--llm-model` / `--llm`. They use `claude-opus-5` through
-the Anthropic Messages API (in-process HTTPS) when credentials are available (`ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile), with Anthropic's server-side refusal
-fallback enabled. With `claude-cli` they run through `claude -p` with tools disabled, reusing your
-Claude Code login. With `cmd` they run `$CASIMIR_LLM_CMD` (prompt on stdin, system prompt in
-`$CASIMIR_LLM_SYSTEM`), which is how the tests drive them and how you can plug in any gateway.
+The simulator (`--sim-model`, `--sim-llm`) and judge (`--judge-model`, `--judge-llm`) are
+configured independently and default to `--llm-model` / `--llm`. `auto` uses a signed-in
+Claude Code subscription first, then a signed-in Codex subscription; it never switches to an
+API key because one happens to be in your shell. Sign in with `claude auth login` or `codex login`,
+then check `casimir doctor --json` for `subscriptionReady: true`. For headless Codex machines,
+`codex login --device-auth` is supported when your account allows it. The Claude helper runs
+`claude -p` with tools disabled; the Codex helper runs `codex exec` in a private temporary
+directory with read-only permissions. Both preserve the CLI's subscription login and report
+token usage; a monetary price is unknown when the provider does not report one. The Codex helper
+uses the CLI's default model unless `--llm-model` or `--judge-model` selects one explicitly.
+
+An explicit `--llm api` remains available for existing API-key workflows. `--llm cmd` runs
+`$CASIMIR_LLM_CMD` (prompt on stdin, system prompt in `$CASIMIR_LLM_SYSTEM`). Provider CLI
+subprocesses ignore API-key environment overrides so a configured key cannot silently charge
+API usage. The selected backend and model are recorded with each call. Claude's reported
+`costUsd` is its client-side API-equivalent estimate, not a subscription bill; Codex CLI cost
+is reported as unknown. Token usage and any known estimate remain visible.
+
+Provider references: [Codex authentication](https://learn.chatgpt.com/docs/auth),
+[Codex noninteractive mode](https://learn.chatgpt.com/docs/non-interactive-mode), and
+[Claude Code noninteractive mode](https://code.claude.com/docs/en/headless).
 
 ## Examples
 
@@ -362,7 +377,7 @@ cargo build --release
 
 CI runs the tests on stable Rust and the minimum supported Rust 1.85, plus strict Clippy and
 a release build. The opt-in live check requires Python 3 and an authenticated Claude Code CLI;
-it makes billable model calls and keeps its worktrees and reports for inspection:
+it consumes provider subscription usage and keeps its worktrees and reports for inspection:
 
 ```
 python3 scripts/smoke-claude.py --output .context/live-check
@@ -383,19 +398,19 @@ Environment knobs: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `GEMINI_CL
 
 ## Limitations
 
-- A rerun replays the user's *inputs*, not the environment: network state, installed tools, and
-  anything outside the git worktree may differ from the original run.
-- Claude Code logs do not record a commit hash; the base commit is inferred from the branch and the
-  session start time. Codex records it directly.
+- A rerun replays the user's *inputs*. Verified Casimir checkpoints restore the recorded
+  repository workspace and conversation; network state, external files/services, installed
+  tools and process memory are outside checkpoint coverage.
+- Imported historical sessions can be inspected and fully rerun. They cannot be forked until
+  a compatible checkpoint exists; an inferred commit or timestamp is never sufficient.
 - Claude Code subagent transcripts (side-chains) are shown with `--sidechains` but not replayed
   separately; the target harness spawns its own.
-- Live reruns need the target harness to be logged in (`claude /login`, `codex login`,
-  `copilot login`, a Gemini API key or Google login). Gemini reruns set
+- Live supported reruns need a subscription login (`claude auth login` or `codex login`).
+  Experimental Copilot/Gemini reruns use their own login flows. Gemini reruns set
   `GEMINI_CLI_TRUST_WORKSPACE=true` so headless mode runs in the worktree.
 - Copilot CLI and Gemini CLI store formats are undocumented or internal and may change; their
-  adapters were validated against real files written by the current CLI versions and against
-  fixtures, not against long-running sessions.
-- Replicates and order-swapped judging multiply API cost: N replicates × 2 × `--judge-repeats`
+  adapters remain experimental and lack authenticated live acceptance on this machine.
+- Replicates and order-swapped judging consume subscription usage: N replicates × 2 × `--judge-repeats`
   judge calls, plus one shared brief draft per experiment and an intent-coverage call per judged
   simulated run.
 - Replicate statistics are thin: the per-group pass@1 interval is a Wilson interval treating

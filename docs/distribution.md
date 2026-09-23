@@ -25,5 +25,7 @@ without corresponding real evidence. The current version is not a 1.0 release ce
 Before installing, verify the archive's SHA-256 checksum and provenance with
 `gh attestation verify ARCHIVE --repo mikigraf/Casimir`. Extract into a user-owned directory,
 place `casimir` (or `casimir.exe`) on PATH, then run `casimir --version` and `casimir doctor --json`.
-These verification commands make no paid model calls. Authentication must be configured using
-the supported provider CLI. See the compatibility manifest for pinned versions.
+These verification commands make no paid model calls. Sign in to the supported provider CLI
+with your subscription (`claude auth login` or `codex login`), then confirm `subscriptionReady`
+in `casimir doctor --json`. The authenticated acceptance runners use these CLI logins; an
+Anthropic API key is not a release prerequisite. See the compatibility manifest for pinned versions.
