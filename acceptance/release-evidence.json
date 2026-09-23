@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "commit": null,
+  "reliability": {"linux": {"status":"pending"}, "macos": {"status":"pending"}, "windows": {"status":"pending"}},
+  "live": {"linux": {"status":"blocked"}, "macos": {"status":"blocked"}, "windows": {"status":"blocked"}},
+  "evaluation": {"status":"blocked"},
+  "calibration": null,
+  "simulator": {"status":"blocked"},
+  "attribution": {"status":"blocked"},
+  "pilots": [],
+  "releaseCandidate": {"status":"pending"},
+  "unresolvedBlockers": ["Authenticated Codex and Anthropic API test access", "Native authenticated acceptance environments", "Two independent human reviewers and adjudication", "Three independent pilot users"]
+}

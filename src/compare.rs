@@ -206,11 +206,14 @@ pub struct Report {
 /// Harnesses differ in logging absolute vs cwd-relative paths; compare relative to the session cwd.
 pub fn relativize(p: &str, cwd: Option<&str>) -> String {
     let Some(cwd) = cwd else { return p.to_string() };
-    if !p.starts_with('/') {
-        return p.to_string();
-    }
-    let base = if cwd.ends_with('/') { cwd.to_string() } else { format!("{cwd}/") };
-    p.strip_prefix(&base).map(String::from).unwrap_or_else(|| p.to_string())
+    let windows = p.as_bytes().get(1) == Some(&b':') || p.starts_with("\\\\");
+    let normalized = if windows { p.replace('\\', "/") } else { p.to_string() };
+    let cwd = if windows { cwd.replace('\\', "/") } else { cwd.to_string() };
+    let base = format!("{}/", cwd.trim_end_matches('/'));
+    if windows {
+        if normalized.get(..base.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(&base)) { return normalized[base.len()..].into(); }
+    } else if let Some(relative) = normalized.strip_prefix(&base) { return relative.into(); }
+    normalized
 }
 
 fn describe(session: &Session) -> SideStats {

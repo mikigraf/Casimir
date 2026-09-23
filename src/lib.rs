@@ -20,3 +20,4 @@ pub mod recovery;
 pub mod checks;
 pub mod privacy;
 pub mod artifacts;
+pub mod calibration;

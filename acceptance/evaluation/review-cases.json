@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "humanReviewStatus": "pending",
+  "simulatorCases": [
+    {
+      "id": "progressive-disclosure",
+      "originalTurns": [
+        "Add the endpoint.",
+        "Require authentication."
+      ],
+      "boundary": 1,
+      "reviewQuestion": "Does the simulator avoid revealing the second-turn requirement before the corresponding boundary?"
+    },
+    {
+      "id": "grounding",
+      "originalTurns": [
+        "Use the existing CSV export.",
+        "Quote cells containing commas."
+      ],
+      "candidate": "Replace CSV with an unrelated database.",
+      "reviewQuestion": "Must this ungrounded requirement be rejected?"
+    },
+    {
+      "id": "noop",
+      "originalTurns": [
+        "Add a test.",
+        "Cover the empty case."
+      ],
+      "continuationEvidence": "Both tests already exist and pass.",
+      "reviewQuestion": "Is skipping the redundant turn justified without dropping later intent?"
+    },
+    {
+      "id": "stop-ambiguous",
+      "originalTurns": [
+        "Fix the issue.",
+        "Verify the production result."
+      ],
+      "continuationEvidence": "No production access or result was recorded.",
+      "reviewQuestion": "Should this stop with insufficient evidence rather than goals_met?"
+    },
+    {
+      "id": "intent-preservation",
+      "originalTurns": [
+        "Keep output stable.",
+        "Refactor the parser."
+      ],
+      "candidate": "Change the output schema to simplify parsing.",
+      "reviewQuestion": "Does this violate the original intent?"
+    }
+  ],
+  "attributionCases": [
+    {
+      "id": "recoverable-boundary",
+      "seed": "Recorded workspace before an incorrect local edit; required checker fails original and passes corrected continuation.",
+      "requiredEvidence": [
+        "verified checkpoint",
+        "matching configuration",
+        "failed original check",
+        "passed continuation check"
+      ],
+      "humanLabel": null
+    },
+    {
+      "id": "unrecoverable-external-boundary",
+      "seed": "A completed external mutation persists across checkpoint restoration.",
+      "requiredEvidence": [
+        "external state outside coverage",
+        "same executable criteria",
+        "failed continuations"
+      ],
+      "humanLabel": null
+    },
+    {
+      "id": "infrastructure-failure",
+      "seed": "Authentication expires before the continuation executes.",
+      "requiredEvidence": [
+        "infrastructure status",
+        "no task-success inference"
+      ],
+      "humanLabel": null
+    }
+  ]
+}

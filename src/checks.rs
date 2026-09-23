@@ -61,7 +61,7 @@ pub fn execute(definition: &Definition, hash: &str, cwd: &Path, run_dir: &Path) 
         let spool = run_dir.join("checks").join(index.to_string());
         let mut command = Command::new(&check.executable);
         command.args(&check.args).current_dir(cwd);
-        let output = crate::process::capture(&mut command, b"", Duration::from_secs(check.timeout_secs), Some(&spool));
+        let output = crate::process::Process::spawn(&mut command, b"", Duration::from_secs(check.timeout_secs), Some(&spool)).and_then(crate::process::Process::finish);
         let (outcome, exit_status, error) = match output {
             Ok(output) => (if output.status.code() == Some(check.expected_exit_status) { "passed" } else { "failed" }, output.status.code(), None),
             Err(err) => ("error", None, Some(err.to_string())),

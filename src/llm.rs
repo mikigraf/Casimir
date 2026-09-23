@@ -26,15 +26,19 @@ pub struct LlmOpts {
     pub max_tokens: u64,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub recording_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for LlmOpts {
     fn default() -> Self {
-        LlmOpts { model: None, backend: "auto".into(), max_tokens: 16000, timeout_secs: 300 }
+        LlmOpts { model: None, backend: "auto".into(), max_tokens: 16000, timeout_secs: 300, recording_dir: None }
     }
 }
 
 fn default_timeout() -> u64 { 300 }
+
+struct Completion { text: String, usage: Option<Value>, cost_usd: Option<f64>, model: Option<String> }
 
 enum Credential {
     ApiKey(String),
@@ -79,7 +83,7 @@ fn resolve_auth() -> Result<Credential> {
     bail!("no Anthropic credentials: set ANTHROPIC_API_KEY, run `ant auth login`, or use --llm claude-cli")
 }
 
-fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeout: u64) -> Result<String> {
+fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
     let auth = resolve_auth()?;
     let body = json!({
         "model": model,
@@ -108,6 +112,7 @@ fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeou
     response.into_reader().take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > 4 * 1024 * 1024 { bail!("API response exceeds 4 MiB"); }
     let resp: Value = serde_json::from_slice(&bytes).context("parsing API response")?;
+    crate::util::write_json(&spool.join("response.json"), &resp)?;
     if resp.get("type").and_then(Value::as_str) == Some("error") {
         bail!("API error: {}", resp.get("error").and_then(|e| e.get("message")).and_then(Value::as_str).unwrap_or("unknown"));
     }
@@ -120,15 +125,15 @@ fn complete_api(system: &str, prompt: &str, model: &str, max_tokens: u64, timeou
         .and_then(Value::as_array)
         .map(|blocks| blocks.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("text")).filter_map(|b| b.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"))
         .unwrap_or_default();
-    Ok(text)
+    Ok(Completion { text, usage: resp.get("usage").cloned(), cost_usd: None, model: resp.get("model").and_then(Value::as_str).map(String::from) })
 }
 
-fn complete_cli(system: &str, prompt: &str, model: &str, timeout: u64) -> Result<String> {
+fn complete_cli(system: &str, prompt: &str, model: &str, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
     let bin = std::env::var("CASIMIR_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
     let mut cmd = Command::new(&bin);
     cmd.args(["-p", "--output-format", "json", "--tools", "", "--no-session-persistence", "--model", model, "--system-prompt", system]);
     clean_command(&mut cmd);
-    let out = crate::process::capture(&mut cmd, prompt.as_bytes(), Duration::from_secs(timeout), None)?;
+    let out = crate::process::capture(&mut cmd, prompt.as_bytes(), Duration::from_secs(timeout), Some(&spool.join("process")))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     if !out.status.success() {
         bail!("claude -p exited with {}: {}", out.status, out.stderr.trim());
@@ -138,18 +143,18 @@ fn complete_cli(system: &str, prompt: &str, model: &str, timeout: u64) -> Result
     if parsed.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
         bail!("claude -p error: {}", parsed.get("result").and_then(Value::as_str).unwrap_or(""));
     }
-    Ok(parsed.get("result").and_then(Value::as_str).unwrap_or("").to_string())
+    Ok(Completion { text: parsed.get("result").and_then(Value::as_str).unwrap_or("").to_string(), usage: parsed.get("usage").cloned(), cost_usd: parsed.get("total_cost_usd").and_then(Value::as_f64), model: parsed.get("model").and_then(Value::as_str).map(String::from) })
 }
 
-fn complete_cmd(system: &str, prompt: &str, model: &str, timeout: u64) -> Result<String> {
+fn complete_cmd(system: &str, prompt: &str, model: &str, timeout: u64, spool: &std::path::Path) -> Result<Completion> {
     let bin = std::env::var("CASIMIR_LLM_CMD").context("--llm cmd needs CASIMIR_LLM_CMD")?;
     let mut cmd = Command::new(&bin);
     cmd.env("CASIMIR_LLM_SYSTEM", system).env("CASIMIR_LLM_MODEL", model);
-    let out = crate::process::capture(&mut cmd, prompt.as_bytes(), Duration::from_secs(timeout), None)?;
+    let out = crate::process::capture(&mut cmd, prompt.as_bytes(), Duration::from_secs(timeout), Some(&spool.join("process")))?;
     if !out.status.success() {
         bail!("{bin} failed: {}", out.stderr.trim());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(Completion { text: String::from_utf8_lossy(&out.stdout).into_owned(), usage: None, cost_usd: None, model: None })
 }
 
 /// Effective model name for the selected backend (what will be recorded in reports).
@@ -160,12 +165,20 @@ pub fn effective_model(o: &LlmOpts) -> String {
 /// Text completion through the selected backend.
 pub fn complete(system: &str, prompt: &str, o: &LlmOpts) -> Result<String> {
     let model = effective_model(o);
-    match pick_backend(&o.backend).as_str() {
-        "api" => complete_api(system, prompt, &model, o.max_tokens, o.timeout_secs),
-        "claude-cli" => complete_cli(system, prompt, &model, o.timeout_secs),
-        "cmd" => complete_cmd(system, prompt, &model, o.timeout_secs),
+    let backend = pick_backend(&o.backend);
+    let spool = o.recording_dir.clone().unwrap_or_else(|| crate::util::casimir_home().join("llm")).join(uuid::Uuid::new_v4().to_string());
+    crate::util::private_dir(&spool)?;
+    let start = std::time::Instant::now();
+    let result = match backend.as_str() {
+        "api" => complete_api(system, prompt, &model, o.max_tokens, o.timeout_secs, &spool),
+        "claude-cli" => complete_cli(system, prompt, &model, o.timeout_secs, &spool),
+        "cmd" => complete_cmd(system, prompt, &model, o.timeout_secs, &spool),
         other => bail!("unknown llm backend {other}"),
-    }
+    };
+    crate::util::write_json(&spool.join("call.json"), &json!({"schemaVersion":1,"backend":backend,"requestedModel":model,"durationMs":start.elapsed().as_millis(),
+        "execution":if result.is_ok(){"completed"}else{"failed"},"model":result.as_ref().ok().and_then(|r|r.model.clone()),
+        "usage":result.as_ref().ok().and_then(|r|r.usage.clone()),"costUsd":result.as_ref().ok().and_then(|r|r.cost_usd)}))?;
+    Ok(result?.text)
 }
 
 /// Like `complete`, but parses a JSON object out of the reply (retries once on parse failure).

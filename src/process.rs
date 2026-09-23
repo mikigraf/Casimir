@@ -35,6 +35,7 @@ pub struct Process {
     started: Instant,
     timeout: Duration,
     pending: Vec<u8>,
+    scanned: usize,
     ended: bool,
     pub spool: PathBuf,
 }
@@ -50,7 +51,19 @@ impl Process {
         let mut stderr_file = crate::util::private_file(&spool.join("stderr.log"))?;
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         Tree::configure(cmd);
-        let mut child = cmd.spawn().context("starting subprocess (arguments omitted for privacy)")?;
+        let spawn_started = Instant::now();
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                Err(error) if (cfg!(unix) && error.raw_os_error() == Some(26)
+                    || cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33))) && spawn_started.elapsed() < Duration::from_secs(2) => {
+                    // No process was created and no prompt was sent. Retry a transient
+                    // executable sharing conflict, never a completed/ambiguous invocation.
+                    std::thread::sleep(Duration::from_millis(10));
+                },
+                Err(error) => return Err(error).context("starting subprocess (arguments omitted for privacy)"),
+            }
+        };
         let tree = match Tree::attach(&child) {
             Ok(tree) => tree,
             Err(err) => { let _ = child.kill(); let _ = child.wait(); return Err(err); }
@@ -95,7 +108,7 @@ impl Process {
             if result.is_err() { let _ = error_tx.send(Message::Error(std::io::Error::other("stderr capture failed"))); }
             result
         });
-        Ok(Self { child, tree, rx, stderr: Some(err_thread), started: Instant::now(), timeout, pending: Vec::new(), ended: false, spool })
+        Ok(Self { child, tree, rx, stderr: Some(err_thread), started: Instant::now(), timeout, pending: Vec::new(), scanned: 0, ended: false, spool })
     }
 
     fn poll(&mut self) -> Result<()> {
@@ -109,12 +122,15 @@ impl Process {
     pub fn next_line(&mut self) -> Result<Option<String>> {
         loop {
             self.poll()?;
-            if let Some(end) = self.pending.iter().position(|b| *b == b'\n') {
+            if let Some(end) = self.pending[self.scanned..].iter().position(|b| *b == b'\n').map(|i| self.scanned + i) {
                 let line: Vec<_> = self.pending.drain(..=end).collect();
+                self.scanned = 0;
                 return Ok(Some(String::from_utf8(line).context("non-UTF-8 subprocess protocol")?));
             }
+            self.scanned = self.pending.len();
             if self.ended {
                 if self.pending.is_empty() { return Ok(None); }
+                self.scanned = 0;
                 return Ok(Some(String::from_utf8(std::mem::take(&mut self.pending)).context("non-UTF-8 subprocess protocol")?));
             }
             match self.rx.recv_timeout(Duration::from_millis(25)) {
@@ -131,7 +147,16 @@ impl Process {
     }
 
     pub fn finish(mut self) -> Result<Output> {
-        while self.next_line()?.is_some() {}
+        self.pending.clear();
+        while !self.ended {
+            self.poll()?;
+            match self.rx.recv_timeout(Duration::from_millis(25)) {
+                Ok(Message::Data(_)) => {},
+                Ok(Message::Error(error)) => return Err(error).context("persisting subprocess output"),
+                Ok(Message::End) | Err(mpsc::RecvTimeoutError::Disconnected) => self.ended = true,
+                Err(mpsc::RecvTimeoutError::Timeout) => {},
+            }
+        }
         let status = loop {
             self.poll()?;
             if let Some(status) = self.child.try_wait()? { break status; }

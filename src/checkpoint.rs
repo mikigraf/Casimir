@@ -138,7 +138,7 @@ pub fn capture(options: Capture<'_>) -> Result<String> {
     let _lock = RunLock::acquire_wait(&root())?;
     let repository = fs::canonicalize(git(options.cwd, &["rev-parse", "--show-toplevel"])?)?;
     let storage = fs::canonicalize(root())?;
-    if storage == repository { bail!("checkpoint storage cannot be the repository root"); }
+    if storage.starts_with(&repository) { bail!("checkpoint storage must be outside the agent repository workspace"); }
     let subdir = fs::canonicalize(options.cwd)?.strip_prefix(&repository)?.to_path_buf();
     let base = git(options.cwd, &["rev-parse", "HEAD"])?;
     let index_path = PathBuf::from(git(options.cwd, &["rev-parse", "--path-format=absolute", "--git-path", "index"])?);
@@ -151,9 +151,23 @@ pub fn capture(options: Capture<'_>) -> Result<String> {
     let mut entries = Vec::new();
     let excluded = [fs::canonicalize(crate::util::casimir_home())?, fs::canonicalize(options.run_dir)?];
     collect(&repository, &repository, &excluded, &mut entries, &mut used, options.limit)?;
-    let conversation_turns = options.native.and_then(|p| crate::adapters::parse_file(options.harness, p).ok()).map(|s| crate::model::user_turns(&s).len() as u32);
-    let conversation_complete = if options.expected_conversation_turns == 0 { options.native.is_none() } else { conversation_turns == Some(options.expected_conversation_turns) };
     let conversation = options.native.map(|p| put_file(p, &mut used, options.limit)).transpose()?;
+    let native_session = conversation.as_ref().and_then(|id| blob_path(id).ok()).and_then(|p| {
+        use std::io::{Seek, SeekFrom};
+        let mut file = fs::File::open(&p).ok()?;
+        if file.seek(SeekFrom::End(-1)).is_err() { return None; }
+        let mut last = [0]; file.read_exact(&mut last).ok()?;
+        if last[0] != b'\n' { return None; }
+        crate::adapters::parse_file(options.harness, &p).ok()
+    });
+    let conversation_turns = native_session.as_ref().map(|s| crate::model::user_turns(s).len() as u32);
+    let has_final_assistant = native_session.as_ref().is_some_and(|s| {
+        let last_user = s.events.iter().rposition(|e| e.kind == crate::model::EventKind::User && !e.sidechain);
+        let last_assistant = s.events.iter().rposition(|e| e.kind == crate::model::EventKind::Assistant && !e.sidechain);
+        last_user.zip(last_assistant).is_some_and(|(user, assistant)| assistant > user)
+    });
+    let conversation_complete = if options.expected_conversation_turns == 0 { options.native.is_none() }
+        else { conversation_turns == Some(options.expected_conversation_turns) && has_final_assistant };
     let checkpoint = Checkpoint { schema_version: 1, repository, base, subdir, index, entries, conversation,
         harness: options.harness, harness_version: options.version, turn: options.turn, conversation_turns: conversation_turns.unwrap_or(0), conversation_complete, pending_prompt: options.prompt.into(),
         configuration_hash: options.configuration_hash.into(), coverage: "Recorded repository workspace, Git index, and native conversation only. External files, services, and process memory are not captured.".into() };

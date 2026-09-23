@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "tasks": [
+    {
+      "id": "pagination",
+      "category": "bugfix",
+      "prompts": [
+        "Fix pagination so every item appears exactly once, including an exact final page. Reject nonpositive page sizes. Update core.py and app.py consistently."
+      ],
+      "files": {
+        "core.py": "def paginate(items, size):\n    return [items[i:i+size] for i in range(0, len(items)-size, size)]\n",
+        "app.py": "from core import paginate\ndef run(items, size):\n    return paginate(items, size)\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nassert app.run([1,2,3,4],2)==[[1,2],[3,4]]\nassert app.run([],2)==[]\nfor n in [0,-1]:\n    try: app.run([1],n)\n    except ValueError: pass\n    else: raise AssertionError(\"nonpositive size accepted\")\n"
+    },
+    {
+      "id": "currency",
+      "category": "bugfix",
+      "prompts": [
+        "Use exact decimal arithmetic and round cents with ROUND_HALF_UP. app.total must sum the individually rounded line items and return a Decimal. Cover core.py and app.py."
+      ],
+      "files": {
+        "core.py": "def cents(value):\n    return round(float(value), 2)\n",
+        "app.py": "from core import cents\ndef total(values):\n    return sum(float(v) for v in values)\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nfrom decimal import Decimal\nassert core.cents(\"1.005\")==Decimal(\"1.01\")\nassert app.total([\"1.005\",\"1.005\"])==Decimal(\"2.02\")\nassert isinstance(app.total([]),Decimal)\n"
+    },
+    {
+      "id": "csv-unicode",
+      "category": "bugfix",
+      "prompts": [
+        "Export one CSV record correctly for commas, quotes, newlines and Unicode. app.export must call the shared serializer; do not duplicate quoting logic."
+      ],
+      "files": {
+        "core.py": "def serialize(cells):\n    return \",\".join(cells)+\"\\n\"\n",
+        "app.py": "def export(cells):\n    return \",\".join(cells)+\"\\n\"\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nimport csv,io\nrow=[\"café\", \"a,b\", 'a\"b', \"line\\nbreak\"]\nassert list(csv.reader(io.StringIO(app.export(row))))==[row]\nassert list(csv.reader(io.StringIO(core.serialize(row))))==[row]\n"
+    },
+    {
+      "id": "config-followup",
+      "category": "follow_up",
+      "prompts": [
+        "Support environment overrides for settings, keeping defaults immutable. Refactor core.py and app.py to use the same resolution rule.",
+        "Empty environment values should fall back to defaults, and missing unknown keys must raise KeyError."
+      ],
+      "files": {
+        "core.py": "def resolve(name, defaults, env):\n    return defaults[name]\n",
+        "app.py": "from core import resolve\ndef setting(name, defaults, env):\n    return defaults.get(name)\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\ndefaults={\"MODE\":\"safe\"}\nassert app.setting(\"MODE\",defaults,{\"MODE\":\"fast\"})==\"fast\"\nassert app.setting(\"MODE\",defaults,{\"MODE\":\"\"})==\"safe\"\nassert defaults=={\"MODE\":\"safe\"}\ntry: app.setting(\"UNKNOWN\",defaults,{})\nexcept KeyError: pass\nelse: raise AssertionError(\"missing key accepted\")\n"
+    },
+    {
+      "id": "stable-dedup",
+      "category": "refactor",
+      "prompts": [
+        "Extract stable deduplication into core.unique. app.run must delegate to it and preserve first-occurrence order for hashable records. Keep Unicode values intact."
+      ],
+      "files": {
+        "core.py": "def unique(records):\n    return list(set(records))\n",
+        "app.py": "def run(records):\n    return sorted(set(records))\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nvalues=[\"z\",\"é\",\"a\",\"z\",\"é\"]\nassert core.unique(values)==[\"z\",\"é\",\"a\"]\nassert app.run(values)==[\"z\",\"é\",\"a\"]\n"
+    },
+    {
+      "id": "transaction-followup",
+      "category": "follow_up",
+      "prompts": [
+        "Make batch updates atomic: on any None value, raise ValueError and preserve the original store. Implement core.apply and route app.update through it.",
+        "Add dry_run=True to app.update: validate the whole batch but do not mutate the original. The default remains a real update."
+      ],
+      "files": {
+        "core.py": "def apply(store, changes):\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        store[key]=value\n",
+        "app.py": "from core import apply\ndef update(store, changes):\n    apply(store, changes)\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nstore={\"old\":1}\ntry: app.update(store,[(\"new\",2),(\"bad\",None)])\nexcept ValueError: pass\nelse: raise AssertionError(\"invalid accepted\")\nassert store=={\"old\":1}\napp.update(store,[(\"new\",2)],dry_run=True)\nassert store=={\"old\":1}\napp.update(store,[(\"new\",2)])\nassert store=={\"old\":1,\"new\":2}\n"
+    },
+    {
+      "id": "dependency-migration",
+      "category": "dependency",
+      "prompts": [
+        "Migrate core.py and app.py to formatter_v2.render(value, *, compact=False), always requesting compact=True. Remove imports of formatter_v1. Record formatter_v2 as the dependency in dependencies.txt."
+      ],
+      "files": {
+        "core.py": "from formatter_v1 import format_value\ndef render(value):\n    return format_value(value)\n",
+        "app.py": "from formatter_v1 import format_value\ndef run(value):\n    return format_value(value)\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n",
+        "formatter_v1.py": "def format_value(value): return \"v1:\"+str(value)\n",
+        "formatter_v2.py": "def render(value, *, compact=False): return (\"v2:\" if compact else \"v2: \")+str(value)\n",
+        "dependencies.txt": "formatter_v1\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nassert core.render(\"value\")==\"v2:value\"\nassert app.run(\"value\")==\"v2:value\"\nassert Path(\"dependencies.txt\").read_text().strip()==\"formatter_v2\"\nassert \"formatter_v1\" not in Path(\"core.py\").read_text()\nassert \"formatter_v1\" not in Path(\"app.py\").read_text()\n"
+    },
+    {
+      "id": "normalization",
+      "category": "refactor",
+      "prompts": [
+        "Share one normalization helper in core.py. Both app.names and core.names should strip whitespace and casefold Unicode, preserve order, and handle an empty collection."
+      ],
+      "files": {
+        "core.py": "def names(values):\n    return [v.strip().lower() for v in values]\n",
+        "app.py": "def names(values):\n    return [v.lower() for v in values]\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nassert core.names([\" Straße \",\"CAFÉ\"])==[\"strasse\",\"café\"]\nassert app.names([\" Straße \",\"CAFÉ\"])==[\"strasse\",\"café\"]\nassert app.names([])==[]\n"
+    },
+    {
+      "id": "age-boundary-tests",
+      "category": "tests",
+      "prompts": [
+        "Fix age validation to accept integers 0 through 130 inclusive and reject booleans, strings and out-of-range values. Route app.accept through core.valid_age. Add test_age.py with at least four runnable unittest tests including both accepted boundaries and rejected inputs."
+      ],
+      "files": {
+        "core.py": "def valid_age(value):\n    return isinstance(value,int) and value>0\n",
+        "app.py": "def accept(value):\n    return bool(value)\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nfor v in [0,130]:\n    assert core.valid_age(v) and app.accept(v)\nfor v in [-1,131,True,False,\"10\"]:\n    assert not core.valid_age(v) and not app.accept(v)\nimport unittest\nsuite=unittest.defaultTestLoader.discover(\".\",pattern=\"test_age.py\")\nassert suite.countTestCases()>=4\nresult=unittest.TestResult();suite.run(result);assert result.wasSuccessful()\n"
+    },
+    {
+      "id": "async-cancellation",
+      "category": "bugfix",
+      "prompts": [
+        "Preserve async cancellation: core.work and app.run must propagate CancelledError, return the task result on success, and never return a fabricated success value after cancellation."
+      ],
+      "files": {
+        "core.py": "import asyncio\nasync def work(task):\n    try: return await task\n    except BaseException: return \"done\"\n",
+        "app.py": "from core import work\nasync def run(task):\n    return await work(task)\n",
+        "README.md": "Small Python package. No third-party installation is needed. Run Python checks and preserve public API names.\n"
+      },
+      "checker": "import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nimport app,core\nimport asyncio\nasync def cancelled(): raise asyncio.CancelledError()\nasync def value(): return 42\nasync def check():\n    assert await app.run(value())==42\n    try: await app.run(cancelled())\n    except asyncio.CancelledError: pass\n    else: raise AssertionError(\"cancellation swallowed\")\nasyncio.run(check())\n"
+    }
+  ]
+}

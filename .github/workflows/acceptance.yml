@@ -1,0 +1,32 @@
+name: Authenticated acceptance
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  live:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux, macos, windows]
+    # Configure dedicated machines and this protected environment before enabling this job.
+    # Provider login is installed on these runners; credentials are never passed as arguments.
+    runs-on: [self-hosted, casimir-acceptance, "${{ matrix.platform }}"]
+    environment: authenticated-acceptance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: cargo test --locked --all-targets
+      - run: cargo build --locked --release
+      - name: Run authenticated task suite
+        if: runner.os != 'Windows'
+        run: python scripts/acceptance.py --casimir target/release/casimir --output .context/acceptance --allow-paid
+      - name: Run authenticated task suite
+        if: runner.os == 'Windows'
+        run: python scripts/acceptance.py --casimir target/release/casimir.exe --output .context/acceptance --allow-paid
+      # Raw logs and snapshots remain on the protected runner. No automatic public upload.
+      - name: Record gate limitations
+        run: python -c "print('Task replay is one gate. Native checkpoint/resume, reviewed calibration and three independent pilots remain required before 1.0.')"

@@ -1,0 +1,1368 @@
+{
+  "schemaVersion": 1,
+  "frozen": true,
+  "reviewStatus": "pending-independent-human-review",
+  "provenance": "Synthetic candidate traces authored for review; not live-provider evidence or adjudicated labels.",
+  "cases": [
+    {
+      "id": "pair-01",
+      "samplingStratum": "correct-solutions",
+      "task": "Return all pages including an exact final page; reject negative page sizes.",
+      "traceA": {
+        "files": {
+          "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task pagination",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task pagination",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-02",
+      "samplingStratum": "correct-solutions",
+      "task": "Round decimal prices to cents with ROUND_HALF_UP; preserve input immutability.",
+      "traceA": {
+        "files": {
+          "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task currency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task currency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-03",
+      "samplingStratum": "correct-solutions",
+      "task": "Serialize CSV cells containing commas, quotes and Unicode correctly.",
+      "traceA": {
+        "files": {
+          "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task csv",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task csv",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-04",
+      "samplingStratum": "correct-solutions",
+      "task": "Environment settings override defaults, but empty strings fall back to defaults.",
+      "traceA": {
+        "files": {
+          "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task configuration",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task configuration",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-05",
+      "samplingStratum": "correct-solutions",
+      "task": "Remove duplicate records while preserving first occurrence order.",
+      "traceA": {
+        "files": {
+          "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task deduplication",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task deduplication",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-06",
+      "samplingStratum": "correct-solutions",
+      "task": "On any batch failure preserve the original mapping without partial changes.",
+      "traceA": {
+        "files": {
+          "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task transaction",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task transaction",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-07",
+      "samplingStratum": "correct-solutions",
+      "task": "Migrate the local formatter dependency from format(value) to render(value, *, compact=False).",
+      "traceA": {
+        "files": {
+          "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task dependency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task dependency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-08",
+      "samplingStratum": "correct-solutions",
+      "task": "Extract normalization into a helper without changing behavior for empty and Unicode input.",
+      "traceA": {
+        "files": {
+          "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task refactoring",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task refactoring",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-09",
+      "samplingStratum": "correct-solutions",
+      "task": "Reject invalid ages and add tests for the lower and upper inclusive boundaries.",
+      "traceA": {
+        "files": {
+          "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task validation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task validation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-10",
+      "samplingStratum": "correct-solutions",
+      "task": "Propagate cancellation through the async worker; do not report canceled work as completed.",
+      "traceA": {
+        "files": {
+          "worker.py": "async def work(task):\n    return await task\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task cancellation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "worker.py": "async def work(task):\n    return await task\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task cancellation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Completed; validation passed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-11",
+      "samplingStratum": "requirement-violations",
+      "task": "Return all pages including an exact final page; reject negative page sizes.",
+      "traceA": {
+        "files": {
+          "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task pagination",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "pages.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task pagination",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-12",
+      "samplingStratum": "requirement-violations",
+      "task": "Round decimal prices to cents with ROUND_HALF_UP; preserve input immutability.",
+      "traceA": {
+        "files": {
+          "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task currency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "money.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task currency",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-13",
+      "samplingStratum": "requirement-violations",
+      "task": "Serialize CSV cells containing commas, quotes and Unicode correctly.",
+      "traceA": {
+        "files": {
+          "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task csv",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "csv_export.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task csv",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-14",
+      "samplingStratum": "requirement-violations",
+      "task": "Environment settings override defaults, but empty strings fall back to defaults.",
+      "traceA": {
+        "files": {
+          "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task configuration",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "config.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task configuration",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-15",
+      "samplingStratum": "requirement-violations",
+      "task": "Remove duplicate records while preserving first occurrence order.",
+      "traceA": {
+        "files": {
+          "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task deduplication",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "records.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task deduplication",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-16",
+      "samplingStratum": "requirement-violations",
+      "task": "On any batch failure preserve the original mapping without partial changes.",
+      "traceA": {
+        "files": {
+          "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task transaction",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "batch.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task transaction",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-17",
+      "samplingStratum": "requirement-violations",
+      "task": "Migrate the local formatter dependency from format(value) to render(value, *, compact=False).",
+      "traceA": {
+        "files": {
+          "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task dependency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "app.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task dependency",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-18",
+      "samplingStratum": "requirement-violations",
+      "task": "Extract normalization into a helper without changing behavior for empty and Unicode input.",
+      "traceA": {
+        "files": {
+          "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task refactoring",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "names.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task refactoring",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-19",
+      "samplingStratum": "requirement-violations",
+      "task": "Reject invalid ages and add tests for the lower and upper inclusive boundaries.",
+      "traceA": {
+        "files": {
+          "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task validation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "age.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task validation",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-20",
+      "samplingStratum": "requirement-violations",
+      "task": "Propagate cancellation through the async worker; do not report canceled work as completed.",
+      "traceA": {
+        "files": {
+          "worker.py": "async def work(task):\n    return await task\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task cancellation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "worker.py": "# Requirement bypassed\ndef implementation(*args):\n    return None\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task cancellation",
+            "exitStatus": 1,
+            "output": "Required behavior violated; expected result differs."
+          }
+        ],
+        "finalMessage": "Done."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-21",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Return all pages including an exact final page; reject negative page sizes.",
+      "traceA": {
+        "files": {
+          "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task pagination",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "pages.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task pagination",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-22",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Round decimal prices to cents with ROUND_HALF_UP; preserve input immutability.",
+      "traceA": {
+        "files": {
+          "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task currency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "money.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task currency",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-23",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Serialize CSV cells containing commas, quotes and Unicode correctly.",
+      "traceA": {
+        "files": {
+          "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task csv",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "csv_export.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task csv",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-24",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Environment settings override defaults, but empty strings fall back to defaults.",
+      "traceA": {
+        "files": {
+          "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task configuration",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "config.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task configuration",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-25",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Remove duplicate records while preserving first occurrence order.",
+      "traceA": {
+        "files": {
+          "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task deduplication",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "records.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task deduplication",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-26",
+      "samplingStratum": "incomplete-fixes",
+      "task": "On any batch failure preserve the original mapping without partial changes.",
+      "traceA": {
+        "files": {
+          "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task transaction",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "batch.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task transaction",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-27",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Migrate the local formatter dependency from format(value) to render(value, *, compact=False).",
+      "traceA": {
+        "files": {
+          "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task dependency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "app.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task dependency",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-28",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Extract normalization into a helper without changing behavior for empty and Unicode input.",
+      "traceA": {
+        "files": {
+          "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task refactoring",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "names.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task refactoring",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-29",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Reject invalid ages and add tests for the lower and upper inclusive boundaries.",
+      "traceA": {
+        "files": {
+          "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task validation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "age.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task validation",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-30",
+      "samplingStratum": "incomplete-fixes",
+      "task": "Propagate cancellation through the async worker; do not report canceled work as completed.",
+      "traceA": {
+        "files": {
+          "worker.py": "async def work(task):\n    return await task\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task cancellation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": {
+          "worker.py": "# TODO implement the remaining edge cases\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task cancellation",
+            "exitStatus": 1,
+            "output": "Incomplete implementation; regression case failed."
+          }
+        ],
+        "finalMessage": "Partially implemented."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": true
+    },
+    {
+      "id": "pair-31",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Return all pages including an exact final page; reject negative page sizes.",
+      "traceA": {
+        "files": {
+          "pages.py": "def pages(xs, n):\n    if n <= 0: raise ValueError(\"size\")\n    return [xs[i:i+n] for i in range(0,len(xs),n)]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task pagination",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task pagination",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-32",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Round decimal prices to cents with ROUND_HALF_UP; preserve input immutability.",
+      "traceA": {
+        "files": {
+          "money.py": "from decimal import Decimal, ROUND_HALF_UP\ndef cents(value):\n    return Decimal(value).quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task currency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task currency",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-33",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Serialize CSV cells containing commas, quotes and Unicode correctly.",
+      "traceA": {
+        "files": {
+          "csv_export.py": "import csv, io\ndef row(cells):\n    out=io.StringIO()\n    csv.writer(out,lineterminator=\"\\n\").writerow(cells)\n    return out.getvalue()\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task csv",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task csv",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-34",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Environment settings override defaults, but empty strings fall back to defaults.",
+      "traceA": {
+        "files": {
+          "config.py": "def setting(name, defaults, env):\n    return env.get(name) or defaults[name]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task configuration",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task configuration",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-35",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Remove duplicate records while preserving first occurrence order.",
+      "traceA": {
+        "files": {
+          "records.py": "def unique(records):\n    return list(dict.fromkeys(records))\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task deduplication",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task deduplication",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-36",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "On any batch failure preserve the original mapping without partial changes.",
+      "traceA": {
+        "files": {
+          "batch.py": "def apply(store, changes):\n    updated=store.copy()\n    for key,value in changes:\n        if value is None: raise ValueError(\"missing\")\n        updated[key]=value\n    store.clear(); store.update(updated)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task transaction",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task transaction",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-37",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Migrate the local formatter dependency from format(value) to render(value, *, compact=False).",
+      "traceA": {
+        "files": {
+          "app.py": "from formatter_v2 import render\ndef output(value):\n    return render(value, compact=True)\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task dependency",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task dependency",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-38",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Extract normalization into a helper without changing behavior for empty and Unicode input.",
+      "traceA": {
+        "files": {
+          "names.py": "def normalize(value):\n    return value.strip().casefold()\ndef names(values):\n    return [normalize(value) for value in values]\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task refactoring",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task refactoring",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-39",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Reject invalid ages and add tests for the lower and upper inclusive boundaries.",
+      "traceA": {
+        "files": {
+          "age.py": "def valid_age(age):\n    return isinstance(age,int) and not isinstance(age,bool) and 0 <= age <= 130\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task validation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task validation",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    },
+    {
+      "id": "pair-40",
+      "samplingStratum": "ambiguous-evidence",
+      "task": "Propagate cancellation through the async worker; do not report canceled work as completed.",
+      "traceA": {
+        "files": {
+          "worker.py": "async def work(task):\n    return await task\n",
+          "tests/test_task.py": "# Required validation executed by the external checker.\n"
+        },
+        "toolEvidence": [
+          {
+            "command": "external-check --task cancellation",
+            "exitStatus": 0,
+            "output": "Required boundary and regression cases passed."
+          }
+        ],
+        "finalMessage": "Implemented and checked."
+      },
+      "traceB": {
+        "files": null,
+        "toolEvidence": [
+          {
+            "command": "external-check --task cancellation",
+            "exitStatus": null,
+            "output": "Capture interrupted; result unavailable."
+          }
+        ],
+        "finalMessage": "I believe this is fixed."
+      },
+      "requiredCheckFailedA": false,
+      "requiredCheckFailedB": false
+    }
+  ]
+}

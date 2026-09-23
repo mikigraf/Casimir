@@ -316,6 +316,10 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     } else { plan_workspace_at(&workspace_original, &o.workspace, &run_id, None)? };
     let max_turns = o.turns.map(|n| n.min(turns.len())).unwrap_or(turns.len());
     let run_dir = o.out_dir.clone().unwrap_or_else(|| casimir_home().join("runs").join(&run_id));
+    let mut effective_options = o.clone();
+    effective_options.sim_llm.recording_dir = Some(run_dir.join("llm"));
+    effective_options.judge_llm.recording_dir = Some(run_dir.join("llm"));
+    let o = &effective_options;
     if run_dir.join("meta.json").exists() { bail!("run directory already contains a run: {}; choose a fresh output directory", run_dir.display()); }
     let simulate = o.user_mode == "simulate" || o.user_mode == "auto";
     let sim_model = effective_model(&o.sim_llm);
@@ -491,6 +495,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
         journal.save(&run_dir)?;
         meta["activeTurn"] = json!(t.turn); write_json(&run_dir.join("meta.json"), &meta)?;
         let mut user_ev = Event::text(t.turn, now_iso(), EventKind::User, message.clone());
+        user_ev.source_turn = Some(t.turn);
         user_ev.simulated = simulated;
         if !o.quiet {
             if let Some(s) = format_event(&user_ev, &render, start) {
@@ -586,7 +591,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     if saw_cost {
         session.cost_usd = Some(cost);
     }
-    for e in &mut session.events { e.source_turn = Some(e.turn); }
+    for e in &mut session.events { e.source_turn.get_or_insert(e.turn); }
     if let Some(hid) = &harness_session_id {
         if let Some(file) = adapters::find_log_by_id(harness, hid) {
             match adapters::parse_file(harness, &file) {
@@ -603,6 +608,8 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
         }
     }
     renumber_turns(&mut session.events);
+    session.checkpoints = session.events.iter().filter(|e| e.kind == EventKind::User && !e.sidechain)
+        .filter_map(|e| session.checkpoints.get(&e.source_turn.unwrap_or(e.turn)).cloned().map(|id| (e.turn, id))).collect();
     session.ended_at = Some(now_iso());
     write_json(&session_path, &session)?;
     write_record(&run_dir.join("record.jsonl"), &session, &permission_mode, &sandbox)?;
@@ -645,7 +652,7 @@ fn rerun_inner(original: &Session, o: &RerunOpts, recovery: Option<crate::recove
     write_json(&run_dir.join("report.json"), &report)?;
     session.evaluation = Some(json!({"outcome":report.overall_outcome,"execution":report.execution_status,"checks":report.checks,"judgeAssessment":report.judge_assessment,"judgeModel":if o.judge {Some(effective_model(&o.judge_llm))} else {None},"passThreshold":o.pass_threshold}));
     write_json(&session_path, &session)?;
-    if !journal.active { journal.session = session.clone(); }
+    if session.execution.as_ref().is_some_and(|e| e.failed_turns == 0) { journal.session = session.clone(); }
     journal.state = if session.execution.as_ref().is_some_and(|e| e.failed_turns > 0) { "failed".into() } else { "completed".into() };
     journal.save(&run_dir)?;
     meta["state"] = json!(if session.execution.as_ref().is_some_and(|e| e.failed_turns > 0) { "failed" } else { "completed" });
@@ -1236,6 +1243,8 @@ pub fn rerun_matrix(original: &Session, o: &RerunOpts, log: &mut dyn FnMut(&str)
 /// One reference and rubric for the whole experiment, and a fresh worktree for every replicate.
 fn prepare_experiment(original: &Session, o: &RerunOpts, dir: &Path, log: &mut dyn FnMut(&str)) -> Result<RerunOpts> {
     let mut frozen = o.clone();
+    frozen.sim_llm.recording_dir = Some(dir.join("llm"));
+    frozen.judge_llm.recording_dir = Some(dir.join("llm"));
     if o.workspace == "same" { bail!("replicates require independent worktrees; use --workspace auto or a git repository directory"); }
     if !matches!(o.workspace.as_str(), "auto" | "worktree") {
         let repo = fs::canonicalize(&o.workspace)?;
@@ -1254,7 +1263,7 @@ fn prepare_experiment(original: &Session, o: &RerunOpts, dir: &Path, log: &mut d
             frozen.checks = Some(dir.join("checks.definition.json"));
         }
         frozen.original_diff = original_diff_for(original, o);
-        if let Some(brief) = resolve_brief(original, o, frozen.original_diff.as_ref(), dir, log)? {
+        if let Some(brief) = resolve_brief(original, &frozen, frozen.original_diff.as_ref(), dir, log)? {
             let path = dir.join("brief.json");
             brief.save(&path)?;
             frozen.brief = Some(path);

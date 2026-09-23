@@ -219,6 +219,15 @@ impl RunArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
+    /// Score frozen evaluation predictions against independent reviews and adjudication
+    Calibrate {
+        #[arg(long)] corpus: PathBuf,
+        #[arg(long)] predictions: PathBuf,
+        #[arg(long)] reviewer_a: PathBuf,
+        #[arg(long)] reviewer_b: PathBuf,
+        #[arg(long)] adjudication: PathBuf,
+        #[arg(short, long)] output: Option<PathBuf>,
+    },
     /// Preview removal of manifest-owned run artifacts and worktrees
     Cleanup { run: PathBuf, #[arg(long)] apply: bool },
     /// Continue a durable run; ambiguous prompts require an explicit new attempt
@@ -382,9 +391,15 @@ pub fn run() -> Result<i32> {
         _ => None,
     };
     match cli.command {
+        Cmd::Calibrate { corpus, predictions, reviewer_a, reviewer_b, adjudication, output } => {
+            let result = crate::calibration::score(&corpus, &predictions, &reviewer_a, &reviewer_b, &adjudication)?;
+            if let Some(path) = output { crate::util::write_json(&path, &result)?; }
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            if result["passed"] != true { return Ok(1); }
+        },
         Cmd::Cleanup { run, apply } => println!("{}", serde_json::to_string_pretty(&crate::artifacts::cleanup(&run, apply)?)?),
         Cmd::Resume { run, retry_interrupted } => {
-            let result = crate::recovery::resume(&run, retry_interrupted, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
+            let result = crate::recovery::resume(&run, retry_interrupted, &mut |s| eprintln!("{}", crate::privacy::redact(s)), &mut |s| println!("{s}"))?;
             if let Some(result) = result { println!("Recovery attempt: {}", result.run_dir.display());
                 if result.session.as_ref().and_then(|s| s.execution.as_ref()).is_some_and(|e| e.failed_turns > 0) { return Ok(1); }
             }
@@ -463,7 +478,7 @@ pub fn run() -> Result<i32> {
             if turns.is_empty() {
                 anyhow::bail!("nothing to attribute: the session has a single turn (attribution resamples turns >= 2)");
             }
-            let att = attribute(&original, &opts, &turns, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
+            let att = attribute(&original, &opts, &turns, &mut |s| eprintln!("{}", crate::privacy::redact(s)), &mut |s| println!("{s}"))?;
             println!();
             println!("{}", render_attribution_text(&att));
             if !att.dry_run { println!("{}saved under:{} {}", c.bold, c.reset, att.run_dir.display()); }
@@ -479,7 +494,7 @@ pub fn run() -> Result<i32> {
             if opts.original_diff.is_none() { opts.original_diff = load_diff(&session); }
             opts.from_turn = from_turn;
             opts.intervention = intervention;
-            let (single, matrix) = rerun_matrix(&original, &opts, &mut |s| eprintln!("{s}"), &mut |s| println!("{s}"))?;
+            let (single, matrix) = rerun_matrix(&original, &opts, &mut |s| eprintln!("{}", crate::privacy::redact(s)), &mut |s| println!("{s}"))?;
             if let Some(res) = single {
                 if res.dry_run {
                     return Ok(0);

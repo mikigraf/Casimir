@@ -42,7 +42,6 @@ fn verify(record: &Ownership) -> Result<()> {
 }
 pub fn cleanup(run: &Path, apply: bool) -> Result<serde_json::Value> {
     let canonical = std::fs::canonicalize(run)?;
-    let _lock = crate::util::RunLock::acquire(&canonical)?;
     let mut found = None;
     for entry in std::fs::read_dir(registry()).context("no owned artifact registry")? {
         let entry = entry?;
@@ -51,6 +50,8 @@ pub fn cleanup(run: &Path, apply: bool) -> Result<serde_json::Value> {
         if record.run == canonical { found = Some((entry.path(), record)); break; }
     }
     let (manifest, record) = found.context("run is not in the Casimir ownership registry; cleanup refused")?;
+    verify(&record)?;
+    let _lock = crate::util::RunLock::acquire(&canonical)?;
     verify(&record)?;
     let result = serde_json::json!({"schemaVersion":1,"preview":!apply,"run":record.run,"worktree":record.worktree,
         "checkpointBlobs":"retained: content-addressed objects may be shared by other runs"});

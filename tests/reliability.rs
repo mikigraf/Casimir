@@ -88,7 +88,6 @@ fn supervisor_times_out_and_bounds_response_memory() {
     let result = process::capture(Command::new(fixture::executable("supervisor")).args(["--supervisor","oversize"]),b"",Duration::from_secs(5),Some(&temp.path().join("oversize")));
     assert!(result.is_err()); assert!(std::fs::metadata(temp.path().join("oversize/stdout.log")).unwrap().len() >= 4*1024*1024);
 }
-#[cfg(unix)]
 #[test]
 fn supervisor_terminates_descendants_on_timeout_and_parent_exit() {
     setup();
@@ -98,10 +97,17 @@ fn supervisor_terminates_descendants_on_timeout_and_parent_exit() {
         if mode=="child" {assert!(result.is_err());} else {assert!(result.is_ok());}
         let pid=std::fs::read_to_string(spool.join("stdout.log")).unwrap().trim().parse::<i32>().unwrap();
         // Linux may retain a killed orphan as a zombie until PID 1 reaps it.
+        #[cfg(unix)]
         let alive = unsafe {libc::kill(pid,0)} == 0;
+        #[cfg(unix)]
         if alive {
             #[cfg(target_os="linux")] assert!(std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z "));
             #[cfg(not(target_os="linux"))] panic!("descendant survived cancellation");
+        }
+        #[cfg(windows)] unsafe {
+            use windows_sys::Win32::{Foundation::{CloseHandle,WAIT_OBJECT_0},System::Threading::{OpenProcess,WaitForSingleObject}};
+            let process = OpenProcess(0x00100000,0,pid as u32);
+            if !process.is_null() { assert_eq!(WaitForSingleObject(process,2000),WAIT_OBJECT_0); CloseHandle(process); }
         }
     }
 }
@@ -144,6 +150,7 @@ fn cleanup_previews_and_preserves_original_and_unowned_directories() {
     let run=rerun(&original(repo.path(),1),&RerunOpts {workspace:repo.path().display().to_string(),out_dir:Some(output.path().to_path_buf()),quiet:true,..Default::default()},&mut |_|{},&mut |_|{}).unwrap();
     let preview=casimir::artifacts::cleanup(output.path(),false).unwrap();assert_eq!(preview["preview"],true);assert!(run.workspace.dir.exists());
     assert!(casimir::artifacts::cleanup(repo.path(),true).is_err());
+    assert!(!repo.path().join(".lock").exists(), "unowned cleanup must not modify the source");
     casimir::artifacts::cleanup(output.path(),true).unwrap();assert!(!output.path().exists());assert!(!run.workspace.dir.exists());assert!(repo.path().join(".git").exists());
 }
 #[test]
@@ -163,4 +170,39 @@ fn interrupted_second_turn_retry_preserves_completed_first_turn() {
     let session=second.session.unwrap();assert_eq!(session.execution.unwrap().completed_turns,2);
     assert_eq!(session.events.iter().filter(|e|e.kind==EventKind::User && e.text_str()=="task 1").count(),1);
     assert!(!second.run_dir.join("turns/1").exists());assert!(second.run_dir.join("turns/2/stdout.log").exists());
+}
+
+#[test]
+fn native_executable_paths_and_arguments_preserve_unicode_and_metacharacters() {
+    setup();let temp=tempfile::tempdir().unwrap();let directory=temp.path().join("space café");std::fs::create_dir(&directory).unwrap();
+    let executable=directory.join(format!("fixture name{}",std::env::consts::EXE_SUFFIX));std::fs::copy(fixture::executable("supervisor"),&executable).unwrap();
+    let output=process::capture(Command::new(&executable).args(["--supervisor","args","é & $(no-shell) \"quoted\"",r"C:\path with spaces\"]),b"",Duration::from_secs(5),Some(&temp.path().join("output"))).unwrap();
+    let args:Vec<String>=serde_json::from_slice(&output.stdout).unwrap();assert_eq!(args[2],"é & $(no-shell) \"quoted\"");assert_eq!(args[3],r"C:\path with spaces\");
+    assert_eq!(casimir::compare::relativize(r"C:\Work\café.txt",Some(r"c:\work")),"café.txt");
+}
+
+#[test]
+fn malformed_internal_jsonl_is_not_silently_discarded() {
+    let dir=tempfile::tempdir().unwrap();let file=dir.path().join("partial.jsonl");
+    std::fs::write(&file,"{\"ok\":true}\n{\"partial\":").unwrap();assert_eq!(util::read_jsonl(&file).unwrap().len(),1);
+    std::fs::write(&file,"{\"ok\":true}\nnot json\n{\"ok\":true}\n").unwrap();assert!(util::read_jsonl(&file).is_err());
+}
+
+#[test]
+fn calibration_requires_independent_reviews_and_check_failures_never_pass() {
+    let directory=tempfile::tempdir().unwrap();let corpus=directory.path().join("corpus.json");
+    let cases:Vec<_>=(0..40).map(|i|json!({"id":format!("case-{i}"),"requiredCheckFailedB":i==0})).collect();
+    util::write_json(&corpus,&json!({"schemaVersion":1,"frozen":true,"cases":cases})).unwrap();
+    let hash=checkpoint::hash(&std::fs::read(&corpus).unwrap());
+    let labels:serde_json::Map<String,serde_json::Value>=(0..40).map(|i|(format!("case-{i}"),json!({"winner":"tie","outcomeA":"passed","outcomeB":if i==0 {"failed"} else {"passed"}}))).collect();
+    let mut paths=Vec::new();
+    for name in ["prediction","reviewer-a","reviewer-b","adjudicator"] {
+        let path=directory.path().join(format!("{name}.json"));
+        let mut value=json!({"schemaVersion":1,"corpusHash":hash,"reviewerId":name,"humanReviewed":true,"labels":labels});
+        if name=="prediction" {value["labels"]["case-0"]["outcomeB"]=json!("passed");}
+        util::write_json(&path,&value).unwrap();paths.push(path);
+    }
+    let report=casimir::calibration::score(&corpus,&paths[0],&paths[1],&paths[2],&paths[3]).unwrap();
+    assert!(report["agreement"].as_f64().unwrap()>0.9);assert_eq!(report["falsePositives"],1);assert_eq!(report["requiredCheckViolations"],1);assert_eq!(report["passed"],false);
+    assert!(casimir::calibration::score(&corpus,&paths[0],&paths[1],&paths[1],&paths[3]).is_err());
 }

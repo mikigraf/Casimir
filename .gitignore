@@ -1,3 +1,6 @@
 target/
 .casimir/
 *.log
+
+__pycache__/
+dist/

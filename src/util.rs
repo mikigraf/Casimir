@@ -100,6 +100,7 @@ pub fn private_dir(path: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
+    #[cfg(windows)] private_windows_acl(path, true)?;
     Ok(())
 }
 
@@ -116,9 +117,22 @@ pub fn atomic_write(file: &Path, data: &[u8]) -> Result<()> {
     let parent = file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    #[cfg(windows)] private_windows_acl(temp.path(), false)?;
     temp.write_all(data)?;
     temp.as_file().sync_all()?;
-    temp.persist(file).with_context(|| format!("replacing {}", file.display()))?;
+    let started = std::time::Instant::now();
+    loop {
+        match temp.persist(file) {
+            Ok(_) => break,
+            Err(error) if cfg!(windows) && matches!(error.error.raw_os_error(), Some(5 | 32 | 33)) && started.elapsed() < std::time::Duration::from_secs(2) => {
+                // Antivirus and concurrent readers can briefly hold a Windows sharing lock.
+                // Keep the old file intact and retry the same complete temporary file.
+                temp = error.file;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            },
+            Err(error) => return Err(error).with_context(|| format!("replacing {}", file.display())),
+        }
+    }
     #[cfg(unix)] fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
@@ -375,4 +389,24 @@ pub fn stderr_error_line(stderr: &str, fallback: &str) -> String {
 
 impl Drop for RunLock {
     fn drop(&mut self) { let _ = fs2::FileExt::unlock(&self._file); }
+}
+
+/// Protect raw evidence from inherited broad ACLs. Owner rights and SYSTEM retain access;
+/// this is local confidentiality, not isolation from the harness running as the same user.
+#[cfg(windows)]
+fn private_windows_acl(path: &Path, directory: bool) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{Foundation::LocalFree, Security::{Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION}};
+    let text = if directory { "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)" } else { "D:P(A;;FA;;;OW)(A;;FA;;;SY)" };
+    let sddl: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        let mut descriptor = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, std::ptr::null_mut()) == 0 { return Err(std::io::Error::last_os_error().into()); }
+        let success = SetFileSecurityW(path.as_ptr(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, descriptor);
+        let error = if success == 0 { Some(std::io::Error::last_os_error()) } else { None };
+        LocalFree(descriptor);
+        if let Some(error) = error { return Err(error).context("protecting local artifact ACL"); }
+    }
+    Ok(())
 }
