@@ -88,8 +88,8 @@ fn supervisor_times_out_and_bounds_response_memory() {
     let temp = tempfile::tempdir().unwrap();
     let result = process::capture(Command::new(fixture::executable("supervisor")).args(["--supervisor","hang"]),b"",Duration::from_millis(120),Some(&temp.path().join("hung")));
     assert!(result.is_err()); assert!(start.elapsed()<Duration::from_secs(3));
-    let result = process::capture(Command::new(fixture::executable("supervisor")).args(["--supervisor","oversize"]),b"",Duration::from_secs(5),Some(&temp.path().join("oversize")));
-    assert!(result.is_err()); assert!(std::fs::metadata(temp.path().join("oversize/stdout.log")).unwrap().len() >= 4*1024*1024);
+    let result = process::capture(Command::new(fixture::executable("supervisor")).args(["--supervisor","oversize"]),b"",Duration::from_secs(30),Some(&temp.path().join("oversize")));
+    assert!(result.err().unwrap().to_string().contains("exceeds 4 MiB")); assert!(std::fs::metadata(temp.path().join("oversize/stdout.log")).unwrap().len() >= 4*1024*1024);
 }
 #[test]
 fn supervisor_terminates_descendants_on_timeout_and_parent_exit() {

@@ -1,0 +1,31 @@
+name: Protected release evidence
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Evidence gate to verify before staging
+        type: choice
+        options: [rc, '1.0']
+        required: true
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: [self-hosted, casimir-acceptance, linux]
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Stage reviewed evidence from protected storage
+        env:
+          STAGE: ${{ inputs.stage }}
+          SOURCE: ${{ vars.CASIMIR_RELEASE_EVIDENCE_DIR }}
+        run: python scripts/prepare-evidence.py --source "$SOURCE" --output "$RUNNER_TEMP/release-evidence-$GITHUB_RUN_ID" --commit "$GITHUB_SHA" --stage "$STAGE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: ${{ runner.temp }}/release-evidence-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90

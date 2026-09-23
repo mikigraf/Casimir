@@ -33,8 +33,8 @@ workflow or a fixture success is not evidence that an authenticated provider wor
 | Live macOS/Windows | Authenticated replay, checkpoint fork, interrupted resume | Pending native authenticated environments |
 | Evaluation | Frozen 40-pair corpus, two independent reviewers, adjudication; ≥90% decisive agreement; abstentions and false positives reported | Human review and calibration pending |
 | Simulator/attribution | Reviewed simulator cases and seeded recoverable/unrecoverable checkpoint cases | Acceptance review pending |
-| Pilot users | Three independent users complete installation, doctor, experiment, interpretation, recovery, cleanup on their own repositories | Pilot users pending |
-| Distribution | Four native archives, checksums, provenance, clean installation verification | Release candidate build pending |
+| Pilot users | Three independent users complete installation, doctor, experiment, interpretation, recovery, cleanup on their own repositories | Pilot users pending; see acceptance/pilots/README.md |
+| Distribution | Four native archives, checksums, provenance, clean installation verification | Native archive workflow and protected evidence staging implemented; release candidate build pending |
 
 Do not mark real transcript formats checkpoint-compatible before recording the corresponding
 live acceptance evidence in `compatibility/harnesses.json`. Fixture-only entries are not provider

@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "redacted": true,
   "commit": null,
   "reliability": {"linux": {"status":"pending"}, "macos": {"status":"pending"}, "windows": {"status":"pending"}},
   "live": {"linux": {"status":"blocked"}, "macos": {"status":"blocked"}, "windows": {"status":"blocked"}},

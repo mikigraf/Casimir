@@ -4,8 +4,6 @@
   "version": "2.1.280",
   "platform": "linux",
   "scope": "Native transcript format and local orchestration validation; not the full release acceptance gate",
-  "baseCommit": "8f9351a63f67ccb880db5a9f6e575779dae2cb89",
-  "candidateChanges": "Platform-scoped compatibility gate enabled for this validation build; production data and no fixture substitution",
   "status": "passed",
   "workflows": [
     "replay",
@@ -21,16 +19,17 @@
       "sourceUnchanged": true
     }
   ],
-  "summarySha256": "475e70cb50154aaf7ba36fa8d0637c184b12c70e7a3df267ea48441df0f6cea2",
+  "summarySha256": "db129fe4a68eb00f7c7307313298a1ee531e10cd60dc58b1bc77a4be1a9f7246",
   "artifacts": {
-    "replay/session.json": "1b4e4812e794eff6659b5d40889ff82efbb3ed5c12587bc9ad062c66d26719be",
-    "replay/report.json": "04d9ac3c1cb7d607953d1b4ab1dbb6da317934b04a04551521d556864b384992",
-    "replay/recovery.json": "9d6eafcb1a52066caa011a79bd381594ebd2368fecdf8e5c5d3e9df01267bc7a",
-    "fork/session.json": "18b620b5135815dbfdc2d715e31a7f5f7051a6e00f6e62abab18d3579ceeaf63",
-    "fork/report.json": "89a142e68afd47190750a3da70152ab61e7c4ddf52ccd3eb624fef514da155c8",
-    "fork/recovery.json": "b0d72d5642e11564f0a1ba06c760c3d309b9fd9d1ec14ad1b33a8e049e5fd444",
-    "interrupted/session.json": "921ac50eccac702916c50e36220085d9598d638e875e29de3da4c877eeef7ea4",
-    "interrupted/report.json": "058aae9184f1425c57babd214ac6b4f2506571833875a67a28e7dbe5490f8709",
-    "interrupted/recovery.json": "a8f1b7aa7f58760e45f409f8877ff4d883843b53bc0c721c0be64fd57b7a41fa"
-  }
+    "replay/session.json": "b8458946d0a85f925cb4429bce0875cb0402933fc098adf33eebea8b9687e7c7",
+    "replay/report.json": "d95cc9c3ea179b16ef461d23af180e64dc29f1293a2f2b5ee505b04ccd4d9ba7",
+    "replay/recovery.json": "a218e7b787775e5deecacdf96fe759f2fb95b434901b18e0a60455d004e86b71",
+    "fork/session.json": "ec2f227269576ae18a9f10979a0da36e134b802120c986ed338dcf30cd5c882f",
+    "fork/report.json": "d0bdb6c2cccd486d3fa4a3df9bd7ef8d64b9a4e60df531a581d57231cfd99cd4",
+    "fork/recovery.json": "ea5e0fd25825569fafd821f5047024a6929f603af0c136ee3e8370b26b4c2367",
+    "interrupted/session.json": "a52205ac53f46f3a21126bb9fc6a40f368f229f20e1a863578c41ccbb476d18d",
+    "interrupted/report.json": "1d26efd49a8f48f80e80274ad373a287a1866e12308eb060536ee5c412403f36",
+    "interrupted/recovery.json": "bd5ebd04abe456c33580a1a088686da1b38d17fa4768dd12ffb238f73e184cee"
+  },
+  "testedCommit": "db298969b7e0d8330068a3378018bec602ae9788"
 }

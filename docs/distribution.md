@@ -10,8 +10,13 @@ maintainer reviewer. Run the authenticated acceptance workflow only on protected
 with provider access; never expose credentials to pull-request code or public logs.
 
 Use `acceptance/release-evidence.json` as the template for a private evidence bundle. Upload
-the completed bundle as the `release-evidence` artifact from a protected workflow and provide
-its run ID to the release workflow. Evidence must name the release commit; it is generated
+the completed bundle using the protected `release-evidence.yml` workflow and provide its run ID
+to the release workflow. Configure the release environment's `CASIMIR_RELEASE_EVIDENCE_DIR`
+variable to the reviewed bundle on the protected runner. Its manifest and referenced JSON
+summaries must explicitly attest `redacted: true`; the staging script uploads only referenced
+summaries, never the raw transcript/checkpoint directories. The archive workflow verifies the
+evidence workflow identity, successful manual event, commit and artifact hashes.
+Evidence must name the release commit; it is generated
 after that commit, avoiding a self-referential checked-in commit hash. RC creation requires all three deterministic platform results. Tagging 1.0
 requires the live, reviewed evaluation, simulator, attribution, pilot and RC evidence as well.
 `scripts/release-gates.py` fails closed on missing evidence. Do not edit placeholders to passed
