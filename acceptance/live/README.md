@@ -1,41 +1,73 @@
-# Authenticated acceptance suite
+# Live acceptance suite
 
-The ten maintained tasks in `tasks.json` cover multi-file bug fixes, refactoring, tests,
-a local dependency migration and follow-up corrections. `scripts/acceptance.py` creates each
-source repository, freezes an external checker, runs both supported harnesses twice, verifies
-source checkout immutability and outcome reporting, and exercises cross-harness replay in both
-directions. Model task failures are recorded and allowed; orchestration failures fail the gate.
+This suite runs Casimir against real, signed-in agents to check it works end to end. **It uses
+up your provider subscription quota.**
 
-This suite consumes provider subscription usage. Invocation requires
-`--allow-subscription-usage`. Configure the pinned provider versions and their own subscription
-login state on a protected machine first. The driver explicitly grants Claude `acceptEdits` and
-Codex `workspace-write` in its disposable task repositories. Ordinary Casimir runs preserve
-provider permission settings; `--allow-unrestricted` is a separate opt-in for the test driver.
+## The tasks
 
-Linux requires all 40 task attempts. Native macOS and Windows additionally require recorded
-authenticated checkpoint, fork and interrupted-resume workflows. A missing compatible
-checkpoint blocks those workflows; fixtures cannot certify the native transcript format.
-The live driver reports these workflow requirements separately and does not turn a basic
-replay pass into a complete platform acceptance pass.
-The 2026-09-23 Linux run passed all 40 attempts and both replay directions; its
-[hash-only receipt](evidence/linux-subscription-2026-09-23.json) is integration evidence,
-not a release-commit certification. It records that the local binary was built before its
-repository HEAD was committed. Repeat the full run from a clean release commit before 1.0.
-Use `--harness claude-code` or `--harness codex` to collect real partial provider evidence when
-only one subscription login is available. A subset is labelled `partial` and cannot satisfy
-the full release gate.
+`tasks.json` has ten maintained tasks: multi-file bug fixes, refactors, writing tests, a local
+dependency migration and follow-up corrections.
 
-Keep output private. Upload only redacted evidence summaries to public CI. A protected
-self-hosted runner must not be shared with untrusted pull-request jobs.
+`scripts/acceptance.py`, for each task:
 
-Run `python scripts/native-workflows.py --casimir PATH --output PRIVATE_DIRECTORY --claude-permission-mode acceptEdits --allow-subscription-usage`
-for native replay/fork/recovery evidence. It interrupts the second turn after a durable first
-turn, verifies that implicit retry is refused, explicitly retries in a fresh attempt, checks
-that the first turn is not repeated, and verifies completed resume is a no-op. The optional
-`--harness claude-code` or `--harness codex` is useful for version validation; a subset result
-cannot satisfy a release gate requiring both. The checked-in compatibility manifest must
-validate the exact harness version **and platform** before native continuation is enabled.
+1. creates the source repository;
+2. freezes an external checker for it;
+3. runs both supported agents twice;
+4. checks that the source checkout wasn't touched and that the outcome was reported correctly;
+5. replays across agents in both directions.
 
-For a disposable Claude test repository, `--claude-permission-mode acceptEdits` explicitly
-permits edits while retaining the provider's other permission checks. The default still
-preserves the user's configuration; unrestricted mode remains a separate opt-in.
+A model failing a task is recorded and allowed. A failure in Casimir's own orchestration fails
+the gate.
+
+## Running it
+
+Set up the pinned agent versions and sign in to each of them on a protected machine first. You
+have to pass `--allow-subscription-usage` to start the suite.
+
+The driver gives Claude `acceptEdits` and Codex `workspace-write` inside its throwaway task
+repositories. Normal Casimir runs keep your agent's permission settings, and
+`--allow-unrestricted` is a separate opt-in for the test driver.
+
+If you only have one subscription, use `--harness claude-code` or `--harness codex` to collect
+partial evidence. A subset run is labelled `partial` and can't satisfy the full release gate.
+
+Keep the output private and only upload redacted summaries to public CI. Don't share a protected
+self-hosted runner with untrusted pull-request jobs.
+
+## Native workflows
+
+```sh
+python scripts/native-workflows.py --casimir PATH --output PRIVATE_DIRECTORY \
+    --claude-permission-mode acceptEdits --allow-subscription-usage
+```
+
+This collects evidence for native replay, fork and recovery. It:
+
+1. interrupts the second turn after the first one has been saved;
+2. checks that an implicit retry is refused;
+3. retries explicitly in a fresh attempt;
+4. checks the first turn wasn't sent again;
+5. checks that resuming a finished run does nothing.
+
+`--harness claude-code` or `--harness codex` is handy when validating a single version, but a
+single-agent result can't satisfy a gate that needs both. Native continuation is only enabled
+once the checked-in compatibility manifest lists the exact agent version **and platform**.
+
+`--claude-permission-mode acceptEdits` lets Claude edit files in the throwaway repository while
+keeping its other permission checks. By default your own configuration is kept, and unrestricted
+mode is a separate opt-in.
+
+## What each platform needs
+
+Linux needs all 40 task attempts. macOS and Windows also need recorded, authenticated
+checkpoint, fork and interrupted-resume workflows. Without a compatible checkpoint those
+workflows are blocked, and fixtures can't certify a native transcript format. The driver
+reports these workflow requirements separately, so a basic replay pass never counts as a
+complete platform pass.
+
+## Results so far
+
+The 2026-09-23 Linux run passed all 40 attempts and both replay directions. Its
+[hash-only receipt](evidence/linux-subscription-2026-09-23.json) is integration evidence, not
+certification of a release commit: it notes that the binary was built before the repository
+`HEAD` was committed. The full run needs repeating from a clean release commit before 1.0.

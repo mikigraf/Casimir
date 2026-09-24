@@ -1,31 +1,58 @@
-# Distribution and release procedure
+# Distribution and releases
 
-`cargo install --path . --locked` remains supported. Release archives target macOS ARM64 and
-x64, Linux x64, and Windows x64. The manually triggered native release workflow runs tests,
-builds the native binary, packages documentation and compatibility information, verifies an
-extracted installation, writes SHA-256 checksums, and requests GitHub build provenance.
+## Installing a release
 
-The workflow creates a **draft** release for review. The release environment should require a
-maintainer reviewer. Run the authenticated acceptance workflow only on protected infrastructure
-with provider access; never expose credentials to pull-request code or public logs.
+Release archives are built for macOS (Apple Silicon and Intel), Linux x64 and Windows x64.
 
-Use `acceptance/release-evidence.json` as the template for a private evidence bundle. Upload
-the completed bundle using the protected `release-evidence.yml` workflow and provide its run ID
-to the release workflow. Configure the release environment's `CASIMIR_RELEASE_EVIDENCE_DIR`
-variable to the reviewed bundle on the protected runner. Its manifest and referenced JSON
-summaries must explicitly attest `redacted: true`; the staging script uploads only referenced
-summaries, never the raw transcript/checkpoint directories. The archive workflow verifies the
-evidence workflow identity, successful manual event, commit and artifact hashes.
-Evidence must name the release commit; it is generated
-after that commit, avoiding a self-referential checked-in commit hash. RC creation requires all three deterministic platform results. Tagging 1.0
-requires the live, reviewed evaluation, simulator, attribution, pilot and RC evidence as well.
-`scripts/release-gates.py` fails closed on missing evidence. Do not edit placeholders to passed
-without corresponding real evidence. The current version is not a 1.0 release certification.
+1. Check the archive's SHA-256 checksum and its build provenance:
 
-Before installing, verify the archive's SHA-256 checksum and provenance with
-`gh attestation verify ARCHIVE --repo mikigraf/Casimir`. Extract into a user-owned directory,
-place `casimir` (or `casimir.exe`) on PATH, then run `casimir --version` and `casimir doctor --json`.
-These verification commands make no paid model calls. Sign in to the supported provider CLI
-with your subscription (`claude auth login` or `codex login`), then confirm `subscriptionReady`
-in `casimir doctor --json`. The authenticated acceptance runners use these CLI logins; an
-Anthropic API key is not a release prerequisite. See the compatibility manifest for pinned versions.
+   ```sh
+   gh attestation verify ARCHIVE --repo mikigraf/Casimir
+   ```
+
+2. Extract it somewhere you own and put `casimir` (or `casimir.exe`) on your `PATH`.
+3. Run `casimir --version` and `casimir doctor --json`. Neither makes any paid model calls.
+4. Sign in to the agent you want to use (`claude auth login` or `codex login`) and check that
+   `casimir doctor --json` shows `subscriptionReady: true`.
+
+You don't need an Anthropic API key. The pinned agent versions are listed in the
+[compatibility manifest](../compatibility/harnesses.json).
+
+Building from source with `cargo install --path . --locked` is still supported.
+
+## How releases are made
+
+This part is for maintainers.
+
+The release workflow is triggered by hand. It runs the tests, builds the native binaries,
+packages them with the docs and compatibility information, installs each archive into a clean
+directory to check it works, writes SHA-256 checksums and asks GitHub for build provenance. The
+result is a **draft** release, and the release environment should require a maintainer to
+approve it.
+
+### Release evidence
+
+A release also needs evidence that the acceptance gates passed.
+
+- Use `acceptance/release-evidence.json` as the template for a private evidence bundle.
+- Upload the finished bundle with the protected `release-evidence.yml` workflow, and give its
+  run ID to the release workflow.
+- Point the release environment's `CASIMIR_RELEASE_EVIDENCE_DIR` variable at the reviewed
+  bundle on the protected runner.
+- The manifest and every JSON summary it references must say `redacted: true`. The staging
+  script uploads only those summaries, never raw transcripts or checkpoints.
+- The archive workflow checks that the evidence came from the right workflow, from a successful
+  manual run, and matches the expected commit and artifact hashes.
+
+Evidence has to name the release commit, so it's generated after that commit exists rather
+than checked into it.
+
+A release candidate needs passing deterministic results on all three platforms. Tagging 1.0
+also needs the live, evaluation, simulator, attribution, pilot and release-candidate evidence.
+`scripts/release-gates.py` fails if anything is missing. Never change a placeholder to "passed"
+without the real evidence behind it.
+
+Only run the authenticated acceptance workflow on protected infrastructure that has provider
+access. Credentials must never be exposed to pull-request code or public logs.
+
+The current version is a release candidate, not a certified 1.0.

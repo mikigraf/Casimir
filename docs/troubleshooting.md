@@ -1,42 +1,88 @@
 # Troubleshooting
 
-Start with `casimir doctor --json`. An unknown login state is not proof of valid credentials;
-login-status commands cannot guarantee a token has not expired or been revoked. Authenticate
-using the provider CLI, then retry deliberately. Casimir does not automatically resend a
-possibly executed prompt on authentication errors, rate limits or timeouts.
+Start with:
 
-For subscription runs, look for `subscriptionReady: true` for the chosen harness. Use
-`claude auth login` or `codex login`; on a headless Codex machine, `codex login --device-auth`
-can complete a supported browser sign-in. An API-key login is reported separately and does
-not satisfy the subscription gate. API-key environment variables are omitted from provider
-CLI subprocesses; choose the explicit `--llm api` backend for direct Anthropic API calls.
-On Linux, `runtimeReady: false` for Codex means a local sandbox self-test failed before any
-model call. Install a working `bubblewrap` and check whether your container grants unusual
-ambient Linux capabilities; the sandbox must work with the permissions of the process running
-Casimir. Do not disable the sandbox to make a failing readiness check pass.
-For `bwrap: Unexpected capabilities but not setuid` in a container with inherited ambient
-capabilities, run Casimir from a privilege-dropped shell, for example
-`setpriv --bounding-set=-all --inh-caps=-all --ambient-caps=-all casimir doctor --json`.
-Use the same prefix for the experiment after the sandbox probe passes. This changes the
-process's Linux capabilities; it does not bypass the Codex sandbox or alter harness
+```sh
+casimir doctor --json
+```
+
+It checks your agent CLIs, logins and storage without making any model calls.
+
+Casimir never resends a prompt on its own after an authentication error, rate limit or timeout,
+because the prompt may already have run. Fix the cause, then retry deliberately.
+
+## Login problems
+
+For subscription runs, look for `subscriptionReady: true` next to the agent you want to use. If
+it isn't there, sign in again:
+
+```sh
+claude auth login
+codex login
+codex login --device-auth   # on a headless machine, if your account supports it
+```
+
+An "unknown" login state doesn't mean you're signed in. Login status commands can't tell whether
+a token has expired or been revoked.
+
+Logging in with an API key is reported separately and doesn't count as a subscription. API keys
+are removed from the agent CLIs' environment. If you want to call the Anthropic API directly,
+use `--llm api`.
+
+## Codex says `runtimeReady: false` on Linux
+
+The Codex sandbox self-test failed before any model call. Install a working `bubblewrap`, and
+check whether your container gives processes unusual ambient Linux capabilities. The sandbox has
+to work with the permissions of whatever process is running Casimir. Don't turn the sandbox off
+to get the check to pass.
+
+If you see `bwrap: Unexpected capabilities but not setuid` in a container with inherited
+ambient capabilities, run Casimir from a shell that drops them:
+
+```sh
+setpriv --bounding-set=-all --inh-caps=-all --ambient-caps=-all casimir doctor --json
+```
+
+Once the sandbox check passes, use the same prefix for your experiment. This only changes the
+process's Linux capabilities. It doesn't bypass the Codex sandbox or change the agent's
 permission settings.
 
-A locked run has another active owner. Wait for it to finish or interrupt that process. Do not
-delete the lock file while a process is active; the OS releases the lock on process exit.
+## "run is locked by another Casimir process"
 
-For a timeout, inspect `RUN/turns/N/stdout.log`, `stderr.log`, `session.json` and `recovery.json`.
-Increase `--turn-timeout` or `--llm-timeout` for a subsequent experiment if appropriate. An
-interrupted turn requires `resume --retry-interrupted`; completed turns are not repeated.
+Another process is using the run. Wait for it to finish or stop it. Don't delete the lock file
+while that process is still running; the OS releases the lock when the process exits.
 
-A checkpoint compatibility refusal means the native format or installed version has not passed
-acceptance. Full reruns and inspection remain available. Do not substitute a timestamp-derived
-commit for the missing checkpoint. See `compatibility/harnesses.json` and `docs/checkpoints.md`.
+## A turn timed out
 
-Disk exhaustion and permission failures are infrastructure errors, not task failures. Preserve
-what was already written. Preview owned artifact removal with `casimir cleanup RUN` before
-using `--apply`. Content-addressed checkpoint blobs may be shared by other runs and are retained
-by per-run cleanup.
+Look at these files in the run directory:
 
-Native Windows requires Git and runnable harness executables on PATH. Codex offers a native
-Windows sandbox; Claude Code currently has no native Windows OS sandbox. Permission modes and
-worktrees do not provide universal isolation.
+- `turns/N/stdout.log`
+- `turns/N/stderr.log`
+- `session.json`
+- `recovery.json`
+
+If the task just needs more time, raise `--turn-timeout` (agent turns) or `--llm-timeout` (judge
+and simulator) next time. To continue the interrupted run, use
+`casimir resume RUN --retry-interrupted`. Turns that already finished aren't repeated.
+
+## Forks are refused as incompatible
+
+You'll see "native transcript format/version has not passed checkpoint compatibility
+validation" or "installed harness version does not match checkpoint compatibility version".
+
+The agent's transcript format, or its installed version, hasn't passed acceptance testing yet.
+You can still inspect the session and do a full rerun; you just can't fork it. Don't substitute
+a commit guessed from timestamps. See [checkpoints](checkpoints.md) and
+`compatibility/harnesses.json`.
+
+## Disk full or permission denied
+
+These are infrastructure errors, not task failures. Keep whatever was already written. Preview
+what cleanup would remove with `casimir cleanup RUN` before adding `--apply`. Checkpoint data
+can be shared between runs, so per-run cleanup keeps it.
+
+## Windows
+
+Git and the agent executables need to be on your `PATH`. Codex has a native Windows sandbox;
+Claude Code currently doesn't. Neither permission modes nor worktrees isolate the agent from the
+rest of your system.

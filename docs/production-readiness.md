@@ -1,95 +1,131 @@
-# Casimir 1.0 release ledger
+# 1.0 release ledger
 
-Status: implementation and acceptance in progress. **Not a 1.0 release certification.**
+**Status:** in progress. This is not a 1.0 certification.
 
-The contract is a local developer/research CLI for trusted repositories, with Claude Code
-and Codex on macOS, Linux, and native Windows. Copilot and Gemini are experimental.
-Results are validated diagnostics on a recorded corpus, never causal proof.
+This page tracks what has to be true before Casimir is tagged 1.0, and where each item stands.
 
-## Engineering verification
+## What 1.0 promises
 
-- Shared subprocess lifetime and bounded capture: Unix process groups; Windows Job Objects.
-- Configurable 900-second harness turns and 300-second judge/simulator calls.
-- Atomic metadata, exclusive run locks, raw streaming logs, explicit recovery journal.
-- `resume` requires explicit retry for a potentially executed turn; new attempts restore checkpoints.
-- Default permission preservation; bypass requires `--allow-unrestricted`, including passthrough.
-- Authenticated Claude Code and Codex CLIs are the default model transports for harnesses,
-  simulator and judge. The explicit legacy Anthropic API backend executes in-process; no
-  credential-bearing curl arguments.
-- `doctor --json` performs version/login-status probes, without model calls.
-- Content-addressed repository/index/conversation checkpoints, retained Git bundles and staged objects; verified fresh-worktree restore even after source deletion.
-- Frozen executable checks and separate execution, check, judge, and overall outcomes; rubric/model matching for attribution and retained judge-failure/contradiction findings.
-- Frozen-corpus prediction runner and offline scoring against independent human review; revision 2 includes executable check source, captured results and explicit final snapshots.
-- Claude helper calls disable ambient customizations and use temporary working directories.
-- Redacted sharing exports, ownership-based cleanup previews, and optional reference-aware checkpoint reclamation.
-- Compiled protocol fixtures; deterministic CI configured for all three operating systems and Rust 1.85.
+Casimir 1.0 is a local command-line tool for developers and researchers working in repositories
+they trust. Claude Code and Codex are supported on macOS, Linux and native Windows. Copilot and
+Gemini are experimental. Results are diagnostics validated against a recorded corpus; they are
+never proof of cause.
 
-These items must be checked against actual test artifacts at the release commit. A configured
-workflow or a fixture success is not evidence that an authenticated provider workflow passes.
+## Engineering work
 
-## Mandatory acceptance evidence
+Implemented:
 
-| Gate | Required evidence | Current disposition |
+- Subprocess lifetime and bounded output capture, using process groups on Unix and Job Objects
+  on Windows.
+- Configurable timeouts: 900 seconds per agent turn and 300 seconds per judge or simulator
+  call by default.
+- Atomic metadata writes, exclusive run locks, raw streaming logs and an explicit recovery
+  journal.
+- `resume` needs an explicit retry for a turn that may already have run, and each new attempt
+  restores from a checkpoint.
+- Agent permission settings are kept by default. Bypassing them needs `--allow-unrestricted`,
+  including for flags passed after `--`.
+- Signed-in Claude Code and Codex CLIs are the default way to reach models, for the agents
+  themselves and for the simulator and judge. The optional Anthropic API backend runs
+  in-process and never puts credentials on a `curl` command line.
+- `doctor --json` checks versions and login status without calling a model.
+- Content-addressed checkpoints of the repository, index and conversation, with Git bundles and
+  staged objects kept, so a fresh worktree can be restored and verified even after the source is
+  deleted.
+- Frozen executable checks, with execution, checks, judge and overall outcome reported
+  separately. Attribution requires matching rubrics and models, and keeps judge failures and
+  contradictions.
+- A runner for predictions on the frozen evaluation corpus, and offline scoring against
+  independent human review. Revision 2 of the corpus includes executable check source, captured
+  results and explicit final snapshots.
+- Claude-based helper calls turn off ambient customizations and run in temporary directories.
+- Redacted sharing exports, cleanup previews based on ownership, and optional checkpoint
+  reclamation that respects references from other runs.
+- Compiled protocol fixtures, and deterministic CI on all three operating systems and on
+  Rust 1.85.
+
+Each of these has to be confirmed against real test artifacts at the release commit. A
+configured workflow, or a passing fixture, doesn't show that the real authenticated provider
+workflow works.
+
+## Acceptance gates
+
+| Gate | What's needed | Where it stands |
 |---|---|---|
-| Reliability | Full deterministic suite on Linux/macOS/Windows; no orphan processes, lost records, duplicate completed turns, or source checkout edits | Deterministic OS/toolchain runs are recorded in GitHub Actions; the release evidence bundle must include a passing run for its exact commit |
-| Live Linux | 10 maintained multi-file tasks × 2 harnesses × 2 replicates; both cross-harness replay directions | 40 real attempts, all executable checks, both cross-harness directions, and both native checkpoint/recovery workflows passed on Linux; repeat from the clean release commit for certification |
-| Live macOS/Windows | Authenticated replay, checkpoint fork, interrupted resume | Pending native authenticated environments |
-| Evaluation | Frozen 40-pair corpus, two independent reviewers, adjudication; ≥90% decisive agreement; abstentions and false positives reported | Human review and calibration pending |
-| Simulator/attribution | Reviewed simulator cases and seeded recoverable/unrecoverable checkpoint cases | Acceptance review pending |
-| Pilot users | Three independent users complete installation, doctor, experiment, interpretation, recovery, cleanup on their own repositories | Pilot users pending; see acceptance/pilots/README.md |
-| Distribution | Four native archives, checksums, provenance, clean installation verification | Native archive workflow and protected evidence staging implemented; release candidate build pending |
+| Reliability | Full deterministic suite on Linux, macOS and Windows, with no orphaned processes, lost records, duplicated turns or edits to the source checkout | Runs are recorded in GitHub Actions. The evidence bundle needs a passing run for the exact release commit |
+| Live Linux | 10 maintained multi-file tasks × 2 agents × 2 replicates, plus cross-agent replay in both directions | 40 real attempts passed their checks, in both directions, along with both native checkpoint and recovery workflows. Needs repeating from the clean release commit |
+| Live macOS and Windows | Authenticated replay, checkpoint fork and interrupted resume | Waiting for native authenticated machines |
+| Evaluation | Frozen 40-pair corpus, two independent reviewers and adjudication; at least 90% agreement on decisive cases; abstentions and false positives reported | Waiting for human review and calibration |
+| Simulator and attribution | Reviewed simulator cases, and seeded recoverable and unrecoverable checkpoint cases | Waiting for review |
+| Pilot users | Three independent users install, run doctor, run an experiment, interpret it, recover and clean up on their own repositories | Waiting for pilot users; see [acceptance/pilots](../acceptance/pilots/README.md) |
+| Distribution | Four native archives, checksums, provenance and a clean install check | Archive workflow and protected evidence staging are done; release candidate build pending |
 
-## Release evidence and provenance
+## Release evidence
 
-`scripts/release-gates.py` reads `schemaVersion: 1` redacted JSON artifacts from the
-evidence manifest. Every artifact must have its own path and SHA-256. A passing manifest
-field or a matching hash alone is insufficient: artifact kind, commit, platform, run ID,
-and required results are checked. The publishing workflow also runs
-`--verify-github`, which authenticates CI and acceptance run/job IDs with GitHub and
-compares each authenticated acceptance receipt with the exact artifact uploaded by
-that workflow. Local validation without `--verify-github` is a structural preflight,
-not a release authorization.
+`scripts/release-gates.py` reads the redacted JSON artifacts (`schemaVersion: 1`) listed in the
+evidence manifest. Each artifact needs its own path and SHA-256. A "passed" field or a matching
+hash isn't enough by itself: the script also checks the artifact's kind, commit, platform, run ID
+and required results.
 
-The authenticated acceptance workflow keeps raw reports and transcripts on its
-protected runner. After its 40 task attempts and both native workflow checks pass,
-it uploads a small `authenticated-PLATFORM` receipt. The receipt contains task IDs,
-harnesses, replicate numbers, orchestration outcomes, and native gate status, but no
-paths, prompts, transcripts, credentials, or raw model output. Download those three
-receipts into the protected release-evidence directory, give each a distinct manifest
-record with `status`, `artifact`, and `sha256`, and keep the originating run ID intact.
-The release gate refuses a locally rewritten receipt because it compares its bytes
-with the workflow upload.
+The publishing workflow also runs the gates with `--verify-github`. That authenticates the CI and
+acceptance run and job IDs against GitHub, and compares each acceptance receipt with the exact
+artifact that workflow uploaded. Running the script locally without `--verify-github` is only a
+structural preflight. It doesn't authorize a release.
 
-Reliability artifacts use `kind: reliability`, the release commit, platform, CI push
-run ID, and both Rust 1.85/stable successful test job IDs. A 1.0 bundle additionally
-needs `kind: evaluation` with the actual calibration report, two distinct human
-reviewer IDs, adjudication and corpus hash; `kind: simulator` and `kind: attribution`
-with reviewed case counts and no unresolved failures; and three distinct
-`kind: pilot` artifacts with six passed journey steps each. Human review and pilot
-attestations remain a protected maintainer trust boundary; software cannot verify
-that people actually performed them. Do not manufacture these records to clear a
-gate. The 1.0 candidate artifact must refer to a published `v1.0.0-rc.N` release;
-the gate downloads all four native archives, verifies their checksums and installation
-receipts, checks signed build provenance and each archive's embedded target, commit,
-workflow run ID and native executable format, and dereferences the Git tag to confirm
-the candidate commit.
+### Acceptance receipts
 
-The current candidate version in `Cargo.toml` is `1.0.0-rc.1`. Packaging requires
-the requested version to match it. A new commit requires fresh CI reliability
-evidence from that commit. Native authenticated runs, reviewed calibration, pilots,
-and a published release candidate are still required before a 1.0 tag.
+The authenticated acceptance workflow keeps the raw reports and transcripts on its protected
+runner. Once its 40 task attempts and both native workflow checks pass, it uploads a small
+`authenticated-PLATFORM` receipt. The receipt lists task IDs, agents, replicate numbers,
+orchestration outcomes and native gate status. It contains no paths, prompts, transcripts,
+credentials or raw model output.
 
-Do not mark real transcript formats checkpoint-compatible before recording the corresponding
-live acceptance evidence in `compatibility/harnesses.json`. Fixture-only entries are not provider
-certifications. Never tag 1.0 before every gate has evidence tied to the release commit.
+Download the three receipts into the protected release-evidence directory. Give each its own
+manifest record with `status`, `artifact` and `sha256`, and leave the originating run ID as it
+is. The gate compares the receipt's bytes with the workflow's upload, so a locally edited receipt
+is rejected.
 
-Authenticated Codex and Claude Code subscription access is available for Linux validation.
-Remaining external prerequisites include native macOS and Windows acceptance machines,
-independent reviewers/adjudicator, and three pilot users.
+### Artifact kinds
 
-Reliability coverage includes authenticated HTTP failure responses and rate limits, bounded
-response/stream sizes, malformed and truncated JSON, concurrent locks and metadata readers,
-checkpoint corruption, interrupted turn retry without repeating completed turns, process
-descendant cleanup, and Unix signal cancellation and file-size-limit write failure injection.
-The write-failure injection exercises storage errors; it does not certify every physical
-full-disk behavior on every filesystem. Native authenticated and human acceptance remain open.
+- **`reliability`:** the release commit, platform, CI push run ID, and the successful test job
+  IDs for both Rust 1.85 and stable.
+- **`evaluation`:** the actual calibration report, two distinct human reviewer IDs, the
+  adjudication and the corpus hash.
+- **`simulator`** and **`attribution`:** reviewed case counts and no unresolved failures.
+- **`pilot`:** three separate artifacts, each with all six journey steps passed.
+
+Human review and pilot attestations are a trust boundary held by the maintainer. Software can't
+check that people actually did them, so never manufacture these records to clear a gate.
+
+The 1.0 candidate artifact has to point to a published `v1.0.0-rc.N` release. The gate
+downloads all four native archives and checks their checksums and install receipts, the signed
+build provenance, and each archive's embedded target, commit, workflow run ID and executable
+format. It also resolves the Git tag to confirm the candidate commit.
+
+## Current state
+
+The version in `Cargo.toml` is `1.0.0-rc.1`, and packaging requires the requested version to
+match it. Every new commit needs fresh CI reliability evidence from that commit. Before a 1.0
+tag we still need native authenticated runs, reviewed calibration, pilots and a published
+release candidate.
+
+Don't mark a real transcript format as checkpoint-compatible in
+`compatibility/harnesses.json` until the matching live acceptance evidence is recorded there.
+Fixture-only entries aren't provider certifications. Never tag 1.0 until every gate has
+evidence tied to the release commit.
+
+Authenticated Codex and Claude Code subscriptions are available for Linux testing. Still
+missing: native macOS and Windows acceptance machines, independent reviewers and an
+adjudicator, and three pilot users.
+
+## Reliability coverage
+
+The reliability tests cover authenticated HTTP failures and rate limits, limits on response and
+stream size, malformed and truncated JSON, concurrent locks and metadata readers, checkpoint
+corruption, retrying an interrupted turn without repeating completed ones, cleaning up child
+processes, and, on Unix, signal cancellation and write failures injected with a file-size
+limit.
+
+The injected write failures exercise storage error handling. They don't prove how every
+filesystem behaves when the disk is actually full. Native authenticated acceptance and human
+acceptance are still open.
