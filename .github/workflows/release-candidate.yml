@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
   actions: read
+  attestations: read
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -44,9 +45,15 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           EVIDENCE: .context/release-evidence/release-evidence.json
+          GH_TOKEN: ${{ github.token }}
         run: |
+          python - <<'PY'
+          import os, pathlib, tomllib
+          actual = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
+          assert actual == os.environ['VERSION'], 'requested version differs from Cargo.toml'
+          PY
           if [[ "$VERSION" == *-rc.* ]]; then STAGE=rc; else STAGE=1.0; fi
-          python scripts/release-gates.py --evidence "$EVIDENCE" --commit "$GITHUB_SHA" --stage "$STAGE"
+          python scripts/release-gates.py --evidence "$EVIDENCE" --commit "$GITHUB_SHA" --stage "$STAGE" --verify-github
   archives:
     needs: gates
     strategy:
