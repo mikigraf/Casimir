@@ -8,13 +8,18 @@ import platform
 import sys
 
 
+def normalized_platform(value):
+    return 'macos' if value == 'darwin' else value
+
+
 def summarize(acceptance, native, commit, run_id, expected_platform):
     source = json.loads(pathlib.Path(acceptance).read_text(encoding='utf-8'))
     recovery = json.loads(pathlib.Path(native).read_text(encoding='utf-8'))
+    expected_platform = normalized_platform(expected_platform)
     if not run_id.isdigit() or not commit or expected_platform not in ('linux', 'macos', 'windows'):
         raise ValueError('GitHub run ID, commit and supported platform required')
     for label, data in [('task acceptance', source), ('native workflows', recovery)]:
-        if data.get('schemaVersion') != 1 or data.get('commit') != commit or data.get('platform') != expected_platform or data.get('status') != 'passed' or data.get('fixtureSubstitution') is not False:
+        if data.get('schemaVersion') != 1 or data.get('commit') != commit or normalized_platform(data.get('platform')) != expected_platform or data.get('status') != 'passed' or data.get('fixtureSubstitution') is not False:
             raise ValueError(label + ' failed or does not match this runner and commit')
     if set(source.get('harnesses') or []) != {'claude-code', 'codex'} or set(source.get('replayDirections') or []) != {'claude-code->codex', 'codex->claude-code'}:
         raise ValueError('both harnesses and cross-replay directions required')

@@ -38,6 +38,11 @@ class AcceptanceSummary(unittest.TestCase):
             n.write_text(json.dumps(native))
             with self.assertRaisesRegex(ValueError, 'native recovery'):
                 summary.summarize(a, n, 'commit', '123', 'linux')
+            native['records'][0]['checkpoint'] = 'passed'
+            acceptance['platform'] = 'darwin'
+            native['platform'] = 'darwin'
+            a.write_text(json.dumps(acceptance)); n.write_text(json.dumps(native))
+            self.assertEqual(summary.summarize(a, n, 'commit', '123', 'macos')['platform'], 'macos')
 
 
 if __name__ == '__main__':
