@@ -1,5 +1,5 @@
 """Gate logic tests use synthetic records; these are not release acceptance evidence."""
-import hashlib, importlib.util, json, pathlib, tempfile, unittest
+import hashlib, importlib.util, io, json, pathlib, tarfile, tempfile, unittest
 spec=importlib.util.spec_from_file_location('release_gates',pathlib.Path(__file__).parents[1]/'scripts/release-gates.py')
 gates=importlib.util.module_from_spec(spec);spec.loader.exec_module(gates)
 class ReleaseGates(unittest.TestCase):
@@ -8,6 +8,21 @@ class ReleaseGates(unittest.TestCase):
         self.assertTrue(gates.workflow_path_matches(run,'.github/workflows/ci.yml'))
         self.assertFalse(gates.workflow_path_matches({**run,'path':'.github/workflows/ci.yml@other'},'.github/workflows/ci.yml'))
         self.assertTrue(gates.workflow_path_matches({**run,'path':'.github/workflows/ci.yml'},'.github/workflows/ci.yml'))
+    def test_archive_identity_checks_internal_target_and_commit(self):
+        version='1.0.0-rc.1';target='x86_64-unknown-linux-gnu';commit='a'*40
+        root=f'casimir-{version}-{target}/'
+        header=b'\x7fELF\x02\x01'+b'\0'*12+b'\x3e\x00'+b'\0'*44
+        info={'schemaVersion':1,'version':version,'target':target,'commit':commit,'workflowRun':'123'}
+        with tempfile.TemporaryDirectory() as temporary:
+            path=pathlib.Path(temporary)/'archive.tar.gz'
+            with tarfile.open(path,'w:gz') as archive:
+                for name,contents in [('build-info.json',json.dumps(info).encode()),('casimir',header)]:
+                    item=tarfile.TarInfo(root+name);item.size=len(contents)
+                    archive.addfile(item,io.BytesIO(contents))
+            self.assertTrue(gates.archive_identity(path,version,target,commit,'123'))
+            self.assertFalse(gates.archive_identity(path,version,target,'b'*40,'123'))
+            self.assertFalse(gates.archive_identity(path,version,target,commit,'456'))
+            self.assertFalse(gates.native_header_matches(header,'x86_64-pc-windows-msvc'))
     def reliability(self, root, commit='fixture-commit'):
         records={}
         for platform, runner in [('linux','ubuntu-latest'),('macos','macos-latest'),('windows','windows-latest')]:

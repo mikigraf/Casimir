@@ -7,8 +7,10 @@ import json
 import os
 import pathlib
 import re
+import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.error
 import urllib.request
@@ -136,6 +138,7 @@ def validate(evidence, commit, stage, base):
         require(re.fullmatch(r'v1\.0\.0-rc\.[1-9][0-9]*', candidate.get('tag', '')) is not None, 'release candidate: invalid tag')
         require(re.fullmatch(r'[0-9a-f]{40}', candidate.get('commit', '')) is not None, 'release candidate: invalid commit')
         require(set(candidate.get('targets') or []) == TARGETS and candidate.get('checksumsVerified') is True and candidate.get('provenanceVerified') is True, 'release candidate: four native archives, checksums and provenance required')
+        require(str(candidate.get('runId', '')).isdigit(), 'release candidate: workflow run ID missing')
     return blockers
 
 
@@ -194,6 +197,52 @@ def resolve_tag_commit(repo, tag, token):
     raise ValueError('release tag nesting limit exceeded')
 
 
+def native_header_matches(header, target):
+    if target == 'x86_64-unknown-linux-gnu':
+        return len(header) >= 20 and header[:6] == b'\x7fELF\x02\x01' and struct.unpack_from('<H', header, 18)[0] == 62
+    if target == 'x86_64-pc-windows-msvc':
+        if len(header) < 64 or header[:2] != b'MZ':
+            return False
+        offset = struct.unpack_from('<I', header, 60)[0]
+        return offset + 6 <= len(header) and header[offset:offset + 4] == b'PE\0\0' and struct.unpack_from('<H', header, offset + 4)[0] == 0x8664
+    if target in ('aarch64-apple-darwin', 'x86_64-apple-darwin'):
+        if len(header) < 8 or header[:4] not in (b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf'):
+            return False
+        endian = '<' if header[:4] == b'\xcf\xfa\xed\xfe' else '>'
+        cpu = struct.unpack_from(endian + 'I', header, 4)[0]
+        return cpu == (0x0100000C if target.startswith('aarch64') else 0x01000007)
+    return False
+
+
+def archive_identity(path, version, target, commit, run_id):
+    """Inspect signed archive bytes without extracting them to the filesystem."""
+    root = 'casimir-' + version + '-' + target + '/'
+    binary = root + ('casimir.exe' if 'windows' in target else 'casimir')
+    info_name = root + 'build-info.json'
+    if path.suffix == '.zip':
+        with zipfile.ZipFile(path) as archive:
+            with archive.open(info_name) as source:
+                raw_info = source.read(4097)
+            with archive.open(binary) as source:
+                header = source.read(4096)
+    else:
+        with tarfile.open(path, 'r:gz') as archive:
+            info_member = archive.getmember(info_name)
+            binary_member = archive.getmember(binary)
+            if not info_member.isfile() or not binary_member.isfile():
+                return False
+            with archive.extractfile(info_member) as source:
+                raw_info = source.read(4097)
+            with archive.extractfile(binary_member) as source:
+                header = source.read(4096)
+    if len(raw_info) > 4096:
+        return False
+    info = json.loads(raw_info)
+    return (info.get('schemaVersion') == 1 and info.get('version') == version and
+            info.get('target') == target and info.get('commit') == commit and
+            str(info.get('workflowRun')) == str(run_id) and native_header_matches(header, target))
+
+
 def verify_github(evidence, commit, stage, base, repo, token):
     """Authenticate CI/acceptance run and job IDs against the GitHub API."""
     blockers = []
@@ -233,6 +282,11 @@ def verify_github(evidence, commit, stage, base, repo, token):
     if stage == '1.0':
         try:
             candidate = json.loads((base / evidence['releaseCandidate']['artifact']).read_text())
+            release_run = github_get(repo, 'actions/runs/' + str(candidate['runId']), token)
+            if (release_run.get('head_sha') != candidate['commit'] or
+                    not workflow_path_matches(release_run, '.github/workflows/release-candidate.yml') or
+                    release_run.get('event') != 'workflow_dispatch' or release_run.get('conclusion') != 'success'):
+                blockers.append('release candidate: native archive workflow provenance mismatch')
             release = github_get(repo, 'releases/tags/' + candidate['tag'], token)
             assets = {asset['name'] for asset in release.get('assets') or []}
             for target in TARGETS:
@@ -275,13 +329,15 @@ def verify_candidate_assets(candidate, repo):
                 installation = json.loads((root / (stem + '.installation.json')).read_text())
                 if installation.get('schemaVersion') != 1 or installation.get('status') != 'passed' or installation.get('archive') != archive or installation.get('sha256') != digest or installation.get('version') != 'casimir ' + version or installation.get('paidCalls') is not False:
                     blockers.append('release candidate: installation receipt mismatch for ' + target)
+                if not archive_identity(payload, version, target, candidate['commit'], candidate['runId']):
+                    blockers.append('release candidate: signed archive target/commit mismatch for ' + target)
                 verified = subprocess.run(['gh', 'attestation', 'verify', str(payload), '--repo', repo,
                                            '--signer-workflow', repo + '/.github/workflows/release-candidate.yml',
                                            '--source-digest', candidate['commit']],
                                           capture_output=True, text=True, check=False)
                 if verified.returncode != 0:
                     blockers.append('release candidate: signed provenance unavailable for ' + target)
-            except (OSError, ValueError, TypeError, KeyError):
+            except (OSError, ValueError, TypeError, KeyError, tarfile.TarError, zipfile.BadZipFile):
                 blockers.append('release candidate: assets invalid for ' + target)
     return blockers
 
