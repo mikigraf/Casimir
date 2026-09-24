@@ -1,87 +1,129 @@
-# End-to-end validation
+# Validation
 
-Validation date: 2026-09-23. These are software integration checks, not evidence of model quality
-or statistical power for research conclusions.
+Last updated 2026-09-23.
 
-## Automated checks
+This page records what has been tested and how. These are integration checks: they show that
+Casimir drives the agents correctly and reports what happened. They say nothing about model
+quality, and the sample sizes are far too small to support research conclusions.
 
-- 54 CLI integration tests plus 25 reliability tests and 5 library/HTTP tests cover four log parsers, subprocess protocols, resume, worktree isolation,
-  recorded commits and untracked edits, saved-reference reuse, forks, simulator decisions,
-  AB/BA judging with recorded tool evidence, controls, attribution, record envelopes, and blinded-pair export/scoring.
-- Empty, truncated, and failed harness streams cannot count as completed turns. Gemini's
-  error result is retained even without a separate error event. Failed simulation and attribution
-  save diagnostic reports and return a nonzero CLI status.
-- Stable Rust tests, strict Clippy (`-D warnings`), and the release build pass.
-- Rust 1.85 tests pass. CI repeats stable/MSRV tests and release/Clippy checks.
+## Automated tests
 
-## Live Claude Code checks
+The suite has 54 CLI integration tests, 25 reliability tests and 5 library/HTTP tests. Between
+them they cover:
 
-Claude Code 2.1.280, reporting model `claude-sonnet-5`, successfully ran these checks using its
-existing OAuth environment credential:
+- all four log parsers and the subprocess protocols
+- resume, worktree isolation, recorded commits and untracked edits
+- reusing a saved reference, and forks
+- simulator decisions, and AB/BA judging with recorded tool evidence
+- control groups, attribution, record envelopes, and exporting and scoring blinded pairs
 
-| Workflow | Checked result |
+Some specific behaviours they pin down:
+
+- Empty, truncated or failed agent output never counts as a completed turn. A Gemini error
+  result is kept even when there's no separate error event.
+- Failed simulation and failed attribution still save a diagnostic report, and exit with a
+  nonzero status.
+
+The tests, strict Clippy (`-D warnings`) and the release build all pass on stable Rust. The
+tests also pass on Rust 1.85. CI repeats the stable and 1.85 tests and the release and Clippy
+checks.
+
+## Live testing with Claude Code
+
+These ran on Claude Code 2.1.280 (reporting model `claude-sonnet-5`), using an existing OAuth
+login from the environment.
+
+| Workflow | Result |
 |---|---|
-| Two-turn replay | Created `hello\n`, resumed the same native session, appended `world\n` |
-| Native transcript fork | Preserved turn 1, changed turn 2, produced `hello\nforked\n`; source remained unchanged |
-| Committed workspace fork | Restored the commit made in turn 1; turn 2 verified the existing file before appending |
+| Two-turn replay | Created `hello\n`, resumed the same session, appended `world\n` |
+| Native transcript fork | Kept turn 1, changed turn 2, produced `hello\nforked\n`; source left unchanged |
+| Committed workspace fork | Restored the commit made in turn 1; turn 2 checked the file existed before appending |
 | Reference snapshot | Reused the saved full patch, including the uncommitted second line |
-| Matched controls | Separate source worktrees; matching reported model; expected final files and complete AB/BA judges; a control that omitted requested verification correctly failed its rubric |
-| Simulator and intent coverage | Follow-up processed by the real simulator; correct final file, passing judge, coverage report saved |
-| Attribution | Resampled turn 2 successfully; withheld a point of commitment because the original already succeeded |
+| Matched controls | Separate worktrees; matching model; expected final files; complete AB/BA judging. One control skipped the verification the user asked for and was correctly failed against its rubric |
+| Simulator and intent coverage | The real simulator handled the follow-up; correct final file, passing judge, coverage report saved |
+| Attribution | Resampled turn 2; correctly declined to name a point of commitment because the original had already succeeded |
 
-The original authentication failure was caused by Casimir removing `CLAUDE_CODE_OAUTH_TOKEN`
-along with nesting markers. It now removes only the nesting markers and preserves credentials
-and provider configuration. The [Claude environment-variable reference](https://code.claude.com/docs/en/env-vars)
-documents these separate settings.
+### Bugs these runs found
 
-The committed-task smoke check also exposed an ungrounded draft-rubric requirement to narrate
-verification. Rubric drafting now distinguishes performing verification from reporting it, and judges
-receive bounded tool inputs/results, including early commit and final verification evidence. Draft
-rubrics remain advisory to the actual user requests and should still be reviewed. Rejudging the
-exact previously rejected artifact with tool evidence scored it 9/10 with no invalidity finding.
-Another control actually omitted the requested post-edit verification and was correctly flagged;
-the smoke test checks that such outcomes are reported consistently, rather than requiring every
-model attempt to succeed.
+**Lost OAuth token.** Authentication first failed because Casimir was removing
+`CLAUDE_CODE_OAUTH_TOKEN` along with the variables Claude Code uses to detect nesting. It now
+removes only the nesting markers and keeps credentials and provider settings. The
+[Claude Code environment variable reference](https://code.claude.com/docs/en/env-vars) lists
+these separately.
 
-`scripts/smoke-claude.py` reproduces the earlier live workflow and checks actual artifact
-contents. It uses one replicate per group to keep the integration check small; that is
-insufficient to estimate model differences. Current checkpoint forks require a verified Casimir
-workspace/conversation snapshot and a version/platform entry in the compatibility manifest.
+**Over-strict draft rubric.** The committed-task check turned up a draft rubric that required
+the agent to *describe* its verification, which the user never asked for. Rubric drafting now
+distinguishes doing verification from reporting it, and the judge now sees a bounded sample of
+tool inputs and outputs, including evidence of early commits and final verification. Draft
+rubrics are still subordinate to what the user actually asked for, and should still be reviewed.
+When the previously rejected run was judged again with the tool evidence, it scored 9/10 with no
+invalidity findings. A different control really had skipped the requested verification, and was
+correctly flagged.
 
-The subscription transport update was checked with authenticated Claude Code 2.1.280 on Linux:
-replay, checkpoint fork and explicit interrupted-turn recovery passed executable checks, and the
-source checkout remained unchanged. A separate real judge call with an invalid
-`ANTHROPIC_API_KEY` in the parent shell still selected `claude-cli`, completed both AB/BA calls,
-and recorded provider usage. That one candidate pair is an integration check, not a calibrated
-evaluation result. The full Linux subscription run completed 40 attempts across ten maintained
-tasks, both providers and two replicates, with 40 completed executions, 40 passing executable
-checks, unchanged source repositories, and both cross-harness replay directions passing. Its
-hash-only [evidence receipt](../acceptance/live/evidence/linux-subscription-2026-09-23.json)
-records the repository HEAD and explicitly does not certify a release commit: the local binary
-was built from the working tree before that HEAD was committed. Repeat at a clean release commit.
+The smoke test checks that outcomes like these are reported consistently. It doesn't require
+every model attempt to succeed.
 
-An authenticated ChatGPT subscription with official Codex CLI 0.156.1 also passed Linux replay,
-checkpoint fork, explicit interrupted-turn recovery and completed-resume no-op. The source checkout
-remained unchanged and executable checks passed in all completed branches. The machine had unusual
-ambient Linux capabilities, so the validation process dropped those capabilities before Codex
-started; Codex's workspace sandbox stayed enabled. Only this version/platform has a native
-checkpoint compatibility entry. The private artifacts are summarized by hashes in
+### Reproducing it
+
+`scripts/smoke-claude.py` reruns this workflow and checks the actual contents of the files it
+produces. It uses one replicate per group to keep it small, which isn't enough to measure
+differences between models. Forks now need a verified Casimir checkpoint and a matching
+version/platform entry in the compatibility manifest.
+
+### Subscription runs
+
+After switching to subscription logins, the following was checked with Claude Code 2.1.280 on
+Linux:
+
+- Replay, checkpoint fork and explicit recovery of an interrupted turn all passed their
+  executable checks, and the source checkout was left unchanged.
+- With an invalid `ANTHROPIC_API_KEY` set in the parent shell, a real judge call still picked
+  `claude-cli`, completed both AB and BA calls, and recorded usage. That's one candidate pair,
+  so it's an integration check, not a calibrated evaluation.
+
+The full Linux subscription run did 40 attempts: ten maintained tasks, both providers, two
+replicates each. All 40 executions completed and all 40 passed their executable checks. The
+source repositories were unchanged, and cross-agent replay passed in both directions. The
+[evidence receipt](../acceptance/live/evidence/linux-subscription-2026-09-23.json) contains
+only hashes. It records the repository `HEAD`, but explicitly doesn't certify a release commit,
+because the binary was built from the working tree before that `HEAD` was committed. The run
+needs repeating from a clean release commit.
+
+## Live testing with Codex
+
+A ChatGPT subscription with the official Codex CLI 0.156.1 passed, on Linux:
+
+- replay
+- checkpoint fork
+- explicit recovery of an interrupted turn
+- resuming an already completed run (a no-op, as expected)
+
+The source checkout was unchanged and executable checks passed in every completed branch.
+
+The test machine had unusual ambient Linux capabilities, so the test process dropped them
+before starting Codex. Codex's own workspace sandbox stayed on. This version and platform is the
+only Codex combination with a checkpoint compatibility entry. The private artifacts are
+summarized by hash in
 [`compatibility/evidence/codex-0.156.1-linux.json`](../compatibility/evidence/codex-0.156.1-linux.json).
-Codex subscription calls also completed both orders of a judge transport check and a two-turn
-simulator check; the simulator kept the follow-up verbatim. These are real provider integration
-checks, not human calibration of judge or simulator quality.
 
-## Provider and evaluation limits
+Codex subscription calls also completed both orders of a judge check and a two-turn simulator
+check, where the simulator kept the follow-up verbatim. Again, these check the plumbing; they
+don't calibrate the judge or simulator against humans.
 
-- Codex 0.155.1 remains unvalidated for native checkpoint forks; 0.156.1 has authenticated Linux
-  evidence only. macOS and Windows compatibility still needs platform-specific acceptance.
-- Copilot and Gemini executables are absent here. Their parsers and two-turn subprocess/resume
-  workflows are fixture-tested, including completion and failure handling. Protocol checks use
-  the [Copilot CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
-  and [Gemini headless reference](https://geminicli.com/docs/cli/headless/); live provider compatibility remains unverified.
-- The live simulator kept the follow-up verbatim, as expected for this small task. Adaptation,
-  skipped-turn alignment, malformed replies, retries, and blinded human-pair scoring are covered
-  by fixtures, not human calibration. The direct Anthropic API backend was not exercised live.
-- User-defined executable checks supply task-specific outcome evidence. Checkpoints restore
-  the recorded repository workspace and conversation, not external services, files or process
-  memory. See [checkpoint coverage](checkpoints.md) and the [research audit](research.md).
+## Known gaps
+
+- **Codex versions and platforms.** Codex 0.155.1 hasn't been validated for checkpoint forks.
+  0.156.1 has Linux evidence only. macOS and Windows still need their own testing.
+- **Copilot and Gemini.** Neither CLI was installed on the test machine. Their parsers and
+  two-turn run/resume workflows, including completion and failure handling, are covered by
+  fixtures based on the
+  [Copilot CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+  and the [Gemini headless reference](https://geminicli.com/docs/cli/headless/). They haven't
+  been tested against the real services.
+- **Simulator.** In the live test the simulator kept the follow-up verbatim, which was the right
+  call for such a small task. Adapting messages, skipped-turn alignment, malformed replies,
+  retries and blinded pair scoring are covered by fixtures, not by human calibration.
+- **Direct API backend.** The `--llm api` backend hasn't been exercised live.
+- **Scope.** Your own executable checks give task-specific evidence. Checkpoints restore the
+  repository and the conversation, but not external services, other files or process memory.
+  See [checkpoints](checkpoints.md) and the [research notes](research.md).

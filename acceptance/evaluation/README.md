@@ -1,17 +1,24 @@
-# Frozen calibration corpus
+# Evaluation corpus
 
-`corpus.json` is a separate synthetic, **unreviewed** 40-pair candidate corpus. Its byte hash in
-`corpus.sha256` freezes the inputs for review. It is not a passed evaluation gate and is not a
-claim that these examples represent all coding work. Do not tune prompts against adjudicated
-labels and then reuse this same corpus as independent validation.
+This directory holds the corpus used to check Casimir's judge against human reviewers.
 
-Two humans independently review all pairs, without seeing each other's labels or model
-predictions. Give reviewers only the case ID, task, traces and check evidence; hide
-`samplingStratum`, which describes corpus construction rather than ground truth. Reviewers
-must determine outcomes from the actual evidence. An adjudicator resolves disagreements and
-records the final labels. Mark ambiguous or insufficient evidence inconclusive.
+`corpus.json` has 40 synthetic candidate pairs that **have not been reviewed yet**. Its hash in
+`corpus.sha256` freezes the inputs so reviewers all see the same thing. The corpus doesn't pass
+the evaluation gate on its own, and it isn't meant to represent all coding work. Don't tune
+prompts against the adjudicated labels and then reuse this corpus as independent validation.
 
-Each review/prediction file has this structure, with all 40 case IDs:
+## Human review
+
+Two people review all 40 pairs independently. They shouldn't see each other's labels or the
+model's predictions.
+
+- Give reviewers only the case ID, the task, the traces and the check evidence.
+- Hide `samplingStratum`. It describes how the corpus was built, not the right answer.
+- Reviewers decide outcomes from the evidence. If it's ambiguous or insufficient, the answer is
+  inconclusive.
+- An adjudicator settles disagreements and records the final labels.
+
+Each review file (and the prediction file) covers all 40 case IDs in this shape:
 
 ```json
 {
@@ -25,37 +32,59 @@ Each review/prediction file has this structure, with all 40 case IDs:
 }
 ```
 
-Predictions use the same label schema but need no human attestation. `winner` accepts A, B,
-tie or inconclusive; outcomes accept passed, failed or inconclusive. Do not populate human
-review files from generated expectations. Preserve each review and adjudication separately.
+`winner` is `A`, `B`, `tie` or `inconclusive`. Outcomes are `passed`, `failed` or
+`inconclusive`. Predictions use the same format but don't need a human attestation.
 
-Run `casimir calibrate --corpus corpus.json --predictions predictions.json --reviewer-a a.json
---reviewer-b b.json --adjudication adjudicated.json -o calibration.json`. At least 90% of
-adjudicated decisive cases must agree on the winner and both outcomes. Abstentions count as
-non-agreement on decisive cases. The report publishes abstentions, false positives, reviewer
-disagreements and required-check violations. A required-check failure labeled passed blocks
-the gate regardless of aggregate agreement. Human review is still an external prerequisite.
+Never fill in human review files from generated expectations, and keep each review and the
+adjudication in separate files.
 
-Simulator and attribution acceptance must additionally use the maintained cases in
-`review-cases.json`, with independently recorded human decisions. Their mere presence is
-not validation.
+## Generating predictions
 
-Generate predictions separately using the production AB/BA judge:
+Predictions come from the same AB/BA judge that Casimir uses in production:
 
 ```sh
 casimir predict-evaluation --corpus acceptance/evaluation/corpus.json -o /private/predictions --judge-model MODEL --llm claude-cli
 ```
 
-This makes 80 ordered judge calls (up to 160 with JSON-repair retries). It excludes construction
-strata and human labels from model inputs, freezes the corpus bytes, retains per-case evidence,
-and marks predictions `humanReviewed: false`. Model/transport failures remain inconclusive;
-required-check failures cannot become passes. Use `predictions/predictions.json` when scoring.
-These generated predictions cannot replace independent human review.
+This makes 80 judge calls (up to 160 if JSON repair retries kick in). Try
+`predict-evaluation --limit 1` first as a paid smoke test. The runner:
 
-Revision 2 replaces placeholder test comments with executable definitions and captured outputs.
-The prediction runner supplies the recorded final file snapshots and external check source to
-the judge, without claiming they are Git commits or model-authored trajectories. Intentionally
-missing snapshots remain absent. `scripts/refresh-evaluation-corpus.py --refresh` is a maintainer
-operation that invalidates old predictions/reviews by changing the frozen hash; never run it
-silently against a reviewed release corpus. Use `predict-evaluation --limit 1` for a paid smoke
-test before a full run. Partial predictions cannot pass the 40-case calibration gate.
+- keeps the construction strata and human labels out of the model's input;
+- freezes the corpus bytes and keeps the evidence for each case;
+- marks predictions `humanReviewed: false`;
+- reports model or transport failures as inconclusive, and never turns a failed required check
+  into a pass.
+
+Use `predictions/predictions.json` for scoring. Generated predictions can't stand in for human
+review, and a partial set of predictions can't pass the 40-case gate.
+
+## Scoring
+
+```sh
+casimir calibrate --corpus corpus.json --predictions predictions.json \
+    --reviewer-a a.json --reviewer-b b.json --adjudication adjudicated.json -o calibration.json
+```
+
+To pass, at least 90% of the adjudicated decisive cases must match on the winner and both
+outcomes. An abstention on a decisive case counts as a mismatch. The report lists abstentions,
+false positives, reviewer disagreements and required-check violations. If any case with a failed
+required check is labelled as passed, the gate fails no matter how good the overall agreement
+is.
+
+Human review still has to happen outside this repository.
+
+## Simulator and attribution cases
+
+Simulator and attribution acceptance also use the cases in `review-cases.json`, with human
+decisions recorded independently. Having the file here doesn't validate anything by itself.
+
+## Corpus revisions
+
+Revision 2 replaced placeholder test comments with executable check definitions and their
+captured output. The prediction runner gives the judge the recorded final file snapshots and the
+external check source, without pretending they're Git commits or agent trajectories. Snapshots
+that are intentionally missing stay missing.
+
+`scripts/refresh-evaluation-corpus.py --refresh` is a maintainer tool. It changes the frozen
+hash, which invalidates every existing prediction and review, so never run it quietly against a
+corpus that has already been reviewed for a release.

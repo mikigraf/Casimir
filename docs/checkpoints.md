@@ -1,37 +1,80 @@
-# Checkpoint guarantee and limitations
+# Checkpoints
 
-Before user turns, Casimir records the repository HEAD and its Git bundle, raw Git index and
-staged blob objects, workspace contents,
-pending prompt, configuration fingerprint, and available native conversation boundary.
-Content-addressed objects live in `$CASIMIR_HOME/checkpoints`, outside the agent worktree.
-The default content-addressed storage limit is 2 GiB; configure `--checkpoint-limit BYTES`.
-Temporary capture files and managed bare Git restore caches need additional free space.
+Forking a session means going back to how things were at a given turn. To do that reliably,
+Casimir saves a checkpoint before each user turn of a run. This page covers what a checkpoint
+contains, what it doesn't, and how to manage the storage.
 
-Snapshots include tracked, untracked, ignored and binary files, directories, executable modes,
-and symlink targets. Symlinks are recorded without following external targets. Git internals
-and Casimir storage are excluded. Split Git indexes and unsupported special files are refused
-rather than incompletely captured. Paths must be Unicode. Empty directories are preserved.
-Native Windows symlink restoration requires the relevant OS capability.
+## What gets saved
 
-Restoration checks manifest and object hashes before creating a fresh worktree. It never resets
-or cleans the source checkout. The stored Git bundle and staged objects allow restoration
-even after the original checkout is deleted. Missing/corrupt objects fail before model execution. Native
-conversation completeness and the installed harness version are checked separately. An
-unvalidated transcript version or missing completed turns prevents continuation.
+Before each user turn, Casimir records:
 
-The guarantee covers the recorded repository workspace, index, and conversation. It does not
-capture external files, external services, network state, installed dependencies outside the
-repository, running processes, or process memory. Submodule Git metadata and repositories outside the
-recorded root are also outside this guarantee. Retrying cannot undo a previously sent email,
-network request, or external file write. A worktree is not OS isolation.
+- the repository `HEAD`, as a Git bundle
+- the raw Git index and the blobs of any staged files
+- the contents of the workspace
+- the pending prompt
+- a fingerprint of the configuration
+- the agent's native conversation up to that point, where available
 
-A capture can fail on storage limits, permissions, concurrent file changes, or disk exhaustion.
-Keep raw evidence and the recovery journal until the interruption is understood. Never edit a
-manifest or fabricate a historical checkpoint to make a fork proceed.
+The workspace snapshot covers tracked, untracked, ignored and binary files, directories,
+executable bits and symlinks. Symlinks are saved as links and their targets aren't followed.
+Empty directories are kept. Git internals and Casimir's own storage are left out.
 
-Preview checkpoint reclamation with `casimir cleanup RUN --checkpoints`; add `--apply` to
-remove the selected run, its owned worktree, and checkpoint objects unreferenced by other
-registered runs/restores. Ordinary cleanup retains checkpoints; `cleanup RUN --checkpoints` can reclaim them later
-even after the run directory has been removed. Manually copying a session
-JSON file does not register a checkpoint reference and is not a complete backup. Managed
-bare Git restore caches are retained; the checkpoint purge does not remove them.
+Casimir refuses to take a checkpoint rather than take an incomplete one. That happens with
+split Git indexes, unsupported special files and non-Unicode paths. On Windows, restoring
+symlinks needs the relevant OS permission.
+
+## Storage
+
+Checkpoints are content-addressed and stored in `$CASIMIR_HOME/checkpoints`, outside the agent's
+worktree. The default limit is 2 GiB, which you can change with `--checkpoint-limit BYTES`.
+Temporary capture files and the Git caches used for restores need extra free space on top of
+that.
+
+## Restoring
+
+Before creating a worktree from a checkpoint, Casimir checks the manifest and every object hash.
+Missing or corrupt objects stop the fork before any model is called. The source checkout is
+never reset or cleaned. Because the Git bundle and staged objects are stored with the
+checkpoint, you can still restore after the original checkout has been deleted.
+
+The conversation is checked separately: the transcript must be complete, and the installed
+agent version must be one that has been validated in the
+[compatibility manifest](../compatibility/harnesses.json). If either check fails, the fork
+doesn't start.
+
+## What a checkpoint doesn't cover
+
+A checkpoint covers the repository workspace, the Git index and the conversation. It doesn't
+cover:
+
+- files outside the repository
+- external services and network state
+- dependencies installed outside the repository
+- running processes and their memory
+- submodule Git metadata, or other repositories outside the recorded root
+
+Retrying a turn can't take back an email that was sent, a network request that was made or a
+file that was written outside the repository. A worktree is also not a sandbox.
+
+## When capture fails
+
+A checkpoint can fail because of the storage limit, permissions, files changing mid-capture or
+a full disk. If that happens, keep the raw logs and the recovery journal until you understand
+what went wrong. Don't edit a manifest or hand-craft a checkpoint to force a fork through.
+
+## Cleaning up
+
+```sh
+casimir cleanup RUN --checkpoints          # preview
+casimir cleanup RUN --checkpoints --apply  # delete
+```
+
+This removes the run, its worktree, and any checkpoint objects that no other run or restore
+still uses. A plain `cleanup` without `--checkpoints` leaves checkpoints alone, and you can
+reclaim them later even after the run directory is gone.
+
+A few things to know:
+
+- Copying a session JSON file by hand doesn't register a checkpoint reference, so it isn't a
+  full backup.
+- The Git caches used for restores are kept. Purging checkpoints doesn't remove them.
