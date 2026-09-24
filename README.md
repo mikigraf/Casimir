@@ -26,6 +26,18 @@ normalizes them into one event model, and lets you:
 The [research audit](docs/research.md) explains the experimental objective, primary sources, and
 where Casimir uses approximations rather than reproducing a paper’s method.
 
+## See it run
+
+[![Recorded Casimir CLI replay: saved Codex session rerun with Claude Code, followed by a passing executable check](docs/media/casimir-demo.gif)](docs/media/casimir-demo.mp4)
+
+[Watch the MP4](docs/media/casimir-demo.mp4) · [Download the terminal recording](docs/media/casimir-demo.cast)
+
+This is a real subscription-backed replay of a saved Codex pagination task through Claude Code.
+Casimir creates a fresh worktree, runs a frozen executable check, and reports execution completed,
+checks passed, and judge assessment unassessed. The video shortens the idle wait; its terminal
+output comes from the recorded CLI session. One successful run is an example, not release-gate
+evidence.
+
 ## Install
 
 ```
