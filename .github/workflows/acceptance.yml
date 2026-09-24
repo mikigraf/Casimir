@@ -34,11 +34,11 @@ jobs:
         if: runner.os == 'Windows'
         run: python scripts/native-workflows.py --casimir target/release/casimir.exe --output .context/native-workflows --claude-permission-mode acceptEdits --allow-subscription-usage
       - name: Build redacted acceptance receipt
-        run: python scripts/summarize-acceptance.py --acceptance .context/acceptance/acceptance.json --native .context/native-workflows/native-workflows.json --output .context/acceptance-summary.json
+        run: python scripts/summarize-acceptance.py --acceptance .context/acceptance/acceptance.json --native .context/native-workflows/native-workflows.json --output acceptance-summary.json
       - uses: actions/upload-artifact@v4
         with:
           name: authenticated-${{ matrix.platform }}
-          path: .context/acceptance-summary.json
+          path: acceptance-summary.json
           if-no-files-found: error
           retention-days: 90
       # Raw logs and snapshots remain on the protected runner.
