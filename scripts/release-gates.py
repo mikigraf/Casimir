@@ -167,6 +167,33 @@ def github_artifact(repo, artifact_id, token):
         return archive.read('acceptance-summary.json')
 
 
+def workflow_path_matches(run, expected):
+    reported = run.get('path')
+    if reported == expected:
+        return True
+    branch = run.get('head_branch')
+    allowed = {run.get('head_sha')}
+    if branch:
+        allowed.update((branch, 'refs/heads/' + branch, 'refs/tags/' + branch))
+    return isinstance(reported, str) and reported.startswith(expected + '@') and reported[len(expected) + 1:] in allowed
+
+
+def resolve_tag_commit(repo, tag, token):
+    """Follow lightweight or annotated Git tags to the commit they actually name."""
+    reference = github_get(repo, 'git/ref/tags/' + tag, token)
+    obj = reference.get('object') or {}
+    for _ in range(8):
+        kind, sha = obj.get('type'), obj.get('sha')
+        if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
+            raise ValueError('invalid Git tag object')
+        if kind == 'commit':
+            return sha
+        if kind != 'tag':
+            raise ValueError('release tag does not point to a commit')
+        obj = (github_get(repo, 'git/tags/' + sha, token).get('object') or {})
+    raise ValueError('release tag nesting limit exceeded')
+
+
 def verify_github(evidence, commit, stage, base, repo, token):
     """Authenticate CI/acceptance run and job IDs against the GitHub API."""
     blockers = []
@@ -180,7 +207,7 @@ def verify_github(evidence, commit, stage, base, repo, token):
                 data = json.loads((base / record['artifact']).read_text())
                 run_id = str(data['runId'])
                 run = github_get(repo, 'actions/runs/' + run_id, token)
-                if run.get('head_sha') != commit or run.get('path') != path or run.get('event') != event or run.get('conclusion') != 'success':
+                if run.get('head_sha') != commit or not workflow_path_matches(run, path) or run.get('event') != event or run.get('conclusion') != 'success':
                     blockers.append(kind + ' ' + platform + ': GitHub run provenance mismatch')
                 jobs = []
                 page = 1
@@ -215,6 +242,8 @@ def verify_github(evidence, commit, stage, base, repo, token):
                     blockers.append('release candidate: missing GitHub assets for ' + target)
             if release.get('draft') is True or release.get('prerelease') is not True or release.get('target_commitish') != candidate['commit']:
                 blockers.append('release candidate: GitHub release state or commit mismatch')
+            if release.get('tag_name') != candidate['tag'] or resolve_tag_commit(repo, candidate['tag'], token) != candidate['commit']:
+                blockers.append('release candidate: Git tag does not name the attested commit')
             if not blockers:
                 blockers += verify_candidate_assets(candidate, repo)
         except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as error:

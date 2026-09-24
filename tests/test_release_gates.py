@@ -3,6 +3,11 @@ import hashlib, importlib.util, json, pathlib, tempfile, unittest
 spec=importlib.util.spec_from_file_location('release_gates',pathlib.Path(__file__).parents[1]/'scripts/release-gates.py')
 gates=importlib.util.module_from_spec(spec);spec.loader.exec_module(gates)
 class ReleaseGates(unittest.TestCase):
+    def test_github_workflow_path_accepts_documented_ref_suffix(self):
+        run={'path':'.github/workflows/ci.yml@main','head_branch':'main','head_sha':'a'*40}
+        self.assertTrue(gates.workflow_path_matches(run,'.github/workflows/ci.yml'))
+        self.assertFalse(gates.workflow_path_matches({**run,'path':'.github/workflows/ci.yml@other'},'.github/workflows/ci.yml'))
+        self.assertTrue(gates.workflow_path_matches({**run,'path':'.github/workflows/ci.yml'},'.github/workflows/ci.yml'))
     def reliability(self, root, commit='fixture-commit'):
         records={}
         for platform, runner in [('linux','ubuntu-latest'),('macos','macos-latest'),('windows','windows-latest')]:

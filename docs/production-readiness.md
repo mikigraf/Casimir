@@ -70,7 +70,8 @@ attestations remain a protected maintainer trust boundary; software cannot verif
 that people actually performed them. Do not manufacture these records to clear a
 gate. The 1.0 candidate artifact must refer to a published `v1.0.0-rc.N` release;
 the gate downloads all four native archives, verifies their checksums and installation
-receipts, and checks their signed build provenance.
+receipts, checks their signed build provenance, and dereferences the Git tag to
+confirm the candidate commit.
 
 The current candidate version in `Cargo.toml` is `1.0.0-rc.1`. Packaging requires
 the requested version to match it. A new commit requires fresh CI reliability

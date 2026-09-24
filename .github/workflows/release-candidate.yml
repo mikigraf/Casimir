@@ -32,7 +32,13 @@ jobs:
           import json, os
           run = json.load(open('.context/evidence-run.json'))
           assert run['head_sha'] == os.environ['GITHUB_SHA'], 'evidence workflow commit mismatch'
-          assert run['path'] == '.github/workflows/release-evidence.yml', 'unexpected evidence workflow'
+          expected = '.github/workflows/release-evidence.yml'
+          path = run['path']
+          branch = run.get('head_branch')
+          allowed = {run['head_sha']}
+          if branch:
+              allowed.update((branch, 'refs/heads/' + branch, 'refs/tags/' + branch))
+          assert path == expected or (path.startswith(expected + '@') and path[len(expected) + 1:] in allowed), 'unexpected evidence workflow'
           assert run['event'] == 'workflow_dispatch' and run['conclusion'] == 'success', 'evidence workflow did not pass manual protected gating'
           PY
       - uses: actions/download-artifact@v4
@@ -115,6 +121,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
+          python - <<'PY'
+          import os, subprocess
+          tag = 'refs/tags/v' + os.environ['VERSION']
+          output = subprocess.check_output(['git', 'ls-remote', '--tags', 'origin', tag, tag + '^{}'], text=True)
+          refs = dict(line.split('\t', 1)[::-1] for line in output.splitlines())
+          existing = refs.get(tag + '^{}', refs.get(tag))
+          if existing and existing != os.environ['GITHUB_SHA']:
+              raise SystemExit('release tag already points to another commit')
+          PY
           EXTRA=()
           if [[ "$VERSION" == *-rc.* ]]; then EXTRA+=(--prerelease); fi
           gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --draft "${EXTRA[@]}" --title "Casimir $VERSION" --notes-file CHANGELOG.md
