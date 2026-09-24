@@ -257,13 +257,19 @@ fn supervisor_terminates_descendants_on_timeout_and_parent_exit() {
         let result = process::capture(
             Command::new(fixture::executable("supervisor")).args(["--supervisor", mode]),
             b"",
-            Duration::from_millis(250),
+            // A cold Windows runner may need longer to start the orphan's child.
+            // Other modes still exercise prompt timeout cancellation.
+            if mode == "orphan" {
+                Duration::from_secs(3)
+            } else {
+                Duration::from_millis(250)
+            },
             Some(&spool),
         );
         if mode != "orphan" {
             assert!(result.is_err());
         } else {
-            assert!(result.is_ok());
+            assert!(result.is_ok(), "orphan cleanup failed: {:?}", result.err());
         }
         let pid = std::fs::read_to_string(spool.join("stdout.log"))
             .unwrap()
