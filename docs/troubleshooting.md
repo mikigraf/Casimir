@@ -14,6 +14,12 @@ On Linux, `runtimeReady: false` for Codex means a local sandbox self-test failed
 model call. Install a working `bubblewrap` and check whether your container grants unusual
 ambient Linux capabilities; the sandbox must work with the permissions of the process running
 Casimir. Do not disable the sandbox to make a failing readiness check pass.
+For `bwrap: Unexpected capabilities but not setuid` in a container with inherited ambient
+capabilities, run Casimir from a privilege-dropped shell, for example
+`setpriv --bounding-set=-all --inh-caps=-all --ambient-caps=-all casimir doctor --json`.
+Use the same prefix for the experiment after the sandbox probe passes. This changes the
+process's Linux capabilities; it does not bypass the Codex sandbox or alter harness
+permission settings.
 
 A locked run has another active owner. Wait for it to finish or interrupt that process. Do not
 delete the lock file while a process is active; the OS releases the lock on process exit.
