@@ -1,6 +1,6 @@
 [package]
 name = "casimir"
-version = "0.2.0"
+version = "1.0.0-rc.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Replay, rerun and compare coding-agent sessions from Claude Code and Codex"

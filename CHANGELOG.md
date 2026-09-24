@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased: 1.0 candidate implementation
+## 1.0.0-rc.1 (unpublished candidate)
 
 Adds bounded subprocess supervision, atomic recovery journals and run locks, checkpoint-backed
 fork requirements, explicit unrestricted-execution consent, in-process Anthropic HTTPS,
@@ -11,6 +11,6 @@ Task outcomes now distinguish clean execution from success. Missing/contradictor
 inconclusive; failed required checks cannot become passes. Imported historical sessions remain
 readable and support full reruns, but cannot be forked without compatible checkpoints.
 
-This is not a 1.0 certification. Native authenticated acceptance, reviewed evaluation calibration,
+This candidate is not a 1.0 certification. Native authenticated acceptance, reviewed evaluation calibration,
 pilot-user evidence and release artifact verification remain mandatory. See
 [the release ledger](docs/production-readiness.md) and [migration guidance](docs/migration.md).
